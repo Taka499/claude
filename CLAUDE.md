@@ -36,6 +36,21 @@ Projects persist cross-session knowledge in two layers: **ExecPlans** (immutable
 - Layouts differ per repo (`docs/` vs `_docs/`; some repos have no ADR dir). MUST discover the project's actual convention before writing; if the scaffold is missing, offer to add it from the `Taka499/project-template` repository rather than inventing a layout.
 - Decisions crystallised in conversation MUST be captured into their durable home the moment they crystallise (plan Decision Log, ADR, or nowhere if they pass no gate) — chat is ephemeral. The `/grill-me` and `/close-out` skills implement this routing.
 
+## Quality Gates
+
+Let machines enforce what code review used to catch — size, complexity, and type discipline are lint *errors*, not review comments. Per-toolchain configurations live in the stack notes.
+
+- NEVER silence lint or type errors inline (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `#[allow]`, `# noqa`) — fix the root cause. A genuinely justified exception goes in the config file as an allowlist entry with its reason and its removal condition ("delete the entry when the reason goes away"); inline suppressions hide the exception inventory and can never be audited.
+- Introduce a new strict rule as a warning, drain the existing backlog to zero, then ratchet it to error. NEVER add findings to a warning list nobody reads — a rule is either green-and-enforced or being actively drained.
+- Decide gate vs report deliberately. A check with expected false positives (dead-code scans, duplication scans) runs as a non-blocking report; blocking on day one trains reflexive ignore-comments. Promote to a gate only once it is trustworthy.
+- Every CI gate SHOULD state, in a comment at the top of its workflow, what it actually guards. A gate whose purpose cannot be written down is either unnecessary or mis-aimed.
+
+## Testing
+
+- Design for testability first: extract rules into pure functions in their own files, keep I/O at the call site, and pass dependencies (clock, paths, platform, processes) as arguments. Apply this to EXISTING code too — testability is a property of the codebase to actively restore, not a rule binding only new lines.
+- New tests MUST be shown to fail when their target is broken (invert, delete the guard, or revert — watch red — restore).
+- Full pattern checklist and doctrine → [`docs/testing.md`](docs/testing.md). Read before writing or refactoring tests.
+
 ## Debugging
 
 - MUST diagnose the root cause before attempting fixes — NEVER quick-fix by hardcoding values or papering over symptoms.
