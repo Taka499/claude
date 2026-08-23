@@ -9,3 +9,5 @@ The `Taka499/claude` repository is the single source of truth for the user-level
 A consequence to respect: while a feature branch is checked out in the deployed clone, the live harness runs that branch's config. Isamu hit this exact hazard (his `feat/skills-refresh` plan stacks branches specifically because "main に戻すと生きているグローバル設定が巻き戻る") — keep the deployed clone on `master` except while deliberately testing a change.
 
 Source: user decision, grilling session 2026-08-05 (deployment model chosen over plugin and template options); hazard note per isamu/claude `plans/feat-skills-refresh.md`.
+
+2026-08-24: narrowed by `0003-skills-are-linked-per-skill.md` — `~/.claude/skills` is a shared namespace other tools install into, so it is now a real directory holding one link per skill instead of a link to `skills/`. The decision above stands unchanged for `CLAUDE.md`, `docs/` and `commands/`.
