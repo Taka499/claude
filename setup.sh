@@ -15,6 +15,10 @@ link() {
   elif [ -e "${dst}" ]; then
     local backup="${dst}.pre-central.$(date +%Y%m%d%H%M%S)"
     echo "backup: ${dst} -> ${backup}"
+    if [ -d "${dst}" ]; then
+      echo "  NOTE: ${dst} is a directory. Everything inside it leaves the live config;"
+      echo "        port anything you still want into ${REPO_DIR} and re-run."
+    fi
     mv "${dst}" "${backup}"
   fi
   ln -s "${src}" "${dst}"
@@ -24,5 +28,9 @@ link() {
 link "${REPO_DIR}/CLAUDE.md" "${CLAUDE_DIR}/CLAUDE.md"
 link "${REPO_DIR}/skills"    "${CLAUDE_DIR}/skills"
 link "${REPO_DIR}/docs"      "${CLAUDE_DIR}/docs"
+link "${REPO_DIR}/commands"  "${CLAUDE_DIR}/commands"
+
+# settings.json is deliberately NOT linked — Claude Code owns and rewrites that
+# file (effortLevel, tui, enabledPlugins, …). See docs/adr/0002-settings-json-stays-untracked.md.
 
 echo "Done. ~/.claude now tracks $(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD) of ${REPO_DIR}."

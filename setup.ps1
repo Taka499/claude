@@ -22,6 +22,10 @@ function Set-Link {
         } else {
             $backup = "$Dst.pre-central.$(Get-Date -Format yyyyMMddHHmmss)"
             Write-Host "backup: $Dst -> $backup"
+            if ($existing.PSIsContainer) {
+                Write-Host "  NOTE: $Dst is a directory. Everything inside it leaves the live config;"
+                Write-Host "        port anything you still want into $RepoDir and re-run."
+            }
             Move-Item -Path $Dst -Destination $backup
         }
     }
@@ -32,5 +36,9 @@ function Set-Link {
 Set-Link -Src (Join-Path $RepoDir "CLAUDE.md") -Dst (Join-Path $ClaudeDir "CLAUDE.md") -Kind SymbolicLink
 Set-Link -Src (Join-Path $RepoDir "skills")    -Dst (Join-Path $ClaudeDir "skills")    -Kind Junction
 Set-Link -Src (Join-Path $RepoDir "docs")      -Dst (Join-Path $ClaudeDir "docs")      -Kind Junction
+Set-Link -Src (Join-Path $RepoDir "commands")  -Dst (Join-Path $ClaudeDir "commands")  -Kind Junction
+
+# settings.json is deliberately NOT linked — Claude Code owns and rewrites that
+# file (effortLevel, tui, enabledPlugins, ...). See docs/adr/0002-settings-json-stays-untracked.md.
 
 Write-Host "Done. ~/.claude now tracks this clone of the claude repo."
