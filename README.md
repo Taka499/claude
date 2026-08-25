@@ -23,6 +23,14 @@ Both scripts are idempotent and back up anything pre-existing before linking. No
 
 `skills/` is the exception, and deliberately: `~/.claude/skills` stays a **real directory** into which this repo links one skill at a time, because it is a shared namespace other tools install into — see [`docs/adr/0003-skills-are-linked-per-skill.md`](docs/adr/0003-skills-are-linked-per-skill.md). Two things follow. Adding or renaming a skill takes a `./setup.sh` re-run before it is live, unlike editing an existing one, which is live immediately. And a skill removed from the repo, or absent on the branch you just checked out, leaves a dangling link that the next run prunes — pruning only ever touches links pointing into this repo, never a real directory another tool put there.
 
+### Git in this clone needs the sandbox turned off
+
+Claude Code hard-protects agent-configuration paths from writes by sandboxed commands, and resolves symlinks when it does. Since this repo *is* that configuration, `CLAUDE.md` and `commands/` are **not writable by sandboxed Bash** here — including git's own writes. A `git checkout` that needs to rewrite them fails halfway and can truncate other files: one did exactly that after the PR #2 merge, leaving `docs/PLANS.md` at zero bytes.
+
+So: **git operations touching `CLAUDE.md` or `commands/` must run outside the sandbox** (`dangerouslyDisableSandbox`), which covers `checkout`, `switch`, `merge`, `pull`, `stash` and `restore`. Work confined to `docs/`, `plans/`, `skills/`, `README.md` or the setup scripts is fine sandboxed. `gh` needs the same treatment for an unrelated reason — it verifies TLS through the macOS keychain, which the sandbox blocks. No `settings.json` change lifts either constraint; `allowWrite` and `excludedCommands` were both tried and re-tested after a restart. Details, evidence and the mid-failure recovery procedure: [`plans/0006-sandbox-vs-agent-config-paths.md`](plans/0006-sandbox-vs-agent-config-paths.md).
+
+Note the accident of good fortune in ADR 0003: because `~/.claude/skills` is now a real directory rather than a symlink to `skills/`, that directory resolves to itself and stays writable. Linking per skill removed a breakage nobody had noticed yet.
+
 ### The one file this repo does not deploy
 
 `~/.claude/settings.json` stays untracked and hand-maintained, per [`docs/adr/0002-settings-json-stays-untracked.md`](docs/adr/0002-settings-json-stays-untracked.md): Claude Code owns that file and rewrites it at runtime, and there is no user-level local-override tier to split app-written preferences from hand-authored policy. The trade-off is that `permissions` — where the git rules are actually *enforced* — is unversioned, so the invariants live here instead and are worth re-checking whenever the file is touched:
