@@ -7,18 +7,36 @@ The approach emulates [isamu/claude](https://github.com/isamu/claude) (see the a
 ## Layout
 
 - `CLAUDE.md` — the global rules file, deployed as `~/.claude/CLAUDE.md`. Thin by design: always-on rules only; long reference material lives in `docs/` and is read on demand.
-- `skills/` — user-level skills, deployed as `~/.claude/skills/`. General-purpose only; project-specific skills stay in their repos.
-- `docs/` — read-on-demand references: distilled stack notes (`rust.md`, `typescript.md`, `python.md`) and this repo's ADRs (`docs/adr/`).
+- `skills/` — user-level skills, linked individually into `~/.claude/skills/` (which stays a real directory shared with other tools' skills, per ADR 0003). General-purpose only; project-specific skills stay in their repos. Only `grill-me` sets `disable-model-invocation: true`, and deliberately: it opens an open-ended interview that must never start on its own inference. The rest (`close-out`, `harvest-session`, `codebase-design`, `adopt-from-sibling`, `backlog`) are safe for the model to reach for when the situation matches their description.
+- `commands/` — user-level slash commands, deployed as `~/.claude/commands/`. Short prompt templates (`/execplan`, `/commit`, `/read-docs`); anything with real procedure belongs in `skills/` instead.
+- `docs/` — read-on-demand references: the canonical ExecPlan methodology (`PLANS.md`), distilled stack notes (`rust.md`, `typescript.md`, `python.md`), the cross-stack testing doctrine (`testing.md`), and this repo's ADRs (`docs/adr/`).
 - `plans/` — lightweight plan files (goal / changes / verification) committed alongside non-trivial PRs. Not full ExecPlans: harness changes are small and reversible, so the ceremony is scaled down deliberately (see `plans/0001-bootstrap-central-claude.md` § Decision Log).
 
 ## Deployment
 
 Clone anywhere, then symlink the tracked pieces into `~/.claude` (the rest of `~/.claude` — sessions, todos, settings — is runtime state and stays untouched):
 
-    ./setup.sh        # macOS / Linux / WSL / Git Bash
-    ./setup.ps1       # Windows PowerShell (uses junctions for dirs; may need Developer Mode for the file symlink)
+    ./setup.sh              # macOS / Linux / WSL / Git Bash
+    pwsh ./setup.ps1        # Windows PowerShell (uses junctions for dirs; may need Developer Mode for the file symlink)
 
-Both scripts are idempotent and back up any pre-existing real files before linking. After deployment, the working tree of this clone is live config: keep it on `master` except while developing a change.
+Both scripts are idempotent and back up anything pre-existing before linking. Note what that means for a *directory*: `~/.claude/commands` is replaced wholesale, so anything previously living there leaves the live config and survives only inside the timestamped `commands.pre-central.*` backup. The scripts print a warning when this happens — port anything you still want into this repo and re-run. After deployment, the working tree of this clone is live config: keep it on `master` except while developing a change.
+
+`skills/` is the exception, and deliberately: `~/.claude/skills` stays a **real directory** into which this repo links one skill at a time, because it is a shared namespace other tools install into — see [`docs/adr/0003-skills-are-linked-per-skill.md`](docs/adr/0003-skills-are-linked-per-skill.md). Two things follow. Adding or renaming a skill takes a `./setup.sh` re-run before it is live, unlike editing an existing one, which is live immediately. And a skill removed from the repo, or absent on the branch you just checked out, leaves a dangling link that the next run prunes — pruning only ever touches links pointing into this repo, never a real directory another tool put there.
+
+### The one file this repo does not deploy
+
+`~/.claude/settings.json` stays untracked and hand-maintained, per [`docs/adr/0002-settings-json-stays-untracked.md`](docs/adr/0002-settings-json-stays-untracked.md): Claude Code owns that file and rewrites it at runtime, and there is no user-level local-override tier to split app-written preferences from hand-authored policy. The trade-off is that `permissions` — where the git rules are actually *enforced* — is unversioned, so the invariants live here instead and are worth re-checking whenever the file is touched:
+
+- No history-mutating git command (`commit`, `push`, `merge`, `rebase`, `reset`) may sit in `permissions.allow`; they belong in `ask`, so the harness enforces `CLAUDE.md` § Git Operations rather than relying on the agent obeying prose. A stale `Bash(git commit *)` allow entry contradicted that rule undetected until an audit found it.
+- `permissions.ask` also covers `git checkout *`: switching branches in the deployed clone silently swaps the live global config (the hazard in ADR 0001).
+- Mutating `git -C <other-repo> …` forms are denied while the read-only ones are allowed — a blanket `Bash(git -C *)` deny breaks `/adopt-from-sibling`, whose whole job is reading a neighbouring checkout.
+- Hook commands must be self-contained and portable. They run under `sh -c` on macOS/Linux and Git Bash on Windows, so a bare `afplay …` raises a non-blocking hook error on every Windows notification; branch on `uname -s` inline and end with `exit 0`.
+- **Secrets are protected by the sandbox, not by `permissions.deny`.** `sandbox.credentials.files` and `sandbox.filesystem.denyRead` are enforced by the OS for every Bash command *and its child processes*, so they bind `sed`, `awk`, `python3`, `rg` and everything else at once. A `Bash(...)` denylist can only ever match command strings, which is why the previous `cat`/`head`/`tail` bans were removed: they implied a protection they could not deliver, while `sed -n p` walked straight past them. Verified by decoy, not by reading a real secret — see the note below.
+- `Read(…)` denies for secret paths stay, and are not redundant with the sandbox: the sandbox covers Bash, the `Read` rules cover the Read tool. Neither one covers the other's path.
+- `grep`/`find` remain denied as a *tooling* preference — the dedicated Grep and Glob tools are better — and should be understood as a nudge, not a control. Note the tier is disproportionate for a preference; `ask` would be the honest setting if the nudge ever becomes annoying.
+- `permissions.ask` carries `Bash(dangerouslyDisableSandbox:true)`. A command the sandbox blocks can be retried outside it, and without that rule the retry is judged by the auto-mode classifier rather than by you. `sandbox.allowUnsandboxedCommands: false` closes the hatch entirely, at the cost of breaking anything genuinely un-sandboxable until it is listed in `excludedCommands`.
+- **The sandbox does not run on native Windows** (macOS, Linux and WSL2 only). On such a machine the layer above simply is not there, and the pattern denies become the only shell-side control — so re-add `cat`/`head`/`tail` there rather than assuming this file is portable.
+- JSON admits no comments, so any non-obvious entry needs its reason recorded here rather than in the file. When testing whether a read rule works, use a **decoy** file with harmless contents: verifying against a real key means that if the rule is *not* enforcing, the test prints key material into the transcript — the exact outcome being tested for.
 
 ## Changing the harness
 
@@ -29,4 +47,14 @@ Both scripts are idempotent and back up any pre-existing real files before linki
 
 ## Relationship to project-template
 
-`Taka499/project-template` remains the per-project scaffold: `docs/PLANS.md` (ExecPlan methodology), `docs/adr/README.md` (ADR convention), and the `CLAUDE.md` skeleton that new projects copy. Everything reusable across projects — rules, skills, stack notes — lives here instead and reaches projects through `~/.claude`.
+`Taka499/project-template` remains the per-project scaffold: `docs/adr/README.md` (ADR convention), `docs/plans/`, and the `CLAUDE.md` skeleton that new projects copy. Everything reusable across projects — rules, skills, stack notes — lives here instead and reaches projects through `~/.claude`.
+
+The ExecPlan methodology is the one document both repos need. `docs/PLANS.md` here is the **canonical** copy: global `CLAUDE.md` mandates ExecPlans, so the definition has to be readable from any project, including one with no scaffold checked in. project-template still ships a copy — a plan must be followable from a fresh clone with no `~/.claude` — but that copy is a downstream sync target, not an independent document. When this file changes, propagating it to project-template is the follow-up PR.
+
+## Attribution
+
+- The delivery mechanism (repo-as-`~/.claude`, every change a PR) emulates [isamu/claude](https://github.com/isamu/claude); `adopt-from-sibling` and `harvest-session` are re-expressed from its skills and Continuous Learning loop. That repository states no license, so nothing is copied from it verbatim — the ideas are restated in this system's own terms and vocabulary.
+- `grill-me`'s interview protocol is adapted from [mattpocock/skills](https://github.com/mattpocock/skills) (`grilling`), MIT.
+- `docs/testing.md` and the lint policy in `docs/typescript.md` are distilled from the article [「1日500コミットは、もう読めない ── だからコードレビューをやめた」](https://zenn.dev/singularity/articles/stopped-reviewing-my-code) and the reference configs it cites.
+- `codebase-design` uses deep-module vocabulary after Ousterhout (*A Philosophy of Software Design*) and Feathers' notion of a seam, with the rejections recorded in the skill itself.
+- Everything else is original to this repository and covered by [`LICENSE`](LICENSE) (MIT).
