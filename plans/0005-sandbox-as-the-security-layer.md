@@ -30,3 +30,7 @@ Run against a **decoy**, never a real secret: if a rule is not enforcing, a test
 - **Took effect without a restart**: all of the above ran in the session that enabled it.
 - **Write isolation**: `rm -rf ~/sandbox-check` failed from inside the sandbox (outside the working directory) and succeeded only via `dangerouslyDisableSandbox`, confirming the boundary applies to writes as well as reads.
 - **`cat` restored**: `cat <repo>/.git/HEAD` runs again.
+
+> **Correction, 2026-08-29** (from `plans/0007-codex-second-opinion.md`): the Goal above says the `Read(…)` rules "bind the Read tool only", and the Changes list says they "cover the tool path the sandbox does not". Both are wrong as a standing description. Per the [sandboxing docs](https://code.claude.com/docs/en/sandboxing), paths from permission rules and from sandbox settings are **merged into the final sandbox configuration**, so the `Read(…)` denies bind Bash too.
+>
+> They were true *at the moment this plan was written*, and that is the precise lesson: there was no sandbox to merge into until this very change enabled one. The merge is a property of the sandbox being on. What still justifies keeping both lists is scope, not tool — the unanchored `**/*.key` form does not cover the machine, while `~/**/*.key` in `sandbox.filesystem.denyRead` does.

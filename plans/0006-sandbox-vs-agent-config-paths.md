@@ -32,6 +32,8 @@ Neither is a settings bug. The guard exists precisely so that a sandboxed comman
 
 **Git operations in this clone that touch `CLAUDE.md` or `commands/` must run outside the sandbox** — `dangerouslyDisableSandbox: true` on the Bash call. That covers `checkout`, `switch`, `merge`, `pull`, `stash` and `restore`. Operations that touch only `docs/`, `plans/`, `skills/`, `README.md` or the setup scripts are fine sandboxed.
 
+> Narrowed on 2026-08-29 by `plans/0007-codex-second-opinion.md`: that sentence is about *editing* those paths. **Running** `./setup.sh` is a separate case — it writes into `~/.claude/skills`, which is itself an agent-config path, so a run with a link to add or prune needs the sandbox off. A run where every link already exists succeeds sandboxed, which is why this stayed hidden until a skill was added.
+
 If a checkout has already failed halfway, do not re-run it. Establish what the working tree actually holds first — compare with `git hash-object <file>` against `git rev-parse <ref>:<file>`, which needs no pipes, no temp files and no `diff` (all three are themselves restricted under the sandbox). The empty blob `e69de29bb2d1d6434b8b29ae775ad8c2e48c5391` means a file was truncated, not merely modified.
 
 ## Separately: `gh` cannot verify TLS under the sandbox
