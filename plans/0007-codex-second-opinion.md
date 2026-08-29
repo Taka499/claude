@@ -34,6 +34,8 @@ Two ways out, and they are not equivalent:
 
 The larger exposure is not the sandbox either way: the diff and any file Codex reads for context are sent to a third party. The skill leads with that rather than burying it, and the settings file is unchanged by this plan.
 
+> **Superseded, 2026-08-29** by [`plans/0008-codex-read-boundary.md`](0008-codex-read-boundary.md). The residual risk stated at the close of this plan — "documented, not enforced" — was written from reasoning, not measurement. Measured, the boundary is wider than described, the documented allowlist profile does not work in this build, and two further risks (training on individual plans; the reviewer as an input path) went unnamed here. Read 0008 for the probes and the recommendation order.
+
 ## Changes
 
 - `skills/codex-review/SKILL.md` — new. Read-only `codex exec`, forced verdict marker, mandatory evaluation of every finding, and an explicit prohibition on committing or pushing from the skill.
