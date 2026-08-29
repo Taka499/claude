@@ -67,6 +67,7 @@ Prefer these user-level skills over doing the work by hand:
 - **Port a proven setup from a neighboring local repo** → `/adopt-from-sibling`
 - **End-of-task capture of session learnings** → `/harvest-session`
 - **Park an idea without building it** → `/backlog`
+- **Second opinion on a diff before committing** → `/codex-review` (Codex reviews it read-only; note the diff and its context leave the machine)
 
 ## Stack Notes
 
