@@ -11,9 +11,15 @@ The point is **disagreement, not coverage**. Another pass by the same reviewer f
 
 ## Before running it: what leaves the machine
 
-`codex exec` sends the diff **and whatever files Codex reads for context** to OpenAI. That is the real cost of this skill, and it is not covered by any Claude Code sandbox setting.
+`codex exec` sends the diff **and whatever files Codex reads for context** to OpenAI. That is the real cost of this skill. No setting prevents the diff itself from leaving — that is what you asked for. What a setting can change is how much else travels with it, which is the subject of the rest of this section.
 
-**The exposure is wider than the repository, and checking the diff does not bound it.** `--sandbox read-only` stops Codex *writing*; it does not confine its *reading*. The call also runs with Claude Code's own sandbox disabled (see below), so neither `sandbox.filesystem.denyRead` nor `sandbox.credentials.files` binds the Codex process. Assume the boundary is **anything readable by your user account**, not the working tree.
+**The exposure is wider than the repository, and checking the diff does not bound it.** `--sandbox read-only` stops Codex *writing*; it does not confine its *reading*. Measured: from a workspace inside this repo, Codex read a decoy under `$TMPDIR` and counted 63 entries in `$HOME`, while a write was refused. Those probes establish that reads reach **beyond the workspace** — no more than that. That the practical boundary is **anything readable by your user account** is inferred from the documented design, whose filesystem controls govern writes only. Plan against the inference; it is what the design implies, but three probes did not prove it.
+
+The call also runs with Claude Code's own sandbox disabled (see below), so neither `sandbox.filesystem.denyRead` nor `sandbox.credentials.files` binds the Codex process either.
+
+This is known upstream and closed without a fix ([openai/codex#4410](https://github.com/openai/codex/issues/4410)). Two mitigations exist, both in [`plans/0008-codex-read-boundary.md`](../../plans/0008-codex-read-boundary.md) with the probes behind them; the stronger is to run Codex *inside* Claude Code's sandbox so the protection does not depend on Codex's own configuration being right.
+
+**And it may not stop at reading.** On individual ChatGPT plans, Codex content may be used for training unless opted out, reportedly under a Codex-specific control separate from ChatGPT's data settings. **Treat that as unverified** — it comes from secondary reporting, not a primary source that could be fetched — and confirm it in account settings rather than repeating it. Confirm it *before* reviewing anything private: of the exposures here it is the hardest to undo once it has gone wrong, and opting out still says nothing about what other retention applies.
 
 So: never run this on a machine or in a repository where that is unacceptable — credentials, customer data, anything under an NDA. Say plainly which repository is about to be sent out if there is any doubt, and keep the prompt scoped to the diff so the reviewer has no reason to wander. A `.env` beside the diff is not in the diff, but it is one read away.
 
@@ -24,8 +30,10 @@ So: never run this on a machine or in a repository where that is unacceptable �
 3. **Prove it can answer at all**, with a call that costs nothing:
 
    ```bash
-   codex exec --sandbox read-only "Reply with exactly: PING-OK"
+   codex exec --sandbox read-only "Reply with exactly: PING-OK" < /dev/null
    ```
+
+   **`< /dev/null` is not optional, here or below.** Without it `codex exec` can block reading stdin — it prints `Reading additional input from stdin...`, which a pipe into `tail` hides completely, so the call looks like a hang with no output. Two multi-minute stalls in this skill's own development were exactly that.
 
    An installed binary with the right flags can still reach no model. Measured here: every model name was refused with `400 … model is not supported when using Codex with a ChatGPT account`, including the CLI's own default.
 
@@ -42,9 +50,11 @@ So: never run this on a machine or in a repository where that is unacceptable �
 
 The Bash sandbox's `network.allowedDomains` does not include OpenAI's hosts, so a sandboxed `codex exec` cannot reach the API — measured, it fails as `ENOTFOUND`, not as a clean error. Run the call with `dangerouslyDisableSandbox: true`.
 
-That is deliberate, not a workaround. The alternative — adding the hosts to `allowedDomains` — widens egress for *every* command from then on, while the unsandboxed retry hits the `Bash(dangerouslyDisableSandbox:true)` ask rule and puts one review in front of the user as one decision.
+What that buys: the unsandboxed retry hits the `Bash(dangerouslyDisableSandbox:true)` ask rule, so each review is one decision the user makes, and egress stays as narrow as it was. What it costs is the read protection described above. That trade was decided one way in [`plans/0007`](../../plans/0007-codex-second-opinion.md) before anyone measured what the call could read, and decided the other way in `plans/0008` afterwards.
 
-**But the trade runs both ways, and it is the user's call rather than this skill's.** Running `codex` *inside* Claude Code's sandbox would let `denyRead` and `credentials.files` bind the Codex process and its children — exactly the read protection missing above — at the price of leaving OpenAI's hosts reachable by every later command, including ones executing content nobody here wrote. The default chosen is: narrow egress, unbounded reads. On a machine holding secrets that must not leave under any circumstances, invert it — allow the hosts and run sandboxed.
+**Treat the instruction above as the fallback, not the preferred design.** [`plans/0008-codex-read-boundary.md`](../../plans/0008-codex-read-boundary.md) concludes the opposite is better: run `codex` *inside* Claude Code's sandbox, so `denyRead` and `credentials.files` bind the Codex process and its children — the read protection missing above — enforced by the OS whether or not Codex's own config is right. The price is that OpenAI's hosts become reachable by every later command, including ones executing content nobody here wrote.
+
+That configuration needs those hosts in `sandbox.network.allowedDomains`, which is a `settings.json` edit nobody has made yet — so until it exists, this skill runs unsandboxed and accepts reads that neither sandbox confines. **When the hosts are added, drop `dangerouslyDisableSandbox` from the call** and this section becomes obsolete. To find the host list, run it once sandboxed and read the violation message.
 
 Note the two sandboxes are different layers: turning off Claude Code's does not turn off Codex's. `--sandbox read-only` still stops Codex writing to the tree, and it is mandatory here — this is a review, not a second author.
 
@@ -71,7 +81,7 @@ Answer these specifically:
 
 List one bullet per finding, each with a severity. Then end the ENTIRE response with
 exactly one final line and nothing after it:
-'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'."
+'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'." < /dev/null
 ```
 
 Three things decide whether this call is worth anything:
@@ -86,7 +96,7 @@ Codex output is long — read the tail for the findings and the verdict. That is
 
 For each one, in this order:
 
-1. **Is it real?** Verify it against the code before accepting it. Codex cannot see the intent you did not write down.
+1. **Is it real?** Verify it against the code before accepting it. Codex cannot see the intent you did not write down. This step is also the security boundary, not only a quality one: Codex read repository contents that someone else may have written, and its findings arrive here as suggested edits. Untrusted content reaching your hands through a model is still untrusted content.
 2. **Does it generalise?** If the finding names a class of mistake, fix the class. A one-site fix that leaves three identical sites is worse than the finding, because it looks handled.
 3. **What does the fix break?** A suggestion that satisfies the finding and regresses a caller is not an improvement.
 4. **What did it miss?** Read the diff yourself as well. Codex is a floor, not a ceiling.
