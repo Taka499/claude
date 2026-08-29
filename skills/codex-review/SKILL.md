@@ -1,6 +1,6 @@
 ---
 name: codex-review
-description: Get a second opinion on a local diff from Codex (OpenAI) before it becomes a PR. Runs `codex exec` read-only over the working-tree or branch diff under a forced-verdict contract, then evaluates every finding rather than applying it. Use when the user asks for a "second opinion", "codex review", "have Codex look at this", or before committing anything whose failure mode is expensive — permissions, secrets handling, destructive operations, or any claim that behaviour is unchanged.
+description: Get a second opinion on a local diff from Codex (OpenAI) before it becomes a PR. Runs `codex exec` over the working-tree or branch diff with no write access, under a forced-verdict contract, then evaluates every finding rather than applying it. Use when the user asks for a "second opinion", "codex review", "have Codex look at this", or before committing anything whose failure mode is expensive — permissions, secrets handling, destructive operations, or any claim that behaviour is unchanged.
 ---
 
 # Codex Review
@@ -13,11 +13,11 @@ The point is **disagreement, not coverage**. Another pass by the same reviewer f
 
 `codex exec` sends the diff **and whatever files Codex reads for context** to OpenAI. That is the real cost of this skill. No setting prevents the diff itself from leaving — that is what you asked for. What a setting can change is how much else travels with it, which is the subject of the rest of this section.
 
-**The exposure is wider than the repository, and checking the diff does not bound it.** `--sandbox read-only` stops Codex *writing*; it does not confine its *reading*. Measured: from a workspace inside this repo, Codex read a decoy under `$TMPDIR` and counted 63 entries in `$HOME`, while a write was refused. Those probes establish that reads reach **beyond the workspace** — no more than that. That the practical boundary is **anything readable by your user account** is inferred from the documented design, whose filesystem controls govern writes only. Plan against the inference; it is what the design implies, but three probes did not prove it.
+**The exposure is wider than the repository, and checking the diff does not bound it.** Codex's own `--sandbox read-only` mode stops it *writing*; it does not confine its *reading*, which is why this skill does not rely on it. Measured: from a workspace inside this repo, Codex read a decoy under `$TMPDIR` and counted 63 entries in `$HOME`, while a write was refused. Those probes establish that reads reach **beyond the workspace** — no more than that. That the practical boundary is **anything readable by your user account** is inferred from the documented design, whose filesystem controls govern writes only. Plan against the inference; it is what the design implies, but three probes did not prove it.
 
-The call also runs with Claude Code's own sandbox disabled (see below), so neither `sandbox.filesystem.denyRead` nor `sandbox.credentials.files` binds the Codex process either.
+What narrows it is the *outer* sandbox: run inside Claude Code's, as the section below requires, `sandbox.filesystem.denyRead` and `sandbox.credentials.files` do bind the Codex process and its children. Codex's own read-only mode contributes nothing here.
 
-This is known upstream and closed without a fix ([openai/codex#4410](https://github.com/openai/codex/issues/4410)). Two mitigations exist, both in [`plans/0008-codex-read-boundary.md`](../../plans/0008-codex-read-boundary.md) with the probes behind them; the stronger is to run Codex *inside* Claude Code's sandbox so the protection does not depend on Codex's own configuration being right.
+This is known upstream and closed without a fix ([openai/codex#4410](https://github.com/openai/codex/issues/4410)). Mitigations and the probes behind them are in [`plans/0008-codex-read-boundary.md`](../../plans/0008-codex-read-boundary.md); the strongest is to run Codex *inside* Claude Code's sandbox, which is what the next section requires and what this machine is now configured for.
 
 **And it may not stop at reading.** On individual ChatGPT plans, Codex content may be used for training unless opted out, reportedly under a Codex-specific control separate from ChatGPT's data settings. **Treat that as unverified** — it comes from secondary reporting, not a primary source that could be fetched — and confirm it in account settings rather than repeating it. Confirm it *before* reviewing anything private: of the exposures here it is the hardest to undo once it has gone wrong, and opting out still says nothing about what other retention applies.
 
@@ -26,11 +26,11 @@ So: never run this on a machine or in a repository where that is unacceptable �
 ## Preflight
 
 1. `command -v codex` — if missing, stop and tell the user to install `@openai/codex`. Do not fall back to reviewing it yourself and calling it a Codex review.
-2. Check the flags against the installed version rather than assuming: `codex exec --help`. `--sandbox read-only` is the one this skill depends on. **Do not hardcode a `--model`** — a pinned model that the installed CLI has stopped accepting fails by producing no output and a near-silent exit, which is indistinguishable from a clean review.
+2. Check the flags against the installed version rather than assuming: `codex exec --help`. `--sandbox` and its accepted values are what this skill depends on. **Do not hardcode a `--model`** — a pinned model that the installed CLI has stopped accepting fails by producing no output and a near-silent exit, which is indistinguishable from a clean review.
 3. **Prove it can answer at all**, with a call that costs nothing:
 
    ```bash
-   codex exec --sandbox read-only "Reply with exactly: PING-OK" < /dev/null
+   codex exec --sandbox danger-full-access "Reply with exactly: PING-OK" < /dev/null
    ```
 
    **`< /dev/null` is not optional, here or below.** Without it `codex exec` can block reading stdin — it prints `Reading additional input from stdin...`, which a pipe into `tail` hides completely, so the call looks like a hang with no output. Two multi-minute stalls in this skill's own development were exactly that.
@@ -46,17 +46,28 @@ So: never run this on a machine or in a repository where that is unacceptable �
 
    Never let this step's failure become the review. A skill that cannot run reports that it could not run.
 
-## Network: this runs outside the Claude Code sandbox
+## Sandboxing: this runs INSIDE the Claude Code sandbox
 
-The Bash sandbox's `network.allowedDomains` does not include OpenAI's hosts, so a sandboxed `codex exec` cannot reach the API — measured, it fails as `ENOTFOUND`, not as a clean error. Run the call with `dangerouslyDisableSandbox: true`.
+Run `codex exec` as an ordinary sandboxed command. **Do not pass `dangerouslyDisableSandbox`** — that is the whole point of the arrangement. `sandbox.filesystem.denyRead` and `sandbox.credentials.files` are enforced by the OS on the Codex process *and its children*, so the read boundary above is narrowed by Claude Code rather than entrusted to Codex's own configuration, which a CLI upgrade or a typo can silently drop.
 
-What that buys: the unsandboxed retry hits the `Bash(dangerouslyDisableSandbox:true)` ask rule, so each review is one decision the user makes, and egress stays as narrow as it was. What it costs is the read protection described above. That trade was decided one way in [`plans/0007`](../../plans/0007-codex-second-opinion.md) before anyone measured what the call could read, and decided the other way in `plans/0008` afterwards.
+**Turn Codex's own sandbox off — `--sandbox danger-full-access` — and let Claude Code's be the only one.** The two cannot nest: Codex's `read-only` mode shells out through `sandbox-exec`, and inside Claude Code's Seatbelt every command it runs dies with `sandbox-exec: sandbox_apply: Operation not permitted`. A review whose reviewer cannot run `git diff` is worth nothing.
 
-**Treat the instruction above as the fallback, not the preferred design.** [`plans/0008-codex-read-boundary.md`](../../plans/0008-codex-read-boundary.md) concludes the opposite is better: run `codex` *inside* Claude Code's sandbox, so `denyRead` and `credentials.files` bind the Codex process and its children — the read protection missing above — enforced by the OS whether or not Codex's own config is right. The price is that OpenAI's hosts become reachable by every later command, including ones executing content nobody here wrote.
+Nothing is lost by dropping it, because the outer sandbox already covers both directions. Measured, running this way:
 
-That configuration needs those hosts in `sandbox.network.allowedDomains`, which is a `settings.json` edit nobody has made yet — so until it exists, this skill runs unsandboxed and accepts reads that neither sandbox confines. **When the hosts are added, drop `dangerouslyDisableSandbox` from the call** and this section becomes obsolete. To find the host list, run it once sandboxed and read the violation message.
+| Probe | Result |
+| --- | --- |
+| `head -1 README.md` in the workspace | works |
+| write to `~/should-not-be-writable.txt` | **REFUSED** |
+| read `~/.ssh/config` | **REFUSED** |
 
-Note the two sandboxes are different layers: turning off Claude Code's does not turn off Codex's. `--sandbox read-only` still stops Codex writing to the tree, and it is mandatory here — this is a review, not a second author.
+Note the flag's name is actively misleading here: `danger-full-access` grants full access *relative to the inner sandbox*, which is itself inside the outer one that constrains it. This is the most protected configuration available, reached through the most alarming flag.
+
+It needs two entries in `~/.claude/settings.json` (untracked per ADR 0002 — the invariants live in `README.md`):
+
+- **`sandbox.network.allowedDomains`** — `chatgpt.com` and `auth.openai.com` for a ChatGPT-plan login; `api.openai.com` instead under API-key auth.
+- **`sandbox.filesystem.allowWrite`** — `~/.codex`. Without it Codex dies at startup, long before any network call, with `could not create PATH aliases` and `failed to initialize in-process app-server client: Operation not permitted`. That failure is filesystem, and it looks nothing like a blocked host — expect to misdiagnose it once.
+
+**Do not add `~/.codex/auth.json` to `credentials.files`.** It was tried and it makes Codex unable to read its own credential: `credentials.files` protects a credential *from* sandboxed commands, and here Codex is one. There is no per-command exemption, so protecting that token and running Codex sandboxed are mutually exclusive — and the token was never protected before, so declining to protect it costs nothing that was previously held.
 
 ## Steps
 
@@ -70,7 +81,7 @@ Note the two sandboxes are different layers: turning off Claude Code's does not 
 ### 2. Run Codex
 
 ```bash
-codex exec --sandbox read-only "Review ONLY the change described below in this repository.
+codex exec --sandbox danger-full-access -c 'approval_policy="never"' "Review ONLY the change described below in this repository.
 Run \`git diff <paths>\` to see it and read surrounding files for context. Do NOT modify anything.
 
 INTENT: <what this change is for, and what must stay true after it>
