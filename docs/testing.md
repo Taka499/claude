@@ -31,6 +31,8 @@ A new test must be shown to go red when its target is broken: invert the conditi
 
 Assertion-less tests are a lint error, not a review comment (`sonarjs/assertions-in-tests` in TS; the same idea applies in any stack).
 
+The same holds for a check, not only a test: before trusting a "did the output change?" guard, ask which inputs differ between its two sides. If both sides are recomputed by the same checkout — same code, same configuration — and the rule is "unchanged input must give unchanged output", the guard is a tautology: a pure function cannot disagree with itself, so it stays green through exactly the engine or configuration change it exists to catch. One side has to be a stored fact from the past — a committed snapshot of the published outputs, a golden file over frozen inputs — that the run under test does not regenerate. Then prove it the usual way: change one number by hand and watch it go red. (gakumas-supportcards `docs/adr/0006`: a score-stability gate specified as "compare committed and fresh data" could never have failed; the committed score snapshot that replaced it flagged 31 cards for one hand-edited route number.)
+
 ## Prioritize by how silently it fails
 
 Functions that throw report themselves. The dangerous ones return plausible wrong values: off-by-one indices, bytes-vs-chars confusions, shifted dates, case-mismatched extensions, too-lenient validators, prototype-chain lookups. These stay invisible until a user notices — test them first.

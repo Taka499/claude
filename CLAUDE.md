@@ -15,6 +15,7 @@ This is the user-level `~/.claude/CLAUDE.md`, applied to every project on this m
 - Proposed commits MUST stay small and focused: propose a commit after each meaningful change (schema done → propose, helper done → propose) rather than batching. Frequent small commits with human sign-off, not silent ones and not giant ones.
 - MUST check the current branch before making changes; if it differs from what the task implies, ask which branch to use.
 - MUST branch from an up-to-date base: `git fetch` first and check the local base is not behind its remote before creating a feature branch.
+- Before merging a feature branch, MUST re-check where the default branch is — other sessions and worktrees move it while you work. If it moved, merge it into the feature branch first, resolve and re-verify there (tests, type-check, build), and only then merge into the default branch, so the default branch never holds a half-resolved state.
 - Follow Git-flow by default: feature branches, merge commits (no squash), the default branch receives only merges. A repository's own `CLAUDE.md` wins where it differs.
 - NEVER use `git add .` or add whole directories — add affected files individually; leave untracked files as they are.
 - NEVER delete untracked files.
