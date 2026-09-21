@@ -34,7 +34,7 @@ This is the user-level `~/.claude/CLAUDE.md`, applied to every project on this m
 Projects persist cross-session knowledge in two layers: **ExecPlans** (immutable narrative logs of how a feature was built — the persistence layer for cross-session development) and **ADRs** (durable cross-plan decisions passing the three-gate test: hard to reverse, surprising without context, a real trade-off), with the project `CLAUDE.md` as an auditable index citing both.
 
 - For complex features or significant refactors, MUST use an ExecPlan as described in the project's `PLANS.md`. If the repository has none, the canonical methodology is [`docs/PLANS.md`](docs/PLANS.md), deployed at `~/.claude/docs/PLANS.md` and readable from any project — MUST read it in full before drafting, rather than improvising a plan format. Before implementing or summarizing an ExecPlan, MUST read the full plan document and confirm understanding by listing its milestones.
-- Layouts differ per repo (`docs/` vs `_docs/`; some repos have no ADR dir). MUST discover the project's actual convention before writing; if the scaffold is missing, offer to add it from the `Taka499/project-template` repository rather than inventing a layout.
+- Layouts differ per repo (`docs/` vs `_docs/`; some repos have no ADR dir). MUST discover the project's actual convention before writing; if the scaffold is missing, offer to add it from the `Taka499/project-template` repository (the `scaffold-project` skill does this) rather than inventing a layout.
 - Decisions crystallised in conversation MUST be captured into their durable home the moment they crystallise (plan Decision Log, ADR, or nowhere if they pass no gate) — chat is ephemeral. The `/grill-me` and `/close-out` skills implement this routing.
 
 ## Quality Gates
@@ -63,6 +63,7 @@ Let machines enforce what code review used to catch — size, complexity, and ty
 Prefer these user-level skills over doing the work by hand:
 
 - **Stress-test a plan or design before building** → `/grill-me`
+- **Start a repository for an idea that has none yet** → `scaffold-project` (copies the `Taka499/project-template` scaffold, inits git, fills the CLAUDE.md overview, proposes the first commit)
 - **Close out a completed ExecPlan** → `/close-out` (retrospective, ADR sweep, snapshot sync)
 - **Design or restructure a module** → `codebase-design` (deep-module vocabulary; loads automatically when relevant)
 - **Port a proven setup from a neighboring local repo** → `/adopt-from-sibling`

@@ -15,7 +15,9 @@ This skill is installed user-level and runs in many repositories whose layouts d
 - **Plan methodology**: look for `docs/PLANS.md`, then `_docs/PLANS.md`; plans live beside it (`docs/plans/`, `_docs/`, or the pattern its existing plans use).
 - **ADR home**: look for `docs/adr/README.md` (or an equivalent the repo's `CLAUDE.md` names).
 
-If either is missing, offer to scaffold it from the `Taka499/project-template` repository before proceeding. If the user declines, still run the interview — capture everything into the plan draft (or a plain design note) rather than losing it; only the routing degrades, not the capture.
+If either is missing, offer to scaffold it from the `Taka499/project-template` repository before proceeding (the `scaffold-project` skill does this). If the user declines, still run the interview — capture everything into the plan draft (or a plain design note) rather than losing it; only the routing degrades, not the capture.
+
+**Greenfield — there is no repository at all.** An idea can arrive before its repo does, and the session may be running from a parent directory full of unrelated projects. Do not stop to create one first: the name and home are the decisions that matter *least* until the design has a shape, and asking for them up front wastes the user's freshest attention. Hold the Decision Log in the conversation, run the interview as normal, and make the project name and location the closing question — offer name candidates in more than one register rather than the style of the neighbouring directories. Then scaffold with `scaffold-project` and write every capture into the new repo before the session ends. The one thing that changes mid-interview is discipline: with no file to write to, number the decisions as they land so the transfer at the end is a copy, not a reconstruction.
 
 ## The interview
 
