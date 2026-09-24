@@ -1,0 +1,166 @@
+<!doctype html>
+<!--
+  explainer template (skills/explainer/SKILL.md). Copy, then replace every TITLE / example block.
+  Every translatable element carries data-l="en|ja|zh"; keep technical terms in English in all three.
+  Owner colours: --you (blue), --other (green), --platform (grey), --bad (red). Rename the badges to your cast.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TITLE</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1f2328; --muted: #656d76; --line: #d8dee4; --code: #f2f0eb; --card: #ffffff;
+    --you: #0b6bcb; --other: #1a7f37; --platform: #6e7781; --bad: #cf222e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181c; --fg: #e6e8eb; --muted: #9aa4af; --line: #30363d; --code: #22262c; --card: #1c1f24;
+            --you: #58a6ff; --other: #3fb950; --platform: #9aa4af; --bad: #ff7b72; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "PingFang SC", "Noto Sans CJK JP", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 900px; margin: 0 auto; padding: 10px 20px; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+  .langs button { font: inherit; font-size: 14px; padding: 4px 12px; margin-left: 4px; border: 1px solid var(--line);
+                  background: var(--card); color: var(--fg); border-radius: 999px; cursor: pointer; }
+  .langs button[aria-pressed="true"] { background: var(--you); border-color: var(--you); color: #fff; }
+  main { max-width: 900px; margin: 0 auto; padding: 8px 20px 80px; }
+  h1 { font-size: 27px; line-height: 1.3; margin: 28px 0 8px; }
+  h2 { font-size: 21px; margin: 44px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h2 .n { color: var(--you); margin-right: 8px; }
+  h2[id] { scroll-margin-top: 64px; } /* keep TOC targets clear of the sticky header */
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 14px; line-height: 1.55; }
+  pre code { background: none; padding: 0; }
+  .c { color: var(--muted); }
+  .lead { color: var(--muted); font-size: 17px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 18px; margin: 14px 0; }
+  .card.key { border-left: 5px solid var(--you); }
+  .card.bad { border-left: 5px solid var(--bad); }
+  .card.good { border-left: 5px solid var(--other); }
+  .cast { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 14px 0; }
+  .who { border-radius: 10px; padding: 10px 14px; background: var(--card); border: 2px solid var(--line); }
+  .who h3 { margin: 0 0 4px; font-size: 16px; }
+  .who.you { border-color: var(--you); } .who.you h3 { color: var(--you); }
+  .who.other { border-color: var(--other); } .who.other h3 { color: var(--other); }
+  .who.platform { border-color: var(--platform); } .who.platform h3 { color: var(--platform); }
+  .who.bad { border-color: var(--bad); } .who.bad h3 { color: var(--bad); }
+  .tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 0 8px; border-radius: 999px; color: #fff; margin-right: 6px; vertical-align: 2px; }
+  .tag.you { background: var(--you); } .tag.other { background: var(--other); } .tag.platform { background: var(--platform); } .tag.bad { background: var(--bad); }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 15px; }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--code); }
+  ol.flow { list-style: none; padding: 0; counter-reset: f; }
+  ol.flow > li { counter-increment: f; position: relative; padding: 10px 14px 10px 52px; margin: 8px 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  ol.flow > li::before { content: counter(f); position: absolute; left: 12px; top: 10px; width: 28px; height: 28px; border-radius: 50%;
+                         background: var(--code); text-align: center; line-height: 28px; font-weight: 700; }
+  ol.flow > li.evil { border-color: var(--bad); }
+  ol.flow > li.evil::before { background: var(--bad); color: #fff; }
+  .toc a { color: var(--you); text-decoration: none; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  svg text { font-family: -apple-system, "Segoe UI", sans-serif; fill: var(--fg); }
+  /* language switching: only the selected language's data-l elements are shown */
+  body[data-lang="en"] [data-l]:not([data-l="en"]),
+  body[data-lang="ja"] [data-l]:not([data-l="ja"]),
+  body[data-lang="zh"] [data-l]:not([data-l="zh"]) { display: none; }
+</style>
+</head>
+<body data-lang="en">
+<header>
+  <div class="bar">
+    <strong><span data-l="en">SHORT TITLE</span><span data-l="ja">SHORT TITLE</span><span data-l="zh">SHORT TITLE</span></strong>
+    <div class="langs" role="group" aria-label="Language">
+      <button data-set="en">English</button><button data-set="ja">日本語</button><button data-set="zh">中文</button>
+    </div>
+  </div>
+</header>
+
+<main>
+<h1><span data-l="en">The question, as one sentence</span><span data-l="ja">問いを一文で</span><span data-l="zh">用一句话写出问题</span></h1>
+<p class="lead" data-l="en">What this page is for, and what it ends with (how it applies to your case).</p>
+<p class="lead" data-l="ja">このページの目的と、最後に何を説明するか（あなたのケースへの当てはめ）。</p>
+<p class="lead" data-l="zh">本页的目的，以及最后讲什么（如何套用到你的情况）。</p>
+
+<nav class="toc card">
+  <ol data-l="en"><li><a href="#s1">First idea</a></li><li><a href="#s2">Cast and ownership</a></li><li><a href="#s3">Flows</a></li><li><a href="#s4">Applied to your case</a></li></ol>
+  <ol data-l="ja"><li><a href="#s1">最初の考え方</a></li><li><a href="#s2">登場人物と所有</a></li><li><a href="#s3">流れ</a></li><li><a href="#s4">あなたのケースへの当てはめ</a></li></ol>
+  <ol data-l="zh"><li><a href="#s1">第一个概念</a></li><li><a href="#s2">角色与归属</a></li><li><a href="#s3">流程</a></li><li><a href="#s4">套用到你的情况</a></li></ol>
+</nav>
+
+<!-- Section: prose + code + key card -->
+<h2 id="s1"><span class="n">1</span><span data-l="en">First idea</span><span data-l="ja">最初の考え方</span><span data-l="zh">第一个概念</span></h2>
+<p data-l="en">Define the primitive plainly. Technical terms such as commit and tag stay in English in every language.</p>
+<p data-l="ja">基本となるものを平易に定義する。commit や tag などの技術用語は、どの言語でも English のまま。</p>
+<p data-l="zh">用平实的话定义最基础的概念。commit、tag 等技术术语在所有语言中都保持 English。</p>
+<pre><code>git tag v1 b706447           <span class="c"># code is shared; comments may be English</span></code></pre>
+<div class="card key">
+  <p data-l="en"><b>Key fact.</b> The one thing to remember from this section.</p>
+  <p data-l="ja"><b>要点。</b> この節で覚えておくべき一つのこと。</p>
+  <p data-l="zh"><b>要点。</b> 本节需要记住的一件事。</p>
+</div>
+
+<!-- Section: cast + ownership table -->
+<h2 id="s2"><span class="n">2</span><span data-l="en">Cast and ownership</span><span data-l="ja">登場人物と所有</span><span data-l="zh">角色与归属</span></h2>
+<div class="cast">
+  <div class="who you"><h3><span data-l="en">You</span><span data-l="ja">あなた</span><span data-l="zh">你</span></h3>
+    <div data-l="en">What you own.</div><div data-l="ja">あなたが持っているもの。</div><div data-l="zh">你拥有的东西。</div></div>
+  <div class="who other"><h3>Alice</h3>
+    <div data-l="en">A concrete third party.</div><div data-l="ja">具体的な第三者。</div><div data-l="zh">一个具体的第三方。</div></div>
+  <div class="who platform"><h3>GitHub</h3>
+    <div data-l="en">The platform in between.</div><div data-l="ja">間にあるプラットフォーム。</div><div data-l="zh">中间的平台。</div></div>
+  <div class="who bad"><h3><span data-l="en">Attacker</span><span data-l="ja">攻撃者</span><span data-l="zh">攻击者</span></h3>
+    <div data-l="en">What they have, and what they do not.</div><div data-l="ja">持っているもの、持っていないもの。</div><div data-l="zh">拥有什么，没有什么。</div></div>
+</div>
+<table>
+  <tr><th></th><th><span data-l="en">Owner</span><span data-l="ja">持ち主</span><span data-l="zh">所有者</span></th><th><span data-l="en">Who can change it</span><span data-l="ja">変更できる人</span><span data-l="zh">谁能修改</span></th></tr>
+  <tr><td><span data-l="en">A thing</span><span data-l="ja">あるもの</span><span data-l="zh">某样东西</span></td><td><span class="tag you">You</span></td><td><span class="tag you">You</span><span class="tag bad">Attacker</span></td></tr>
+  <tr><td><span data-l="en">Another thing</span><span data-l="ja">別のもの</span><span data-l="zh">另一样东西</span></td><td><span class="tag other">Alice</span></td><td><span class="tag other">Alice</span></td></tr>
+</table>
+<svg viewBox="0 0 600 120" role="img" aria-label="diagram">
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6e7781"/></marker></defs>
+  <rect x="10" y="30" width="200" height="60" rx="10" fill="none" stroke="#0b6bcb" stroke-width="2.5"/><text x="110" y="65" text-anchor="middle" font-size="14">Owned by YOU</text>
+  <rect x="390" y="30" width="200" height="60" rx="10" fill="none" stroke="#1a7f37" stroke-width="2.5"/><text x="490" y="65" text-anchor="middle" font-size="14">Owned by ALICE</text>
+  <line x1="212" y1="60" x2="386" y2="60" stroke="#6e7781" stroke-width="2" marker-end="url(#ar)"/><text x="300" y="50" text-anchor="middle" font-size="12">labels in English</text>
+</svg>
+<p class="c" data-l="en">Caption, translated.</p><p class="c" data-l="ja">キャプション（翻訳する）。</p><p class="c" data-l="zh">图注（需翻译）。</p>
+
+<!-- Section: normal flow vs changed flow + connection card -->
+<h2 id="s3"><span class="n">3</span><span data-l="en">Flows</span><span data-l="ja">流れ</span><span data-l="zh">流程</span></h2>
+<ol class="flow">
+  <li><span class="tag other">Alice</span><span data-l="en">does the normal thing.</span><span data-l="ja">いつもどおりのことをする。</span><span data-l="zh">照常操作。</span></li>
+  <li class="evil"><span class="tag bad">Attacker</span><span data-l="en">the one step that differs.</span><span data-l="ja">違いが生じる一つの段階。</span><span data-l="zh">唯一不同的那一步。</span></li>
+</ol>
+<div class="card bad">
+  <p data-l="en"><b>The connection, in one sentence:</b> the whole causal chain.</p>
+  <p data-l="ja"><b>つながりを一文で：</b> 因果の連鎖全体。</p>
+  <p data-l="zh"><b>一句话概括其中的联系：</b> 整条因果链。</p>
+</div>
+
+<!-- Section: applied to the user's real situation, facts verified -->
+<h2 id="s4"><span class="n">4</span><span data-l="en">Applied to your case</span><span data-l="ja">あなたのケースへの当てはめ</span><span data-l="zh">套用到你的情况</span></h2>
+<div class="card good">
+  <p data-l="en"><b>Where things stand today.</b> Real names and values, checked on the machine.</p>
+  <p data-l="ja"><b>現状。</b> 実際の名前と値（マシン上で確認済み）。</p>
+  <p data-l="zh"><b>当前状态。</b> 真实的名称和数值（已在机器上核实）。</p>
+</div>
+</main>
+<script>
+  const KEY = "explainer-lang";
+  function setLang(l) {
+    document.body.dataset.lang = l;
+    document.documentElement.lang = l === "zh" ? "zh-CN" : l;
+    document.querySelectorAll(".langs button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.set === l)));
+    try { localStorage.setItem(KEY, l); } catch (e) {}
+  }
+  document.querySelectorAll(".langs button").forEach(b => b.addEventListener("click", () => setLang(b.dataset.set)));
+  let initial = "";
+  try { initial = localStorage.getItem(KEY) || ""; } catch (e) {}
+  // the key is shared by every explainer page, so a stored language this page does not offer is ignored
+  const offered = Array.from(document.querySelectorAll(".langs button"), b => b.dataset.set);
+  if (!offered.includes(initial)) { const n = (navigator.language || "en").toLowerCase(); initial = n.startsWith("ja") ? "ja" : n.startsWith("zh") ? "zh" : "en"; }
+  setLang(initial);
+</script>
+</body>
+</html>
