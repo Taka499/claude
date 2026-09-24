@@ -146,6 +146,16 @@ Extracted from `Taka499/ss-assist` (CLAUDE.md, `_docs/execplan-*.md`, source, wo
 
 **Chain workflows on `pull_request: types: [closed]` with a `merged == true` guard for automated promotion.** A `closed` event fires on both merge and abandon; `if: github.event.pull_request.merged == true` is mandatory. Also check whether the target PR already exists before creating it, so repeated triggers are idempotent (ss-assist `promote-to-main.yml`).
 
+## Cloudflare Workers deployment
+
+**A wrangler environment inherits the top-level `routes`, custom domains included.** An `[env.<name>]` without its own `routes` line, deployed, offers to move the production hostname onto the new Worker ("Update them to point to this script instead? (Y/n)") — Y takes production down. `wrangler deploy --dry-run` warns about it ("inherits the top-level `routes` configuration"), which is only useful if the warning is read (global `CLAUDE.md` § Debugging). Give every non-production environment `routes = []` (or its own routes), and pin it with a test that parses `wrangler.toml` with `Bun.TOML.parse` and requires every `env.*` table to declare `routes` (nudge, 2026-09-24; `vars` are not inherited, `routes` are).
+
+## Bun install and tooling traps
+
+**`bun install`/`bun add` can hang forever at "Resolving dependencies" after an earlier install was interrupted.** Verbose output shows `304 Not Modified` for the first manifest and then no further request. Pointing `BUN_INSTALL_CACHE_DIR` at an empty directory fixes it; the same run then completes in about a second (bun 1.3.5, three occurrences, nudge 2026-09-23).
+
+**macOS has no `timeout` command.** `timeout 90 bun …` fails with "command not found", and in a chained or silenced command that looks like the guarded command simply did nothing. Use `perl -e 'alarm 90; exec @ARGV' bun …` (exit status 142 when the alarm fires).
+
 ## Internationalization
 
 **Resolve translations with a per-key fallback to a single designated base locale, and log a warning when even that misses.** Traversing the dotted key path and, on any `undefined`, re-traversing against the base locale keeps a partially-translated locale usable instead of rendering blank UI; returning the raw key as a last resort makes gaps visible in the running app (ss-assist `i18n/index.ts`).
