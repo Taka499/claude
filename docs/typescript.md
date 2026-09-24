@@ -156,6 +156,8 @@ Extracted from `Taka499/ss-assist` (CLAUDE.md, `_docs/execplan-*.md`, source, wo
 
 **macOS ships no `timeout` command** (GNU coreutils provides one if installed, as `gtimeout` or as `timeout` on a `gnubin` PATH — so do not rely on either its absence or its presence). `timeout 90 bun …` fails with "command not found", and in a chained or silenced command that looks like the guarded command simply did nothing. Use `perl -e 'alarm 90; exec @ARGV' bun …` (exit status 142 when the alarm fires).
 
+**`new Bun.Glob(pattern).scan()` skips hidden directories such as `.github` unless you pass `dot: true`.** A test that scanned `.github/workflows/*.yml` without it found zero files; its loop body never ran, so without a guard it would have passed while checking nothing. Any test that iterates over scanned files should first assert the set is non-empty (`expect(files.length).toBeGreaterThan(0)`) — that assertion is what caught this. Match `*.{yml,yaml}` too: GitHub accepts both extensions for workflows and `action.yml`. `Bun.YAML.parse` and `Bun.TOML.parse` are both built in, so such checks need no dependency (bun 1.3.5, nudge `src/pinning.test.ts`, 2026-09-24).
+
 ## Internationalization
 
 **Resolve translations with a per-key fallback to a single designated base locale, and log a warning when even that misses.** Traversing the dotted key path and, on any `undefined`, re-traversing against the base locale keeps a partially-translated locale usable instead of rendering blank UI; returning the raw key as a last resort makes gaps visible in the running app (ss-assist `i18n/index.ts`).
