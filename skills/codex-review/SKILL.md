@@ -101,7 +101,7 @@ Three things decide whether this call is worth anything:
 - **Ask what you actually fear**, not "review this". Generic prompts return generic prose. Name the thing: does the happy path still produce identical output, does a retry double-apply, does removing this guard swallow an error that should surface.
 - **Force the verdict line, and put it last.** Without the contract you get an essay you cannot act on, and no way to tell a clean review from an inconclusive one. Asking for a line that both "ends" the response and is "followed by" the findings is not a contract — asked that way, Codex emitted the whole verdict block twice.
 
-Codex output is long — read the tail for the findings and the verdict. That is the other reason the verdict goes last: it makes `tail` a contract rather than a guess. If the call outlives the harness's per-call ceiling, run it in the background rather than shortening the prompt.
+Codex output is long — read the tail for the findings and the verdict. That is the other reason the verdict goes last: it makes `tail` a contract rather than a guess. When waiting for the run in the background, wait for the process to exit or for a line that is *exactly* `CODEX VERDICT: LGTM` or `CODEX VERDICT: CHANGES REQUESTED` (`grep -qE '^CODEX VERDICT: (LGTM|CHANGES REQUESTED)$'`) — never for the bare phrase, because Codex echoes the prompt into its log, and the prompt contains the phrase. A wait keyed on the phrase ends before Codex has read the diff. If the call outlives the harness's per-call ceiling, run it in the background rather than shortening the prompt.
 
 ### 3. Evaluate every finding — this is the step that is not optional
 
