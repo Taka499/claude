@@ -154,7 +154,7 @@ Extracted from `Taka499/ss-assist` (CLAUDE.md, `_docs/execplan-*.md`, source, wo
 
 **`bun install`/`bun add` can hang forever at "Resolving dependencies" after an earlier install was interrupted.** Verbose output shows `304 Not Modified` for the first manifest and then no further request. Pointing `BUN_INSTALL_CACHE_DIR` at an empty directory fixes it; the same run then completes in about a second (bun 1.3.5, three occurrences, nudge 2026-09-23).
 
-**macOS has no `timeout` command.** `timeout 90 bun …` fails with "command not found", and in a chained or silenced command that looks like the guarded command simply did nothing. Use `perl -e 'alarm 90; exec @ARGV' bun …` (exit status 142 when the alarm fires).
+**macOS ships no `timeout` command** (GNU coreutils provides one if installed, as `gtimeout` or as `timeout` on a `gnubin` PATH — so do not rely on either its absence or its presence). `timeout 90 bun …` fails with "command not found", and in a chained or silenced command that looks like the guarded command simply did nothing. Use `perl -e 'alarm 90; exec @ARGV' bun …` (exit status 142 when the alarm fires).
 
 ## Internationalization
 

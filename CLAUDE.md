@@ -57,7 +57,7 @@ Let machines enforce what code review used to catch — size, complexity, and ty
 - MUST diagnose the root cause before attempting fixes — NEVER quick-fix by hardcoding values or papering over symptoms.
 - MUST check git history/diffs when investigating regressions.
 - NEVER trust an error string as the only evidence; reproduce deterministically where possible.
-- When trimming a command's output (`grep`, `tail`, `head`), MUST keep every warning and error line — above all for dry runs, previews and deploys. A dry run whose warning was filtered away protects nothing: the one line that mattered is the one the filter dropped.
+- When trimming a command's output (`grep`, `tail`, `head`), MUST keep every warning and error line whose cause is not already documented — above all for dry runs, previews and deploys. A dry run whose warning was filtered away protects nothing: the one line that mattered is the one the filter dropped. A *named* diagnostic written down as benign MAY be filtered — `failed to store: 100001` on push, per the `Taka499/claude` repo's `plans/0006-sandbox-vs-agent-config-paths.md` § Separately. Suppressing a whole severity is not that: `… | grep "^error"` drops every warning including the ones nobody has classified yet, and it reports the *filter's* status rather than the command's — a failing build matches and exits 0 while a clean one exits 1, so the check is inverted as well as blind. A filter MUST name what it drops, and MUST let the command's own exit status through — redirect to a file and filter *that*, so `$?` is still the command's (`${PIPESTATUS[0]}` is bash-only: zsh leaves `PIPESTATUS` empty and spells it `${pipestatus[1]}`, indexed from 1, so the portable move is not to pipe). Filtering what you have explained is hygiene; filtering what you have not is how a deploy warning dies.
 
 ## Skills
 
@@ -90,7 +90,7 @@ When something worth remembering is learned, MUST first choose the right destina
 - **Repeatable executable workflows** → a skill in `skills/`
 - **Facts about the user or preferences not derivable from code** → file-based memory
 
-A capture that changes shared guidance (a stack note, a rule here) MUST be additive while existing projects still follow the current guidance: add the new approach beside the old one with a criterion for choosing between them, and replace the old one only once nothing depends on it. A projects-wide rewrite through a documentation edit is scope creep, and the projects that followed the old text are left contradicting their own harness.
+A capture that changes shared guidance (a stack note, a rule here) MUST be additive while existing projects still follow the current guidance: add the new approach beside the old one with a criterion for choosing between them, and replace the old one only once nothing depends on it. A projects-wide rewrite through a documentation edit is scope creep, and the projects that followed the old text are left contradicting their own harness. This binds *alternatives*, not *corrections*: where guidance is wrong, unsafe, or contradicted by another rule, propose replacing it in place instead of preserving it beside the new text — subject to the confirmation requirement below, like any other capture — and say in the fix what changed and what a project still on the old text should do.
 
 MUST confirm with the user before persisting anything. After completing a task, SHOULD review the session for corrections, redirections, or repeated instructions and propose captures — the `/harvest-session` skill runs this ritual on demand.
 

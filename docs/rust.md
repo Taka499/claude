@@ -114,7 +114,16 @@ Extracted from `Taka499/gakumas-rehearsal-automation` (CLAUDE.md, `docs/adr/*`, 
 
 **Compilation and unit tests prove nothing about interaction wiring — schedule a hands-on acceptance pass for anything a human clicks.** The right-click-to-copy feature was fully green in CI and completely inert in the app because the widget didn't sense clicks. (gakumas EXECPLAN_IMAGE_COPY_TO_CLIPBOARD)
 
-**Document your expected-warning baseline and filter for real failures.** With ~30 known-benign warnings, the working command becomes `cargo check 2>&1 | grep "^error"`; otherwise every build looks broken and nobody reads the output. (gakumas CLAUDE.md, "Build Commands")
+**Document your expected-warning baseline and filter against *that*, not against severity.** With ~30 known-benign warnings every build looks broken and nobody reads the output — but `cargo check 2>&1 | grep "^error"` is the wrong cure twice over. It hides every warning, including ones nobody has classified yet, and it yields *grep's* exit status, so a failing build matches and exits 0 while a clean build exits 1 — measured, the check is inverted. Record the known warnings in a baseline file, then show whatever is *not* in it and hand back cargo's own status:
+
+```sh
+out=./check.log
+cargo check > "$out" 2>&1; rc=$?
+grep -vxFf warnings-baseline.txt "$out"   # anything unclassified, new warnings included
+exit "$rc"                                # cargo's status, never grep's
+```
+
+Two shell traps here, both measured. `${PIPESTATUS[0]}` is bash-only — zsh leaves `PIPESTATUS` empty and keeps the value in `${pipestatus[1]}`, indexed from 1 — which is why this redirects instead of piping. And `status` is a **read-only** parameter in zsh, an alias for `$?`, so `status=$?` aborts the line with `read-only variable: status`; name it `rc`. Checked in both zsh and bash: a clean build prints nothing and exits 0, a broken one prints only the unclassified `error[E0382]` line and exits 101. (gakumas CLAUDE.md, "Build Commands"; corrected 2026-09-24 — see global `CLAUDE.md` § Debugging.)
 
 **After any bulk `replace_all`-style edit, grep to confirm you got them all.** A differently-indented occurrence survived a global replace and was only caught by the follow-up grep. Relatedly, acceptance criteria phrased as textual occurrence counts should be phrased as *definition-site* counts, since imports and comments also match. (gakumas EXECPLAN_SUSTAINABILITY_REFACTOR)
 
