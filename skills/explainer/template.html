@@ -30,6 +30,7 @@
   h1 { font-size: 27px; line-height: 1.3; margin: 28px 0 8px; }
   h2 { font-size: 21px; margin: 44px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
   h2 .n { color: var(--you); margin-right: 8px; }
+  h2[id] { scroll-margin-top: 64px; } /* keep TOC targets clear of the sticky header */
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; background: var(--code); padding: 1px 5px; border-radius: 4px; }
   pre { background: var(--code); padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 14px; line-height: 1.55; }
   pre code { background: none; padding: 0; }
@@ -156,7 +157,9 @@
   document.querySelectorAll(".langs button").forEach(b => b.addEventListener("click", () => setLang(b.dataset.set)));
   let initial = "";
   try { initial = localStorage.getItem(KEY) || ""; } catch (e) {}
-  if (!initial) { const n = (navigator.language || "en").toLowerCase(); initial = n.startsWith("ja") ? "ja" : n.startsWith("zh") ? "zh" : "en"; }
+  // the key is shared by every explainer page, so a stored language this page does not offer is ignored
+  const offered = Array.from(document.querySelectorAll(".langs button"), b => b.dataset.set);
+  if (!offered.includes(initial)) { const n = (navigator.language || "en").toLowerCase(); initial = n.startsWith("ja") ? "ja" : n.startsWith("zh") ? "zh" : "en"; }
   setLang(initial);
 </script>
 </body>

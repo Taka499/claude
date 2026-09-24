@@ -42,7 +42,7 @@ Building blocks, all in the template:
 
 ## 4. Languages
 
-Default set: English, 日本語, 中文 (simplified) — ask only if the user wants a different set. Every translatable element carries `data-l="en|ja|zh"`; CSS shows only the selected language; the switcher remembers the choice in `localStorage` and otherwise follows the browser language.
+Default set: English, 日本語, 中文 (simplified) — ask only if the user wants a different set; a different set means changing the switcher buttons, the `body[data-lang=…]` CSS rules, and the browser-language mapping in the script together. Every translatable element carries `data-l="en|ja|zh"`; CSS shows only the selected language; the switcher remembers the choice in `localStorage` and otherwise follows the browser language.
 
 - **Keep technical terms and proper nouns in English in every language** — commit, hash, tag, branch, job, step, workflow, action, repository, token, permission, pull request, release, fork, and the like. The user links these concepts by their English names; katakana or Chinese translations break that link. Ordinary words stay translated. Put a space between an English term and the surrounding CJK text.
 - **Write each language directly.** Do not produce one language and convert it by find-and-replace: a mechanical pass once stripped the spaces around inline code and mangled a heading, and had to be redone from a backup.
