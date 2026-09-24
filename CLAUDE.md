@@ -57,6 +57,7 @@ Let machines enforce what code review used to catch — size, complexity, and ty
 - MUST diagnose the root cause before attempting fixes — NEVER quick-fix by hardcoding values or papering over symptoms.
 - MUST check git history/diffs when investigating regressions.
 - NEVER trust an error string as the only evidence; reproduce deterministically where possible.
+- When trimming a command's output (`grep`, `tail`, `head`), MUST keep every warning and error line — above all for dry runs, previews and deploys. A dry run whose warning was filtered away protects nothing: the one line that mattered is the one the filter dropped.
 
 ## Skills
 
@@ -88,6 +89,8 @@ When something worth remembering is learned, MUST first choose the right destina
 - **Project-scoped rules or facts** → that project's `CLAUDE.md` / ADRs / plan Decision Log
 - **Repeatable executable workflows** → a skill in `skills/`
 - **Facts about the user or preferences not derivable from code** → file-based memory
+
+A capture that changes shared guidance (a stack note, a rule here) MUST be additive while existing projects still follow the current guidance: add the new approach beside the old one with a criterion for choosing between them, and replace the old one only once nothing depends on it. A projects-wide rewrite through a documentation edit is scope creep, and the projects that followed the old text are left contradicting their own harness.
 
 MUST confirm with the user before persisting anything. After completing a task, SHOULD review the session for corrections, redirections, or repeated instructions and propose captures — the `/harvest-session` skill runs this ritual on demand.
 
