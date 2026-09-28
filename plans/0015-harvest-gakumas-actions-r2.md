@@ -4,7 +4,7 @@
 
 Two lessons from the gakumas-supportcards project generalise beyond it and cost real time there. Both are platform behaviour that no test catches, and both fail silently:
 
-- **GitHub Actions (2026-09-22).** A daily data-update job was designed to open a PR, let the checks run on it, merge it, and let the push to `main` deploy. With the built-in `GITHUB_TOKEN` none of that happens. A PR opened with that token starts no workflows, and neither does a merge made with it. Scheduled workflows also run only from the default branch, so a separate `prod` branch was not an option either.
+- **GitHub Actions (2026-09-22).** A daily data-update job was designed to open a PR, let the checks run on it, merge it, and let the push to `main` deploy. With the built-in `GITHUB_TOKEN` none of that happens. A PR opened with that token starts no workflows, and neither does a merge made with it. Scheduled workflows also run only from the default branch, so a separate `prod` branch would have meant the default branch's workflow running `prod`'s code.
 - **Cloudflare R2 (2026-09-21).** Private master images had been uploaded with `wrangler r2 object put --cache-control "public, max-age=31536000, immutable"`, on the reasoning that they were never served to users, so caching did not matter. They were later overwritten with corrected versions. The Cloudflare dashboard kept showing the old images, because the stored Cache-Control is returned on dashboard downloads too, and the browser honoured `immutable`. The bucket looked stale. Comparing checksums of `wrangler r2 object get … --remote` against the local files showed it was correct.
 
 ## Changes
@@ -31,6 +31,7 @@ Two lessons from the gakumas-supportcards project generalise beyond it and cost 
 - **The 60-day rule is limited to public repositories.** GitHub documents the automatic disable for public repositories. The capture prompt and `python.md` both stated it without that limit, and the user approved the in-place fix.
 - **The debugging corollary goes in the global file.** It isn't specific to Cloudflare: a browser cache can make correct data look stale for any data source.
 - **No ADR.** Prose notes, trivially reversible; fails gate one.
+- **Codex review (2026-09-29, CHANGES REQUESTED), all three accepted.** (1) MEDIUM: the schedule text said a scheduled job cannot run another branch's code and that a `prod` branch "does not work"; `actions/checkout` with `ref:` can do it, so the real objection is version skew between the default branch's workflow and the checked-out code. Reworded in `docs/github-actions.md` and the `docs/python.md` caveat; the default-branch-as-production advice became "prefer". (2) LOW: the caveats cited a shortened section name; now the full heading. (3) LOW: "returned on every download" overstated R2; narrowed to downloads that pass the stored metadata through, with the dashboard as the observation.
 
 ## Evidence (gakumas-supportcards)
 

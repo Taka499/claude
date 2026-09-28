@@ -136,7 +136,7 @@ Extracted from `Taka499/info-gathering` on 2026-08-05. Rules here apply to any P
 
 **A brand-new repo can fail to register its workflow on the first push; the fix is a commit that modifies the workflow file itself.** After `gh repo create --push`, the file existed on the default branch and Actions reported `enabled: true`, yet `GET /actions/workflows` stayed at `total_count: 0` for many minutes — the initial push apparently raced the Actions app installation. An empty commit did **not** fix it; touching the workflow file and pushing registered it within seconds (info-gathering, 2026-06-11).
 
-**Decide explicitly which branch the scheduled job checks out, and document that merging to it *is* the deploy.** The cron checks out the code repo's default branch, so "deploy" means merging the working branch to it and pushing — a fact worth stating in CLAUDE.md, because there is no other deploy artifact to hint at it (info-gathering). The schedule also uses the workflow file from the default branch, so a separate production branch does not work (`docs/github-actions.md` § Automated jobs).
+**Decide explicitly which branch the scheduled job checks out, and document that merging to it *is* the deploy.** The cron checks out the code repo's default branch, so "deploy" means merging the working branch to it and pushing — a fact worth stating in CLAUDE.md, because there is no other deploy artifact to hint at it (info-gathering). The schedule also uses the workflow file from the default branch, so checking out a separate production branch with `ref:` runs one branch's workflow against another branch's code (`docs/github-actions.md` § Automated jobs: the built-in token and the schedule).
 
 ## Configuration and CLI shape for batch tools
 
