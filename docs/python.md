@@ -130,13 +130,13 @@ Extracted from `Taka499/info-gathering` on 2026-08-05. Rules here apply to any P
 
 **Use `git diff --cached --quiet || git commit` so a no-change run doesn't fail the workflow.** Committing generated state unconditionally makes every quiet run red; this one-liner makes the commit conditional (info-gathering).
 
-**Note that state commits keep the schedule alive.** GitHub disables scheduled workflows after 60 days of repository inactivity; a bot that commits its own state into the repo where the workflow lives is self-sustaining, whereas a bot that writes nothing back will silently stop after two months.
+**Note that state commits keep the schedule alive.** In a public repository GitHub disables scheduled workflows after 60 days of repository inactivity; a bot that commits its own state into the repo where the workflow lives is self-sustaining, whereas a bot that writes nothing back will silently stop after two months.
 
 **Offset cron minutes off the hour.** `17 */6 * * *` rather than `0 */6 * * *` avoids the top-of-hour scheduling rush, where free-tier scheduled runs are commonly delayed.
 
 **A brand-new repo can fail to register its workflow on the first push; the fix is a commit that modifies the workflow file itself.** After `gh repo create --push`, the file existed on the default branch and Actions reported `enabled: true`, yet `GET /actions/workflows` stayed at `total_count: 0` for many minutes — the initial push apparently raced the Actions app installation. An empty commit did **not** fix it; touching the workflow file and pushing registered it within seconds (info-gathering, 2026-06-11).
 
-**Decide explicitly which branch the scheduled job checks out, and document that merging to it *is* the deploy.** The cron checks out the code repo's default branch, so "deploy" means merging the working branch to it and pushing — a fact worth stating in CLAUDE.md, because there is no other deploy artifact to hint at it (info-gathering).
+**Decide explicitly which branch the scheduled job checks out, and document that merging to it *is* the deploy.** The cron checks out the code repo's default branch, so "deploy" means merging the working branch to it and pushing — a fact worth stating in CLAUDE.md, because there is no other deploy artifact to hint at it (info-gathering). The schedule also uses the workflow file from the default branch, so checking out a separate production branch with `ref:` runs one branch's workflow against another branch's code (`docs/github-actions.md` § Automated jobs: the built-in token and the schedule).
 
 ## Configuration and CLI shape for batch tools
 

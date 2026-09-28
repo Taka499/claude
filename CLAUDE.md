@@ -57,6 +57,7 @@ Let machines enforce what code review used to catch — size, complexity, and ty
 - MUST diagnose the root cause before attempting fixes — NEVER quick-fix by hardcoding values or papering over symptoms.
 - MUST check git history/diffs when investigating regressions.
 - NEVER trust an error string as the only evidence; reproduce deterministically where possible.
+- When a symptom only shows up in a browser, compare checksums of the data outside the browser before touching the data — a cache can make correct data look stale (see `docs/cloudflare.md` § R2 object storage).
 - When trimming a command's output (`grep`, `tail`, `head`), MUST keep every warning and error line whose cause is not already documented — above all for dry runs, previews and deploys. A dry run whose warning was filtered away protects nothing: the one line that mattered is the one the filter dropped. A *named* diagnostic written down as benign MAY be filtered — `failed to store: 100001` on push, per the `Taka499/claude` repo's `plans/0006-sandbox-vs-agent-config-paths.md` § Separately. Suppressing a whole severity is not that: `… | grep "^error"` drops every warning including the ones nobody has classified yet, and it reports the *filter's* status rather than the command's — a failing build matches and exits 0 while a clean one exits 1, so the check is inverted as well as blind. A filter MUST name what it drops, and MUST let the command's own exit status through — redirect to a file and filter *that*, so `$?` is still the command's (`${PIPESTATUS[0]}` is bash-only: zsh leaves `PIPESTATUS` empty and spells it `${pipestatus[1]}`, indexed from 1, so the portable move is not to pipe). Filtering what you have explained is hygiene; filtering what you have not is how a deploy warning dies.
 
 ## Skills
@@ -80,6 +81,8 @@ Distilled cross-project lessons, extracted from real projects. MUST read the rel
 - Rust (incl. Windows apps, egui, cargo/test gotchas) → [`docs/rust.md`](docs/rust.md)
 - TypeScript / React / web frontends → [`docs/typescript.md`](docs/typescript.md)
 - Python (uv, pipelines, testing) → [`docs/python.md`](docs/python.md)
+- GitHub Actions (built-in token, schedules, automated PRs) → [`docs/github-actions.md`](docs/github-actions.md)
+- Cloudflare (R2, platform behaviour) → [`docs/cloudflare.md`](docs/cloudflare.md)
 
 ## Continuous Learning
 

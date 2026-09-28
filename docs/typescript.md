@@ -138,13 +138,13 @@ Extracted from `Taka499/ss-assist` on 2026-08-05. Rules here apply to any TS/web
 
 **Automate the release chore with a one-line npm script.** `"release": "git push origin develop --tags && gh pr create --base main --head develop --fill"` combined with `npm version patch|minor|major` removes every manual step between "I'm done" and "there's a reviewable release PR."
 
-**For bot-authored data updates, open a PR — don't push directly.** `peter-evans/create-pull-request` with a fixed `branch:` and `delete-branch: true` keeps re-runs idempotent (it updates the existing PR instead of opening a new one each week). Constrain `add-paths:` so the bot can only touch data directories (ss-assist).
+**For bot-authored data updates, open a PR — don't push directly.** `peter-evans/create-pull-request` with a fixed `branch:` and `delete-branch: true` keeps re-runs idempotent (it updates the existing PR instead of opening a new one each week). Constrain `add-paths:` so the bot can only touch data directories (ss-assist). With the default `GITHUB_TOKEN` that PR runs no checks — run the gates in the job instead (`docs/github-actions.md` § Automated jobs: the built-in token and the schedule).
 
 **Encode "nothing changed" as a distinct exit code from your sync script and branch on it in the workflow.** Exit 2 for no-changes, 0 for changes, anything else for real failure; the workflow maps that to a `has_changes` output guarding every later step. This distinguishes "quiet week" from "the scraper broke," which a boolean or an empty diff cannot (ss-assist).
 
 **Write multi-line PR bodies to a file and use `--body-file` / `body-path`.** Interpolating multi-line strings through `$GITHUB_OUTPUT` is fragile; a temp file is not. Include a human review checklist in generated PR bodies so the reviewer knows what a bot cannot verify.
 
-**Chain workflows on `pull_request: types: [closed]` with a `merged == true` guard for automated promotion.** A `closed` event fires on both merge and abandon; `if: github.event.pull_request.merged == true` is mandatory. Also check whether the target PR already exists before creating it, so repeated triggers are idempotent (ss-assist).
+**Chain workflows on `pull_request: types: [closed]` with a `merged == true` guard for automated promotion.** A `closed` event fires on both merge and abandon; `if: github.event.pull_request.merged == true` is mandatory. Also check whether the target PR already exists before creating it, so repeated triggers are idempotent (ss-assist). This never fires when the merge was made with `GITHUB_TOKEN` — call the next workflow with `workflow_call` instead (`docs/github-actions.md` § Automated jobs: the built-in token and the schedule).
 
 ## Cloudflare Workers deployment
 
