@@ -44,6 +44,8 @@ If a checkout has already failed halfway, do not re-run it. Establish what the w
 
 `gh` fails every API call with `x509: OSStatus -26276`. It is a Go binary that verifies certificates through the macOS keychain, which the sandbox blocks; `sandbox.network.allowedDomains` cannot fix a trust-store problem. Proven by contrast: `python3` reached `api.github.com` with HTTP 200 and `git ls-remote` succeeded over the same network in the same session. Run `gh` with `dangerouslyDisableSandbox: true`. The related `failed to store: 100001` on push is the same keychain block and is cosmetic — the push authenticates and completes.
 
+> **Correction, 2026-10-03** (from `plans/0016-gh-sandbox-tls.md`): the cause given above is wrong for `gh`. The keychain is readable from inside the sandbox — `gh auth token` returns the stored token there. `-26276` (`errSecInternalComponent`) comes from certificate verification, which Go on macOS runs through the `com.apple.trustd.agent` service, and that service is what the sandbox blocks. Claude Code has a setting for exactly this, `sandbox.enableWeakerNetworkIsolation`; it is kept off for the trade-off recorded in plan 0016. The rest of the paragraph stands: the domain allowlist cannot fix it, and running `gh` outside the sandbox is still the workaround. The `failed to store: 100001` sentence was not re-tested.
+
 ## Verification
 
 - Path map above produced by probing each path with a sandboxed write.
