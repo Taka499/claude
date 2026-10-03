@@ -71,7 +71,7 @@ Prefer these user-level skills over doing the work by hand:
 - **Port a proven setup from a neighboring local repo** → `/adopt-from-sibling`
 - **End-of-task capture of session learnings** → `/harvest-session`
 - **Park an idea without building it** → `/backlog`
-- **Second opinion on a diff before committing** → `/codex-review` (Codex reviews it read-only; note the diff and its context leave the machine)
+- **Second opinion on a diff before committing** → `/codex-review` (Codex reviews it read-only; note the diff and its context leave the machine). SHOULD run it on every milestone pull request, not only the risky ones: on a four-milestone plan whose every diff had green tests, type check and lint, it found one real defect per milestone that the tests did not encode, two of them on the milestones that looked safe (gakumas-supportcards, 2026-09-28).
 - **Explain a concept the user is confused about as a page they can read** → `explainer` (self-contained HTML, built up from zero to their own case, English / 日本語 / 中文 switcher, technical terms kept in English)
 
 ## Stack Notes
