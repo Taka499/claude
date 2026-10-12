@@ -136,7 +136,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
   - **Two of the agent's own bugs were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
   - **The program-file case grows by one:** a shell running a script file, as in `printf … > s.sh; sh s.sh`, is no longer scanned. The global reference-transaction hook (plan 0020) holds there.
   - **Round 2 of Codex** found three things, all fixed: multi-stage pipes into a shell were missed (only the stage before the shell was read), launchers missing from a fixed list (`arch`, `setsid`) were not looked through, and `find -name git` was taken for a git run.
-  - **Verification:** 59 test methods pass. Eleven deliberate breakages each failed tests:
+  - **Verification:** 59 test methods pass. Nine deliberate breakages each failed tests:
     - no look-through;
     - a look-through that never accepts a `git` after an option;
     - one that always demands a known subcommand;
@@ -147,7 +147,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - builtins matching;
     - `gh pr merge` seen only first in a run.
 
-    Two of the eleven had at first survived: an alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test. Both now do.
+    Two of the nine had at first survived: an alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test. Both now do.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification
