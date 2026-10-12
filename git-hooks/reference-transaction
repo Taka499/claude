@@ -33,9 +33,10 @@ git() { command git -c core.commitGraph=false -c advice.graftFileDeprecated=fals
 # Only the user's own repositories: origin under github.com/Taka499 or tia-tools, or no origin at all.
 # Defined once in ~/.gitconfig, this hook runs in every repository, and a clone of someone else's project
 # (whose main takes direct commits upstream) must still pull. Read from config, which a sandboxed session
-# cannot change in .git/config.
-case "$(command git config --get remote.origin.url 2>/dev/null)" in
-    "" | *github.com[:/]Taka499/* | *github.com[:/]tia-tools/*) ;;
+# cannot change in .git/config. `remote get-url` applies url.<base>.insteadOf aliases, and GitHub owner
+# names are case-insensitive, so the comparison is in lower case.
+case "$(command git remote get-url origin 2>/dev/null | tr '[:upper:]' '[:lower:]')" in
+    "" | *github.com[:/]taka499/* | *github.com[:/]tia-tools/*) ;;
     *) cat > /dev/null; exit 0 ;;
 esac
 

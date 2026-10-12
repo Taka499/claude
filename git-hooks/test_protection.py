@@ -279,6 +279,13 @@ class OwnRepositoriesOnly(ProtectedRepoTest):
     def test_the_users_account_is_protected(self):
         self.assertFalse(self.direct_commit_moves_develop("git@github.com:Taka499/nudge.git"))
 
+    def test_the_owner_in_another_case_is_still_the_user(self):
+        self.assertFalse(self.direct_commit_moves_develop("https://github.com/taka499/nudge.git"))
+
+    def test_an_insteadof_alias_is_expanded(self):
+        self.repo.git("config", "url.https://github.com/Taka499/.insteadOf", "mine:")
+        self.assertFalse(self.direct_commit_moves_develop("mine:nudge.git"))
+
     def test_the_users_organization_is_protected(self):
         self.assertFalse(self.direct_commit_moves_develop("https://github.com/tia-tools/gakumas-supportcards.git"))
 
