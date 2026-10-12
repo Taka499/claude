@@ -8,10 +8,10 @@ user's permission for that operation. A permission rule matches command text onl
 
 It works from an allowlist. It stays silent only for git runs whose effect it can state exactly:
 read-only and index-only subcommands, listing or plainly creating a branch, switching to a named
-unprotected branch, fetching without a refspec, and writes to the current branch when that branch
+unprotected branch, fetching into remote-tracking refs or tags only, and writes to the current branch when that branch
 can be named and is unprotected. Everything else asks — every other subcommand (aliases,
 `update-ref`, `filter-branch`, `checkout`, …), a branch name that is a variable or an attached
-option, a refspec destination, git found inside another program's text, a program that is itself
+option, a refspec destination other than a remote-tracking ref or tag, git found inside another program's text, a program that is itself
 a variable, a `GIT_DIR`-style redirect, a `push`, a `gh pr merge`, unreadable hook input.
 Two rounds of review showed that listing dangerous shapes cannot be completed; listing safe ones can.
 
@@ -37,7 +37,7 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 PROTECTED = frozenset({"main", "master", "develop"})
 
@@ -83,18 +83,45 @@ TEXT_WRITES = CURRENT_BRANCH_WRITES | frozenset({
     "filter-branch", "filter-repo", "replace", "bisect", "fast-import",
 })
 
+# Git subcommands, for telling `env git commit` (a git run) from `sudo -u git true` (an option's value).
+KNOWN_SUBCOMMANDS = READ_ONLY | INDEX_ONLY | CURRENT_BRANCH_WRITES | TEXT_WRITES
+
 # git's global options that take a separate value (`git -C dir`, `git -c key=value`).
 GIT_OPTS_WITH_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"})
 
 SEPARATORS = frozenset({"&&", "||", ";", "|", "|&", "&", ";;"})
 
-# Print or read their arguments and never run them: only a `$(…)` or backtick inside is executed.
-NON_EXECUTING = frozenset({"echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "wc", "ls", "test", "["})
+# Programs that run text as shell commands: their arguments (`bash -c`, `eval`), their own heredoc, or what is
+# piped into them. Git found in that text is checked; in any other program's text it is not, so a Python
+# script rewriting a plan full of git prose does not ask (it did, 2026-10-12, costing the user an approval for
+# a markdown edit). Code an interpreter runs (python3, node, awk's system()) and a script file a shell runs
+# are the program-file case this hook cannot see; the global reference-transaction hook holds there.
+SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "eval", "source", ".", "alias"})
+# The ones that run their text in the current shell (an alias when it is used), so a `cd` in it moves it.
+BUILTIN_SHELLS = frozenset({"eval", "source", ".", "alias"})
+# Programs that only print their arguments, so a `git` among them is text, not a run (`echo git commit`).
+# Only as the run's own program: behind a launcher, `echo` may be an argument (`find echo -exec git commit`),
+# so `env echo git commit` asks. Missing a printer here costs a false ask, never a missed one. Piped into a shell, their words are still read,
+# and a process substitution among them (`echo <(git commit)`) is still looked through.
+PRINTERS = frozenset({"echo", "printf"})
 
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Point git at another repository or configuration: the target can no longer be named.
 GIT_REDIRECT_ENV = re.compile(r"^GIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)=")
-HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n\s*\2[ \t]*(?=\n|$)", re.S)
+# Shell words that open a group or a clause: the command after them is an ordinary run in the same shell.
+RESERVED_WORDS = frozenset({"{", "!", "if", "then", "else", "elif", "do", "while", "until"})
+
+# Words in front of a command that leave it running in the current shell (zsh's `noglob` and `nocorrect`).
+PRECOMMAND_MODIFIERS = frozenset({"builtin", "command", "noglob", "nocorrect"})
+
+# Builtins that change the shell's directory to an operand (zsh's `chdir` is `cd`).
+DIRECTORY_CHANGERS = frozenset({"cd", "chdir", "pushd"})
+CDPATH_ASSIGNMENT = re.compile(r"^(?:CDPATH|cdpath)\+?=")
+DIRECTORY_CHANGE_IN_TEXT = re.compile(r"(?:^|[\s;&|(=`'\"])(?:cd|chdir|pushd|popd)(?=$|[\s;&|)`'\"])")
+
+# Characters that end an unquoted shell word.
+METACHARACTERS = " \t\n;&|()<>"
+HEREDOC_MARK = re.compile(r"^__heredoc_(\d+)__$")
 # A git run inside free text: the subcommand after any global options.
 GIT_IN_TEXT = re.compile(
     r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path|config-env)(?:=\S+|\s+\S+)|-\S+))*"
@@ -119,6 +146,9 @@ class Invocation:
     directory: str | None | object
     env: tuple[str, ...]
     words: tuple[str, ...]
+    heredocs: tuple[str, ...] = ()
+    piped: bool = False  # its standard input is the previous run's output (`a | b`)
+    expanded: tuple[str, ...] = ()  # the heredocs with an unquoted delimiter, whose `$(…)` the shell runs
 
 
 @dataclass
@@ -129,53 +159,273 @@ class State:
     switched: dict[str, str] = field(default_factory=dict)
 
 
-def split_commands(command: str) -> tuple[list[Invocation], list[str]] | None:
-    """Split a shell command into its program runs (tracking `cd` and subshells) and its heredoc bodies.
+def split_commands(command: str) -> list[Invocation] | None:
+    """Split a shell command into its program runs, tracking `cd`, subshells, pipes and heredocs.
 
-    Returns None when the text cannot be tokenized (unbalanced quotes), so the caller falls back
-    to a coarser scan instead of trusting a partial parse.
+    Returns None when the text cannot be tokenized (unbalanced quotes) or uses quoting the hook does not
+    model (`$'…'`), so the caller falls back to a coarser scan instead of trusting a partial parse.
     """
-    bodies = [match.group(3) for match in HEREDOC.finditer(command)]
-    text = HEREDOC.sub("", command).replace("\n", " ; ")
+    try:
+        text, bodies = _set_aside_heredocs(command)
+    except _Unreadable:
+        return None
+    text = text.replace("\n", " ; ")
     lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    # Comments are gone already. Left to shlex, `#` would start one mid-word (`url#frag`), where bash does not,
+    # and with newlines joined above, the comment would swallow the rest of the command.
+    lexer.commenters = ""
     try:
-        tokens = list(lexer)
+        tokens = [part for token in lexer for part in _operators(token)]
     except ValueError:
         return None
     runs: list[Invocation] = []
     directory: str | None | object = None
     saved: list[str | None | object] = []
     current: list[str] = []
+    piped = False
+    cdpath = False  # a CDPATH set earlier in the command: `cd name` may land anywhere on it
     for token in tokens + [";"]:
-        if token not in SEPARATORS and token not in ("(", ")"):
+        if token not in SEPARATORS and token not in ("(", ")", "()"):  # `()`: a function header, `f() { …; }`
             current.append(token)
             continue
+        while current and (current[0] in RESERVED_WORDS or current[0] == "repeat"):
+            # `{ cd x; …}`, `if cd x; then git merge …`, zsh's `repeat 2 cd x`: the command follows the word
+            current = current[2:] if current[0] == "repeat" else current[1:]
         split = _env_prefix_length(current)
         env, words = tuple(current[:split]), tuple(current[split:])
+        read = [bodies[int(mark.group(1))] for word in words if (mark := HEREDOC_MARK.match(word))]
+        heredocs = tuple(text for text, _ in read)
+        expanded = tuple(text for text, quoted in read if not quoted)
+        words = tuple(word for word in words if not HEREDOC_MARK.match(word))
+        if any(CDPATH_ASSIGNMENT.match(word) for word in env + words):
+            cdpath = True
         changes_to = _directory_change(words)
+        if cdpath and isinstance(changes_to, str) and not changes_to.startswith(("/", "./", "../", "~")):
+            changes_to = UNKNOWN
         if changes_to is not None:
             directory = UNKNOWN if changes_to is UNKNOWN else _join(directory, str(changes_to))
         elif words or env:
-            runs.append(Invocation(directory, env, words))
+            runs.append(Invocation(directory, env, words, heredocs, piped, expanded))
+            if _moves_in_its_text(words):
+                directory = UNKNOWN
         current = []
+        piped = token in ("|", "|&")
         if token == "(":
             saved.append(directory)
         elif token == ")" and saved:
             directory = saved.pop()
-    return runs, bodies
+    return runs
+
+
+class _Unreadable(Exception):
+    """Shell text whose quoting the hook does not model; the caller falls back to the coarse scan."""
+
+
+@dataclass
+class _Level:
+    """One `$(…)` nesting level of shell text: its open quote, its open `(`s, its open `case`s."""
+
+    quote: str = ""
+    parens: int = 0
+    cases: int = 0
+
+
+def _operators(token: str) -> list[str]:
+    """A token split into shell operators when it is punctuation only: shlex keeps a run of punctuation as
+    one token, so `&&(` and `);` would otherwise hide a separator or a subshell from the run splitting.
+    A process substitution's `<(` or `>(` stays one word, so what it runs stays in the run it feeds, and so
+    does zsh's clobbering redirection `>|` (`>&|`, `&>|`), which writes a file and is no pipe."""
+    if not token or any(char not in "();<>|&" for char in token):
+        return [token]
+    return re.findall(r"&&|\|\||;;|\|&|\(\)|[<>]\(|>&?\||&>>?\|?|[<>]+&?|[;|&()]", token)
+
+
+def _set_aside_heredocs(command: str) -> tuple[str, list[tuple[str, bool]]]:
+    """The command with each heredoc replaced by a marker word and its comments removed, and the bodies,
+    each with whether its delimiter was quoted (so the shell expands nothing in it).
+
+    It follows the rules zsh and bash share, because text it takes for a body is never read as commands,
+    and a quote left in a misread body can hide the commands after it from the lexer below.
+    - A `<<WORD` counts only outside quotes and comments, and not inside arithmetic (`$((1 <<EOF))` shifts).
+    - Quotes nest: `'…'`, `"…"`, and a fresh level inside each `$(…)`, which a `case` pattern's `)` does
+      not close.
+    - Every `<<WORD` on a line takes a body, in order, from the lines after it; each body ends at the first
+      line equal to its delimiter (leading tabs removed for `<<-`), or with the command.
+    Raises _Unreadable on `$'…'` quoting outside quotes, in a heredoc's word too: its escapes would shift
+    where quotes close (`$'\\''` is one quote character), and the lexer below has no such quoting.
+    """
+    out: list[str] = []
+    bodies: list[tuple[str, bool]] = []
+    pending: list[tuple[str, bool, bool]] = []  # this line's heredocs: (delimiter, strip tabs, quoted)
+    levels = [_Level()]
+    index = 0
+    while index < len(command):
+        char, level = command[index], levels[-1]
+        step = 1
+        if level.quote == "'":
+            level.quote = "" if char == "'" else "'"
+        elif char == "\\":
+            step = 2
+        elif command.startswith(("$((", "$["), index) or (command.startswith("((", index) and not level.quote):
+            step = _arithmetic_end(command, index) - index
+        elif command.startswith("$(", index):
+            levels.append(_Level())
+            step = 2
+        elif level.quote == '"':
+            level.quote = "" if char == '"' else '"'
+        elif command.startswith("$'", index):
+            raise _Unreadable(command)
+        elif char in "'\"":
+            level.quote = char
+        elif char == "(":
+            level.parens += 1
+        elif char == ")":
+            if level.parens:
+                level.parens -= 1
+            elif not level.cases and len(levels) > 1:
+                levels.pop()
+        elif _word_at(command, index, "case"):
+            level.cases += 1
+        elif _word_at(command, index, "esac"):
+            level.cases = max(0, level.cases - 1)
+        elif char == "#" and (index == 0 or command[index - 1] in METACHARACTERS):
+            newline = command.find("\n", index)
+            index = len(command) if newline < 0 else newline  # a comment: dropped, the lexer must not read `#`
+            continue
+        elif command.startswith("<<", index) and (index == 0 or command[index - 1] != "<") and \
+                (operator := _heredoc_operator(command, index)):  # `<<<` is a here-string: no word follows
+            delimiter, strip, quoted, index = operator
+            out.append(f" __heredoc_{len(bodies) + len(pending)}__ ")
+            pending.append((delimiter, strip, quoted))
+            continue
+        elif char == "\n" and pending:
+            out.append("\n")
+            index += 1
+            for delimiter, strip, quoted in pending:
+                body, index = _heredoc_body(command, index, delimiter, strip, quoted)
+                bodies.append((body, quoted))
+            pending = []
+            continue
+        out.append(command[index:index + step])
+        index += step
+    bodies.extend(("", True) for _ in pending)  # heredocs on the last line: their bodies end with the command
+    return "".join(out), bodies
+
+
+def _word_at(command: str, index: int, word: str) -> bool:
+    """Whether `word` stands alone at `index`, as a shell word."""
+    after = index + len(word)
+    return command.startswith(word, index) and (index == 0 or command[index - 1] in METACHARACTERS) and (
+        after == len(command) or command[after] in METACHARACTERS)
+
+
+def _arithmetic_end(command: str, index: int) -> int:
+    """Where the arithmetic starting at `index` (`$((`, `((` or `$[`) ends, or the command's end."""
+    opener, closer = ("[", "]") if command.startswith("$[", index) else ("(", ")")
+    depth = 0
+    for position in range(command.index(opener, index), len(command)):
+        if command[position] == opener:
+            depth += 1
+        elif command[position] == closer:
+            depth -= 1
+            if depth == 0:
+                return position + 1
+    return len(command)
+
+
+def _heredoc_operator(command: str, index: int) -> tuple[str, bool, bool, int] | None:
+    """The `<<WORD` or `<<-WORD` at `index`: (the delimiter unquoted, strip tabs, quoted, where it ends).
+
+    None when no word follows, or its quote never closes: the shell refuses such a command.
+    """
+    position = index + 2
+    strip = command.startswith("-", position)
+    position += strip
+    while position < len(command) and command[position] in " \t":
+        position += 1
+    word: list[str] = []
+    quote, quoted = "", False
+    while position < len(command):
+        char = command[position]
+        if quote:
+            if char == quote:
+                quote = ""
+            elif char == "\\" and quote == '"' and command[position + 1:position + 2] in ('"', "\\", "$", "`"):
+                position += 1
+                word.append(command[position])
+            else:
+                word.append(char)
+        elif char in METACHARACTERS:
+            break
+        elif command.startswith("$'", position):
+            raise _Unreadable(command)
+        elif char in "'\"":
+            quote, quoted = char, True
+        elif char == "\\":
+            quoted = True
+            position += 1
+            word.append(command[position:position + 1])
+        else:
+            word.append(char)
+        position += 1
+    if quote or not (word or quoted):
+        return None
+    return "".join(word), strip, quoted, position
+
+
+def _heredoc_body(command: str, index: int, delimiter: str, strip: bool, quoted: bool) -> tuple[str, int]:
+    """The heredoc body starting at `index`, and where the text after its delimiter line starts.
+
+    With an unquoted delimiter, a line ending in an odd number of backslashes runs on into the next, so
+    `x\\` then `EOF` is not a delimiter line (bash 3.2, checked 2026-10-13).
+    """
+    lines: list[str] = []
+    while index < len(command):
+        line, index = _line_at(command, index)
+        while not quoted and (len(line) - len(line.rstrip("\\"))) % 2 and index < len(command):
+            rest, index = _line_at(command, index)
+            line = line[:-1] + rest
+        if (line.lstrip("\t") if strip else line) == delimiter:
+            return "\n".join(lines), index
+        lines.append(line)
+    return "\n".join(lines), index
+
+
+def _line_at(command: str, index: int) -> tuple[str, int]:
+    """The line starting at `index`, without its newline, and where the next line starts."""
+    newline = command.find("\n", index)
+    if newline < 0:
+        return command[index:], len(command)
+    return command[index:newline], newline + 1
+
+
+def _moves_in_its_text(words: tuple[str, ...]) -> bool:
+    """Whether a run of text in the current shell holds a directory change: `eval "cd ../main"`, `source
+    <(echo cd ../main)`, or an alias that a later line uses (`alias c='cd ../main'`)."""
+    while words[:1] and words[0] in PRECOMMAND_MODIFIERS:
+        words = words[1:]
+    return bool(words) and words[0] in BUILTIN_SHELLS and bool(DIRECTORY_CHANGE_IN_TEXT.search(" ".join(words[1:])))
 
 
 def _directory_change(words: tuple[str, ...]) -> str | object | None:
-    """Where a `cd`-like run moves the shell: a path, UNKNOWN (`popd`, `cd -`), or None if it is not one."""
-    if words[:2] in (("builtin", "cd"), ("command", "cd")):
+    """Where a `cd`-like run moves the shell: a path, UNKNOWN, or None if it is not one.
+
+    UNKNOWN where the target is not in the command: `popd`, `cd -`, a directory-stack entry (`cd -2`,
+    `pushd +1`), `pushd` alone (it swaps the top two), and zsh's `cd old new`, which replaces `old` with
+    `new` in the current path. `builtin` and `command` in front, and zsh's `chdir`, change nothing.
+    """
+    while words[:1] and words[0] in PRECOMMAND_MODIFIERS:
         words = words[1:]
-    if words[:1] in (("cd",), ("pushd",)):
-        operands = [word for word in words[1:] if not word.startswith("-") or word == "-"]
-        return operands[0] if operands else "~"
-    if words[:1] == ("popd",):
+    if not words or words[0] not in DIRECTORY_CHANGERS:
+        return UNKNOWN if words[:1] == ("popd",) else None
+    arguments = words[1:]
+    if any(re.fullmatch(r"[+-]\d+", word) for word in arguments):
         return UNKNOWN
-    return None
+    operands = [word for word in arguments if not word.startswith("-") or word == "-"]
+    if len(operands) > 1 or (words[0] == "pushd" and not operands):
+        return UNKNOWN
+    return operands[0] if operands else "~"
 
 
 def _env_prefix_length(words: list[str]) -> int:
@@ -186,7 +436,10 @@ def _env_prefix_length(words: list[str]) -> int:
 
 
 def _join(base: str | None | object, target: str) -> str | None | object:
-    if base is UNKNOWN or target == "-" or not _literal(target):
+    """`base` moved to `target`, or UNKNOWN where the target is not a plain path: `-`, a variable, or a `~name`
+    (a zsh named directory from `hash -d`, another user's home, `~+`), which only the shell resolves."""
+    if base is UNKNOWN or target == "-" or not _literal(target) or (
+            target.startswith("~") and target != "~" and not target.startswith("~/")):
         return UNKNOWN
     if target.startswith(("/", "~")) or base is None:
         return target
@@ -244,40 +497,94 @@ def _plain_branch(word: str) -> bool:
 
 def decide(command: str, branch_of: BranchOf) -> Decision | None:
     """The hook's whole rule. `branch_of(directory)` names the branch checked out there, or None."""
-    parsed = split_commands(command)
-    if parsed is None:
+    runs = split_commands(command)
+    if runs is None:
         return _decide_unparsed(command, branch_of)
-    runs, bodies = parsed
-    if any(writes_in_text(body) for body in bodies) and any(run.words and not is_git(run.words[0]) for run in runs):
-        return "ask", NESTED_REASON
-    # The print-only exemption holds only when nothing in the command can execute text:
-    # `echo "git commit" | bash` and `bash <(echo git commit)` run what echo prints.
-    inert = all(not run.words or is_git(run.words[0]) or run.words[0] in NON_EXECUTING for run in runs)
     state = State()
+    pipeline: list[Invocation] = []  # the runs before this one in its pipeline (`a | b | c`)
     for run in runs:
         exported = run.words[1:] if run.words[:1] == ("export",) else ()
         if any(GIT_REDIRECT_ENV.match(word) for word in exported) or (
                 not run.words and any(GIT_REDIRECT_ENV.match(word) for word in run.env)):
             state.redirected = True  # GIT_DIR and the like now apply to every later git run
-        if not run.words:
-            continue
-        verdict = _decide_run(run, branch_of, state, inert)
-        if verdict:
-            return verdict
+        if not run.piped:
+            pipeline = []
+        if run.words:
+            verdict = _decide_run(run, tuple(pipeline), branch_of, state)
+            if verdict:
+                return verdict
+        pipeline.append(run)
     return None
 
 
-def _decide_run(run: Invocation, branch_of: BranchOf, state: State, inert: bool) -> Decision | None:
-    if run.words[:3] == ("gh", "pr", "merge"):
+def _unwrap(words: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(the words of the git or shell program this run actually starts, the VAR=value words before it).
+
+    Any program may launch another (`env`, `time`, `xargs`, `find -exec`, `busybox`, `arch`, `setsid`, …),
+    so no list of launchers is kept: the run is looked through to the first `git` or shell. A `git` right
+    after an option may be that option's value (`find . -name git -exec echo`, `sudo -u git true`), so there
+    it counts only when a known git subcommand follows. A run starting neither returns no words.
+    """
+    if not words or is_git(words[0]) or _is_shell(words[:1]):
+        return words, ()
+    start = 1
+    if os.path.basename(words[0]) in PRINTERS:  # its words are text, but a process substitution still runs
+        substitutions = [i for i, word in enumerate(words) if word.startswith(("<(", ">("))]
+        if not substitutions:
+            return (), ()
+        start = substitutions[0] + 1
+    for index, word in enumerate(words[start:], start=start):
+        launched = words[index:]
+        if is_git(word):
+            parsed = git_subcommand(launched)
+            if words[index - 1].startswith("-") and (parsed is None or parsed[1] not in KNOWN_SUBCOMMANDS):
+                continue
+        elif os.path.basename(word) not in SHELLS - BUILTIN_SHELLS:  # `.`, `source`, `eval` are builtins
+            continue
+        return launched, tuple(w for w in words[1:index] if ENV_ASSIGNMENT.match(w))
+    return (), ()
+
+
+def _is_shell(words: tuple[str, ...]) -> bool:
+    return bool(words) and os.path.basename(words[0]) in SHELLS
+
+
+def _decide_run(run: Invocation, upstream: tuple[Invocation, ...], branch_of: BranchOf, state: State) -> Decision | None:
+    words, assignments = _unwrap(run.words)
+    if any(run.words[i:i + 3] == ("gh", "pr", "merge") for i in range(len(run.words))):
         return "ask", GH_MERGE_REASON
-    if is_git(run.words[0]):
-        return _decide_git_run(run, branch_of, state)
+    if any(("$(" in body or "`" in body) and writes_in_text(body) for body in run.expanded):
+        return "ask", NESTED_REASON  # `python3 - <<EOF` with `$(git push)` in it: the shell runs it while reading
+    if words and is_git(words[0]):
+        unwrapped = replace(run, env=run.env + assignments, words=words)
+        return _decide_git_run(unwrapped, branch_of, state)
+    if _is_shell(words):
+        fed = list(words[1:]) + list(run.heredocs)
+        for earlier in upstream:  # everything piped into the shell, however many stages back
+            fed += list(earlier.words) + list(earlier.heredocs)
+        return ("ask", NESTED_REASON) if writes_in_text(" ".join(fed)) else None
     if not _literal(run.words[0]) and (
             any(word in TEXT_WRITES or "alias." in word or word.startswith(HIDDEN_EFFECT_OPTIONS) for word in run.words[1:])
             or any(GIT_REDIRECT_ENV.match(word) for word in run.env)):
         return "ask", NESTED_REASON  # `$G commit`, `$G -c alias.x=push x`, where G=git
-    scanned = _substitutions(run.words) if inert and run.words[0] in NON_EXECUTING else run.words
-    return ("ask", NESTED_REASON) if writes_in_text(" ".join(scanned)) else None
+    substituted = _substitutions(run.words)
+    return ("ask", NESTED_REASON) if substituted and writes_in_text(" ".join(substituted)) else None
+
+
+def _fetch_stores_no_branch(args: tuple[str, ...]) -> bool:
+    """Whether a fetch's refspecs store only into remote-tracking refs, tags, or nowhere but FETCH_HEAD.
+
+    The first word that is not an option is the repository, which may be a URL with a colon. Every word
+    must be literal: a variable may expand to a refspec such as `x:develop`.
+    """
+    words = [arg for arg in args if not arg.startswith("-")]
+    if not all(_literal(arg) for arg in args):
+        return False
+    for refspec in words[1:]:
+        destination = refspec.partition(":")[2]
+        if destination and not destination.startswith(("refs/remotes/", "refs/tags/")):
+            return False
+    return True
 
 
 def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decision | None:
@@ -294,6 +601,11 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
     substituted = _substitutions(args)
     if substituted and writes_in_text(" ".join(substituted)):
         return "ask", NESTED_REASON
+    given = [run.words[i + 1] for i, word in enumerate(run.words[:-1]) if word == "-c"]
+    given += [word[2:] for word in run.words if word.startswith("-c") and len(word) > 2]
+    given += [assignment.split("=", 1)[1] for assignment in run.env if "=" in assignment]
+    if writes_in_text(" ".join(given)):
+        return "ask", "a setting given for this git command runs git itself (core.pager, an editor, …): asking"
     if _has_hidden_effect(subcommand, args):
         return "ask", f"git {subcommand} with an option that runs a program or reads refs from elsewhere: asking"
     if subcommand == "stash" and args[:1] == ("branch",):
@@ -315,7 +627,7 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
         return None
     if subcommand == "branch" and (_is_listing(args) or _is_plain_create(args)):
         return None
-    if subcommand == "fetch" and all(":" not in arg and _literal(arg) for arg in args):
+    if subcommand == "fetch" and _fetch_stores_no_branch(args):
         return None
     if subcommand == "worktree" and args[:1] in (("list",), ("prune",)):
         return None
@@ -371,11 +683,14 @@ def _is_plain_create(args: tuple[str, ...]) -> bool:
 
 
 def _substitutions(words: tuple[str, ...]) -> tuple[str, ...]:
-    """All the words when any holds a command substitution, which the shell runs before the command itself.
+    """All the words when any holds something the shell runs before the command: `$(…)` or backticks.
 
-    All, not only the marked ones: unquoted, `echo `git commit -m x`` tokenizes as "`git", "commit", …
+    All, not only the marked ones: unquoted, `echo `git commit -m x`` tokenizes as "`git", "commit", ….
+    A process substitution needs no case here: the lexer splits `cat <(git commit)` into words with a
+    plain `git`, which the look-through finds and judges as the git run it is.
     """
-    return words if any("$(" in word or "`" in word for word in words) else ()
+    marked = any("$(" in word or "`" in word for word in words)
+    return words if marked else ()
 
 
 def _target(run_directory: str | None | object, git_dir: str | None | object) -> str | None | object:
@@ -393,12 +708,32 @@ def _decide_branch(subcommand: str, branch: str | None) -> Decision | None:
     return None
 
 
+# In text the lexer cannot split, what may point a git write somewhere other than the session's branch: a
+# directory change, git's global options that pick the repository or settings (`-C`, `-c`, `--git-dir`, …,
+# not `--no-pager`), a GIT_DIR-style variable, a hooks or
+# include setting or `git config` (which can switch off the reference-transaction hook), Apple's git, or a
+# program given as a variable followed by a write (`$G push`), which names no `git` at all.
+UNPARSED_TARGET_CHANGE = re.compile(
+    r"(?:^|[\s;&|(`])(?:cd|chdir|pushd|popd)\b|\bgit(?:\s+-\S*)*?\s+(?:-[Cc]|--(?:git-dir|work-tree|namespace|exec-path|config-env|bare))|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)="
+    r"|(?i:hookspath|\bhook\.\w|\binclude(?:if)?\.)|\bgit\s+config\b"
+    r"|/usr/bin/git\b|\$\{?\w+\}?\s+(?:" + "|".join(sorted(TEXT_WRITES)) + r")\b"
+)
+
+
 def _decide_unparsed(command: str, branch_of: BranchOf) -> Decision | None:
-    if not writes_in_text(command):
-        return None
+    """The coarse scan, for a command the lexer cannot split or whose quoting it does not model.
+
+    It sees git writes anywhere in the text, heredocs included, so it is no weaker than the full parse:
+    a write that only the current branch takes is judged against the session's branch, and anything that
+    could name another target asks.
+    """
     found = text_writes(command)
-    if GH_MERGE_IN_TEXT.search(command) or any(sub not in CURRENT_BRANCH_WRITES for sub in found) or re.search(
-            r"(^|[;&|(]\s*)cd\s", command):
+    if GH_MERGE_IN_TEXT.search(command) or (UNPARSED_TARGET_CHANGE.search(command) and (
+            found or re.search(r"\$\{?\w+\}?\s+(?:" + "|".join(sorted(TEXT_WRITES)) + r")\b", command))):
+        return "ask", UNPARSED_REASON
+    if not found:
+        return None
+    if any(sub not in CURRENT_BRANCH_WRITES for sub in found):
         return "ask", UNPARSED_REASON
     return _decide_branch(found[0], branch_of(None))
 
