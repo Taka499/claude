@@ -15,7 +15,7 @@
     - A repository with no commit is reviewed in place, and the report says so.
     - It also explains why `mktemp -d` needs the `$TMPDIR` template on macOS.
   - **Step 3** runs Codex from the snapshot, and its prompt names the snapshot path and adds "do not commit".
-  - **New step 4:** `find <repository> -newer <start marker>` lists every file written since the snapshot, `.git` included, and the refs are compared. Anything the agent did not write itself is reported to the user as an incident, before any finding. This catches every write that changes a modification time, not one that sets it back deliberately. The user decides what to undo, because the global rules forbid rewriting history or deleting untracked files on one's own.
+  - **New step 4:** `find <repository> -cnewer <start marker>` lists every file whose content or metadata changed since the snapshot, `.git` included, and the refs are compared. Anything the agent did not write itself is reported to the user as an incident, before any finding. This catches every write that changes a modification time, not one that sets it back deliberately. The user decides what to undo, because the global rules forbid rewriting history or deleting untracked files on one's own.
   - **Renumbering:** the remaining steps are renumbered (evaluate is 5, re-run is 6, report is 7), with their cross-references updated; a re-run takes a fresh snapshot.
 - **Global `CLAUDE.md` § Skills:** the `/codex-review` line no longer says "read-only".
 
@@ -35,6 +35,12 @@
   - detached and unborn `HEAD` were unhandled;
   - a failed clone or apply did not stop the procedure.
 - **`--revision`, not a separate checkout.** Running the revised procedure on a scratch repository showed the first version's `git -C "$snapshot/repo" checkout --detach` cannot run here. The user's permission rules deny every mutating `git -C` form, so the skill's own step would have been refused. `git clone --revision` reaches the commit without a checkout command. The same run confirmed the snapshot is detached at `HEAD` and matches the working tree, binary edit and untracked file included, and that an empty uncommitted diff applies cleanly.
+- **Codex review, round 2 (CHANGES REQUESTED), all fixed:**
+  - **Pipelines hid early failures:** a failing `git diff` fed `git apply --allow-empty` an empty patch, which succeeds. Every step now writes a file and checks its own exit status, as the global `CLAUDE.md` § Debugging asks.
+  - **A repository with no commit stopped at the first command.** It now has an explicit in-place path that keeps step 4.
+  - **`find -newer` missed permission-only changes.** It is now `-cnewer`, the inode change time.
+  - **The agent's own `git status` can refresh `.git/index`.** Step 4 now says so.
+- **The marker is taken after the snapshot.** A dry run of the round-2 version listed the real repository's object files in step 4 although nothing had written them: cloning a local repository hard-links its object files, which updates their change time. The refs record and start marker now come after the clone and copy, just before Codex runs. The rerun listed nothing with no write, and exactly the edited and the `chmod`ed file after a simulated stray write.
 - **Report and stop; do not undo.** The incident is the user's to resolve. The agent may not rewrite history or delete untracked files without permission.
 - **No ADR.** This is a procedure in a skill, easy to change again.
 

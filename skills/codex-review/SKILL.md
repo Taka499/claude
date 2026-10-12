@@ -80,25 +80,34 @@ It needs two entries in `~/.claude/settings.json` (untracked per ADR 0002 — th
 
 ### 2. Snapshot the repository, and record its state
 
-Codex works in a copy, so its ordinary relative-path commands land there. It is **not confined** to the copy: it runs under this session's sandbox, which can also write the real repository by its absolute path. Step 4 is what tells you whether it did. Stop at the first command that fails:
+Codex works in a copy, so its ordinary relative-path commands land there. It is **not confined** to the copy: it runs under this session's sandbox, which can also write the real repository by its absolute path. Step 4 is what tells you whether it did. Each command below writes to a file rather than a pipe, so that every step's own exit status counts, and stops at the first failure:
 
 ```bash
 snapshot=$(mktemp -d "$TMPDIR/codex-review.XXXXXX") || exit 1
 sha=$(git -C <repository> rev-parse --verify HEAD) || exit 1
 git -c advice.detachedHead=false clone -q --revision="$sha" <repository> "$snapshot/repo" || exit 1
-git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapshot/refs-before.txt" || exit 1
-touch "$snapshot/started"
 ```
 
-For uncommitted work, carry it over, binary changes and untracked files included. `git apply` is all-or-nothing, so a failure leaves the snapshot as it was and stops here:
+For uncommitted work, carry it over, binary changes and untracked files included. `git apply` is all-or-nothing, so a failure leaves the snapshot as it was:
 
 ```bash
-git -C <repository> diff --binary HEAD | git -C "$snapshot/repo" apply --allow-empty || exit 1
-git -C <repository> ls-files -z --others --exclude-standard |
-  tar -C <repository> --null -T - -cf - | tar -C "$snapshot/repo" -xf - || exit 1
+git -C <repository> diff --binary HEAD > "$snapshot/uncommitted.patch" || exit 1
+git -C "$snapshot/repo" apply --allow-empty "$snapshot/uncommitted.patch" || exit 1
+git -C <repository> ls-files -z --others --exclude-standard > "$snapshot/untracked.list" || exit 1
+tar -C <repository> --null -T "$snapshot/untracked.list" -cf "$snapshot/untracked.tar" || exit 1
+tar -C "$snapshot/repo" -xf "$snapshot/untracked.tar" || exit 1
 ```
 
-`--revision` (git 2.49 or later) clones straight to that commit, detached. Do not reach it with `git -C <snapshot> checkout` instead: this setup's permission rules deny every mutating `git -C` form, so that step would be refused. The snapshot is detached at `HEAD`, so its base branch is `origin/<base>`: the diff to review is `git diff origin/<base>...HEAD`, plus the uncommitted changes shown by `git diff HEAD` and `git status`. A repository with no commit yet has nothing to clone; review its files in place and say in the report that no snapshot was used. Give `mktemp -d` the `$TMPDIR` template: without one, macOS uses the per-user system temp directory, which the sandbox refuses, and a script that then changes into an empty path runs in the repository instead (measured on 2026-10-12: four stray commits). In the steps below, run Codex from `"$snapshot/repo"` and name that path in the prompt.
+`--revision` (git 2.49 or later) clones straight to that commit, detached. Do not reach it with `git -C <snapshot> checkout` instead: this setup's permission rules deny every mutating `git -C` form, so that step would be refused. The snapshot is detached at `HEAD`, so its base branch is `origin/<base>`: the diff to review is `git diff origin/<base>...HEAD`, plus the uncommitted changes shown by `git diff HEAD` and `git status`. Give `mktemp -d` the `$TMPDIR` template: without one, macOS uses the per-user system temp directory, which the sandbox refuses, and a script that then changes into an empty path runs in the repository instead (measured on 2026-10-12: four stray commits). In the steps below, run Codex from `"$snapshot/repo"` and name that path in the prompt.
+
+Then, with the snapshot complete and just before Codex runs, record the repository's refs and a start marker. They come last on purpose: cloning a local repository hard-links its object files, which updates their change time, so a marker taken earlier would list the clone's own work in step 4.
+
+```bash
+git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapshot/refs-before.txt" || exit 1
+touch "$snapshot/started" || exit 1
+```
+
+**A repository with no commit yet** has no `HEAD` to clone, and `rev-parse --verify HEAD` stops the first block. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, keep step 4 exactly as written, and say in the report that no snapshot was used.
 
 ### 3. Run Codex
 
@@ -135,14 +144,17 @@ Codex output is long — read the tail for the findings and the verdict. That is
 
 ### 4. Check the repository was not touched
 
-List every file in the repository written since the snapshot was taken, `.git` included, and compare its refs:
+List every file in the repository whose content or metadata changed since the snapshot was taken, `.git` included, and compare its refs:
 
 ```bash
-find <repository> -newer "$snapshot/started" -print
-git -C <repository> for-each-ref --format='%(refname) %(objectname)' | diff "$snapshot/refs-before.txt" -
+find <repository> -cnewer "$snapshot/started" -print > "$snapshot/written.txt" || exit 1
+git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapshot/refs-after.txt" || exit 1
+cat "$snapshot/written.txt"; diff "$snapshot/refs-before.txt" "$snapshot/refs-after.txt"
 ```
 
-`find -newer` catches every write that changes a file's modification time, which is every ordinary write: a commit, a ref, an edited or new file, tracked, untracked or ignored. A process that deliberately sets modification times back would pass it, and nothing short of a separate sandbox for Codex would stop that. Anything listed that you did not write yourself during the run is Codex's. Stop and report it to the user as an incident, before any finding. Name what changed (a ref, a commit and its author, a file), and do not undo it on your own, because the global Git rules forbid rewriting history and deleting untracked files without the user's permission. A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
+`-cnewer` compares the inode change time, which every write and every permission change updates: a commit, a ref, an edited, new or `chmod`ed file, tracked, untracked or ignored. A deleted file shows as its directory. The file system here (APFS) keeps nanosecond times, so a write just after the marker is not lost to rounding. What it cannot catch is a process that sets times back deliberately; nothing short of a separate sandbox for Codex stops that.
+
+Some entries can be your own. A `git status` or `git diff` run in the repository during the review may refresh `.git/index`, and anything you edited there yourself shows up too. Anything listed that you did not write is Codex's. Stop and report it to the user as an incident, before any finding. Name what changed (a ref, a commit and its author, a file), and do not undo it on your own, because the global Git rules forbid rewriting history and deleting untracked files without the user's permission. A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
 
 ### 5. Evaluate every finding — this is the step that is not optional
 
