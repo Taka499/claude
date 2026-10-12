@@ -42,6 +42,7 @@
   - **The agent's own `git status` can refresh `.git/index`.** Step 4 now says so.
 - **The marker is taken after the snapshot.** A dry run of the round-2 version listed the real repository's object files in step 4 although nothing had written them: cloning a local repository hard-links its object files, which updates their change time. The refs record and start marker now come after the clone and copy, just before Codex runs. The rerun listed nothing with no write, and exactly the edited and the `chmod`ed file after a simulated stray write.
 - **Codex review, round 3: the base branch.** `clone --revision` creates no remote-tracking branches, so the instructed `git diff origin/<base>...HEAD` failed in the snapshot. Step 2 now fetches the base into `refs/remotes/origin/<base>`. That is a `git -C … fetch`, which the permission rules allow, unlike `checkout`. Round 3 confirmed every round-2 fix and the marker order.
+- **Codex review, round 4.** It confirmed the base-branch fix, branch names containing slashes included. It asked for the no-commit path to be reachable from the commands, not only described after a bare `exit 1`. The failing `rev-parse` now prints how to confirm there is no commit and where the in-place path is.
 - **Report and stop; do not undo.** The incident is the user's to resolve. The agent may not rewrite history or delete untracked files without permission.
 - **No ADR.** This is a procedure in a skill, easy to change again.
 

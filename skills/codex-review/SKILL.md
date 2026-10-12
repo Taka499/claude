@@ -84,7 +84,8 @@ Codex works in a copy, so its ordinary relative-path commands land there. It is 
 
 ```bash
 snapshot=$(mktemp -d "$TMPDIR/codex-review.XXXXXX") || exit 1
-sha=$(git -C <repository> rev-parse --verify HEAD) || exit 1
+sha=$(git -C <repository> rev-parse --verify HEAD) ||
+  { echo "no commit to snapshot: if git -C <repository> rev-list -n 1 --all prints nothing, review in place (below)"; exit 1; }
 git -c advice.detachedHead=false clone -q --revision="$sha" <repository> "$snapshot/repo" || exit 1
 git -C "$snapshot/repo" fetch -q <repository> "<base>:refs/remotes/origin/<base>" || exit 1
 ```
@@ -108,7 +109,7 @@ git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapsho
 touch "$snapshot/started" || exit 1
 ```
 
-**A repository with no commit yet** has no `HEAD` to clone, and `rev-parse --verify HEAD` stops the first block. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, keep step 4 exactly as written, and say in the report that no snapshot was used.
+**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, keep step 4 exactly as written, and say in the report that no snapshot was used.
 
 ### 3. Run Codex
 
