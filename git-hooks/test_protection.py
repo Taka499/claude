@@ -204,6 +204,7 @@ class AllowedUpdates(ProtectedRepoTest):
         self.repo.git("switch", "-q", "develop")
         result = self.repo.git("merge", "--no-ff", "-m", "merge feat", "feat", check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("hint:", result.stderr)  # the hook's GIT_GRAFT_FILE must not trigger git's deprecation advice
 
     def test_a_fast_forward_over_merge_commits(self):
         """What pulling a branch that took pull-request merges on GitHub looks like."""

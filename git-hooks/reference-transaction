@@ -25,8 +25,9 @@ GIT_NO_REPLACE_OBJECTS=1
 GIT_GRAFT_FILE=/dev/null
 export GIT_NO_REPLACE_OBJECTS GIT_GRAFT_FILE
 # The commit-graph cache (.git/objects/info/commit-graph) also answers parent and ancestry questions;
-# read the commit objects themselves instead.
-git() { command git -c core.commitGraph=false "$@"; }
+# read the commit objects themselves instead. Any configured graft file, even /dev/null, makes git print a
+# deprecation hint on every call; that advice is switched off, nothing else is silenced.
+git() { command git -c core.commitGraph=false -c advice.graftFileDeprecated=false "$@"; }
 common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1
 status=0
 refuse() {
