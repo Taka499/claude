@@ -37,7 +37,7 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 PROTECTED = frozenset({"main", "master", "develop"})
 
@@ -136,6 +136,7 @@ class Invocation:
     words: tuple[str, ...]
     heredocs: tuple[str, ...] = ()
     piped: bool = False  # its standard input is the previous run's output (`a | b`)
+    expanded: tuple[str, ...] = ()  # the heredocs with an unquoted delimiter, whose `$(…)` the shell runs
 
 
 @dataclass
@@ -177,13 +178,15 @@ def split_commands(command: str) -> list[Invocation] | None:
             continue
         split = _env_prefix_length(current)
         env, words = tuple(current[:split]), tuple(current[split:])
-        heredocs = tuple(bodies[int(mark.group(1))] for word in words if (mark := HEREDOC_MARK.match(word)))
+        read = [bodies[int(mark.group(1))] for word in words if (mark := HEREDOC_MARK.match(word))]
+        heredocs = tuple(text for text, _ in read)
+        expanded = tuple(text for text, quoted in read if not quoted)
         words = tuple(word for word in words if not HEREDOC_MARK.match(word))
         changes_to = _directory_change(words)
         if changes_to is not None:
             directory = UNKNOWN if changes_to is UNKNOWN else _join(directory, str(changes_to))
         elif words or env:
-            runs.append(Invocation(directory, env, words, heredocs, piped))
+            runs.append(Invocation(directory, env, words, heredocs, piped, expanded))
         current = []
         piped = token in ("|", "|&")
         if token == "(":
@@ -206,8 +209,9 @@ class _Level:
     cases: int = 0
 
 
-def _set_aside_heredocs(command: str) -> tuple[str, list[str]]:
-    """The command with each heredoc replaced by a marker word and its comments removed, and the bodies.
+def _set_aside_heredocs(command: str) -> tuple[str, list[tuple[str, bool]]]:
+    """The command with each heredoc replaced by a marker word and its comments removed, and the bodies,
+    each with whether its delimiter was quoted (so the shell expands nothing in it).
 
     It follows the rules zsh and bash share, because text it takes for a body is never read as commands,
     and a quote left in a misread body can hide the commands after it from the lexer below.
@@ -220,7 +224,7 @@ def _set_aside_heredocs(command: str) -> tuple[str, list[str]]:
     where quotes close (`$'\\''` is one quote character), and the lexer below has no such quoting.
     """
     out: list[str] = []
-    bodies: list[str] = []
+    bodies: list[tuple[str, bool]] = []
     pending: list[tuple[str, bool, bool]] = []  # this line's heredocs: (delimiter, strip tabs, quoted)
     levels = [_Level()]
     index = 0
@@ -268,12 +272,12 @@ def _set_aside_heredocs(command: str) -> tuple[str, list[str]]:
             index += 1
             for delimiter, strip, quoted in pending:
                 body, index = _heredoc_body(command, index, delimiter, strip, quoted)
-                bodies.append(body)
+                bodies.append((body, quoted))
             pending = []
             continue
         out.append(command[index:index + step])
         index += step
-    bodies.extend("" for _ in pending)  # heredocs on the last line: their bodies end with the command
+    bodies.extend(("", True) for _ in pending)  # heredocs on the last line: their bodies end with the command
     return "".join(out), bodies
 
 
@@ -498,8 +502,10 @@ def _decide_run(run: Invocation, upstream: tuple[Invocation, ...], branch_of: Br
     words, assignments = _unwrap(run.words)
     if any(run.words[i:i + 3] == ("gh", "pr", "merge") for i in range(len(run.words))):
         return "ask", GH_MERGE_REASON
+    if any(("$(" in body or "`" in body) and writes_in_text(body) for body in run.expanded):
+        return "ask", NESTED_REASON  # `python3 - <<EOF` with `$(git push)` in it: the shell runs it while reading
     if words and is_git(words[0]):
-        unwrapped = Invocation(run.directory, run.env + assignments, words, run.heredocs, run.piped)
+        unwrapped = replace(run, env=run.env + assignments, words=words)
         return _decide_git_run(unwrapped, branch_of, state)
     if _is_shell(words):
         fed = list(words[1:]) + list(run.heredocs)
@@ -651,12 +657,29 @@ def _decide_branch(subcommand: str, branch: str | None) -> Decision | None:
     return None
 
 
+# In text the lexer cannot split, what may point a git write somewhere other than the session's branch: a
+# directory change, git's global options (`-C`, `-c`, `--git-dir`), a GIT_DIR-style variable, Apple's git,
+# or a program given as a variable followed by a write (`$G push`), which names no `git` at all.
+UNPARSED_TARGET_CHANGE = re.compile(
+    r"(?:^|[\s;&|(`])(?:cd|pushd|popd)\b|\bgit\s+-|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)="
+    r"|/usr/bin/git\b|\$\{?\w+\}?\s+(?:" + "|".join(sorted(TEXT_WRITES)) + r")\b"
+)
+
+
 def _decide_unparsed(command: str, branch_of: BranchOf) -> Decision | None:
-    if not writes_in_text(command):
-        return None
+    """The coarse scan, for a command the lexer cannot split or whose quoting it does not model.
+
+    It sees git writes anywhere in the text, heredocs included, so it is no weaker than the full parse:
+    a write that only the current branch takes is judged against the session's branch, and anything that
+    could name another target asks.
+    """
     found = text_writes(command)
-    if GH_MERGE_IN_TEXT.search(command) or any(sub not in CURRENT_BRANCH_WRITES for sub in found) or re.search(
-            r"(^|[;&|(]\s*)cd\s", command):
+    if GH_MERGE_IN_TEXT.search(command) or (UNPARSED_TARGET_CHANGE.search(command) and (
+            found or re.search(r"\$\{?\w+\}?\s+(?:" + "|".join(sorted(TEXT_WRITES)) + r")\b", command))):
+        return "ask", UNPARSED_REASON
+    if not found:
+        return None
+    if any(sub not in CURRENT_BRANCH_WRITES for sub in found):
         return "ask", UNPARSED_REASON
     return _decide_branch(found[0], branch_of(None))
 

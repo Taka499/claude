@@ -401,6 +401,21 @@ class BypassRegressions(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
 
+    def test_an_unquoted_heredoc_runs_its_substitutions(self):
+        """Codex review round 8 (2026-10-13): with an unquoted delimiter, the shell runs `$(…)` and backticks
+        in the body as it reads it, whatever program the body then goes to."""
+        for command in ("python3 - <<EOF\n$(git push origin develop)\nEOF",
+                        "sed -n p <<EOF\n`git push origin develop`\nEOF",
+                        "python3 - <<-EOF\n\t$(cd ../develop && git merge feat/x)\n\tEOF",
+                        "git commit -F - <<EOF\nmsg $(git push origin develop)\nEOF"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+        for command in ("python3 - <<'EOF'\n$(git push origin develop)\nEOF",  # quoted: nothing expands
+                        "python3 - <<EOF\nprint('git push origin develop')\nEOF",  # nothing to run
+                        "cat <<EOF\nbuilt on $(date)\nEOF"):  # a substitution with no git in it
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("feat/x")))
+
     def test_ordinary_heredocs_stay_silent(self):
         for command in (
             "git commit -m \"$(cat <<'EOF'\nfix: explain git push origin develop\nEOF\n)\"",
@@ -410,6 +425,18 @@ class BypassRegressions(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("feat/x")))
+
+    def test_the_coarse_scan_is_no_weaker(self):
+        """Security review of round 7's fix (2026-10-13): `$'…'` sends a command to the coarse scan, which
+        judged `git -C ../main merge` against the session's branch and did not see `$G push`."""
+        for command in ("printf $'x\\n' && git -C ../main merge feat/x", "printf $'x' && G=git && $G push origin develop",
+                        "printf $'x' && $G merge feat/x", "printf $'x' && GIT_DIR=../m/.git git commit -m x",
+                        "printf $'x' && pushd ../m && git commit -m x", "printf $'x'\ncd ../m && git commit -m x",
+                        "printf $'x' && /usr/bin/git commit -m x", "printf $'x' && git -c core.hooksPath=/dev/null commit -m x"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+        self.assertIsNone(decide("printf $'a\\tb\\n' > x.txt && git commit -m x", on("feat/x")))
+        self.assertTrue(asks(decide("printf $'a\\tb\\n' > x.txt && git commit -m x", on("develop"))))
 
     def test_a_hash_hides_nothing_after_it(self):
         """Found reviewing the heredoc fix (2026-10-13), also on master: shlex read `#` as a comment
