@@ -3,7 +3,7 @@
 ## Goal
 
 Plan 0018 made commits on a feature branch free and kept history on `main`, `master` and `develop` behind the user's approval. Its `git_gate.py` hook reads command text. Three Codex review rounds and five security reviews kept finding command shapes that text cannot classify, and git run from a program file is invisible to it altogether. A guarantee has to sit where git itself changes a branch. This plan adds that guard in two places:
-- **Locally:** git's `reference-transaction` hook, which sees every branch update, however git was run.
+- **Locally:** git's `reference-transaction` hook, which sees every branch update made through git, whatever program runs it.
 - **On GitHub:** a ruleset, where the plan allows one.
 
 It also makes a GitHub remote mandatory for every repository, so the protected record exists off the machine, and teaches `scaffold-project` to ask where the remote lives and whether it is public.
@@ -58,12 +58,27 @@ It also makes a GitHub remote mandatory for every repository, so the protected r
 - **Private repositories get the local hook only.** On the free plans GitHub enforces nothing on them. What GitHub would add there is narrow: every push already asks, force pushes are denied in settings and blocked by the classifier, and deleting a remote branch is a push.
 - **gkms-contest-ai is not changed by this PR.** Installing the hook there changes its coordinator's options. The answer the user is about to give to its loop plan's Q2 committed a new branch's STATUS § 3 row directly on `develop`, and the hook would refuse that commit. The row has to come in through a short branch merged with `--no-ff`. Creating the private `tia-tools` remote and installing the hook are the next step there, with the coordinator told first.
 - **Ref names are compared case-insensitively.** The security review of this PR found it, and a probe confirmed it: on macOS's case-insensitive APFS, `git update-ref refs/heads/DEVELOP <feature>` moved `develop` straight past a case-sensitive match, because both names are the same file. The test for it runs only on a case-insensitive filesystem; on Linux, `DEVELOP` is a separate branch.
+- **Which ref is protected is decided by the filesystem, not the name.** The security review of the case fix found `refs/heads/maſter` (long s), which APFS's Unicode case folding stores as `master`; a probe confirmed it moved `master`. Instead of chasing name normalization, the hook asks the filesystem. In the prepared state git holds a lock file for every ref in the transaction, and a ref counts as protected when its lock is the same file (`test -ef`) as a protected branch's lock. The lower-case name comparison stays for updates without a loose lock.
+- **Codex review of PR B (round 1, CHANGES REQUESTED), all fixed:**
+  - replacement objects (`git replace --graft`) could dress a plain commit as a merge; the hook now runs with `GIT_NO_REPLACE_OBJECTS=1`;
+  - an empty `core.hooksPath` also makes git ignore the hooks directory; the installer now refuses when the key is set at all;
+  - a merge taking the old tip only as its second parent passed, replacing the branch's first-parent history; the old tip must now be the first parent of the oldest added first-parent commit;
+  - the installer treated any file containing the marker as its own; the marker must now be the hook's second line.
+
+  The documentation's "however git is run" was narrowed to "made through git", naming the two things that pass it. A breakage test that only emptied `GIT_NO_REPLACE_OBJECTS` passed every test, because git treats the variable as set even when empty; removing the variable failed the replacement test, as it should.
+- **`git_gate.py` asks when `git config` includes or writes another file** (`include.path`, `includeIf`, `--file`, `--blob`). That follows the security review's point that `core.hooksPath` can be set indirectly. A sandboxed session cannot write `.git/config` or `~/.gitconfig` anyway, so this only covers the forms that still reach config.
 - **What the hook cannot see: writes that bypass git.** A process writing `.git/refs/heads/develop`, or editing `.git/packed-refs`, changes the branch without a reference transaction. The sandbox allows writes under `.git/refs`, so it does not stop this either. That is deliberate tampering rather than a mistake. The auto-mode classifier and the GitHub ruleset on public repositories are the remaining guards. Closing it locally would take `sandbox.filesystem.denyWrite` entries for those files. Those entries would also make every sandboxed git command that updates the three branches fail, and they need testing against partial failures like the ones `.git/config` causes (plan 0006). They are left to the user's decision.
 - **No ADR.** Every piece is a small script or a rule that can be removed again, so this fails the "hard to reverse" gate.
 
 ## Verification
 
-- `python3 -m unittest discover -s git-hooks`: 24 tests pass on this macOS machine. The case-insensitive-name test runs only on a case-insensitive filesystem; it failed against a breakage restoring the case-sensitive match.
+- `python3 -m unittest discover -s git-hooks`: 29 tests pass on this macOS machine. The two filesystem-folding tests (`DEVELOP`, `maſter`) run only on a case-insensitive filesystem. Further breakages, each failing tests:
+  - the case-sensitive match restored;
+  - the lock-identity check removed;
+  - replacement objects honoured;
+  - the first-parent lineage check removed;
+  - an empty `core.hooksPath` ignored;
+  - the marker accepted anywhere in the file.
   - **Refused:** a direct commit, a fast-forward over plain commits, a reset, a force move, an amend, a revert on the branch, deletion, `main` and `master` alike, and a force move from a linked worktree.
   - **Allowed:** a merge, a fast-forward over merges, a revert brought in by a merge, creating a protected branch, a repository's first commit, anything on other branches, switching branches, and the user's bypass.
   - **Installer:** it updates its own copy, refuses a foreign hook, refuses under `core.hooksPath`, and refuses outside a repository.
