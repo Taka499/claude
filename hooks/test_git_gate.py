@@ -42,6 +42,20 @@ class FeatureBranchWork(unittest.TestCase):
     def test_read_only_git_on_develop(self):
         self.assertIsNone(decide("git status && git log --oneline -3 && git diff develop", on("develop")))
 
+    def test_switching_to_a_named_feature_branch_then_committing(self):
+        self.assertIsNone(decide("git switch -c feat/new && git commit -m x", on("develop")))
+        self.assertIsNone(decide("git switch feat/y && git commit -m x", on("develop")))
+
+    def test_listing_and_plainly_creating_branches(self):
+        for command in ("git branch", "git branch -a -v", "git branch --show-current",
+                        "git branch feat/new", "git branch feat/new develop"):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("develop")))
+
+    def test_read_forms_of_worktree_and_symbolic_ref(self):
+        self.assertIsNone(decide("git worktree list", on("develop")))
+        self.assertIsNone(decide("git symbolic-ref --short -q HEAD", on("develop")))
+
     def test_pull_on_a_feature_branch(self):
         self.assertIsNone(decide("git pull origin feat/x", on("feat/x")))
 
@@ -185,6 +199,32 @@ class BypassRegressions(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
 
+    def test_round_two_shapes_ask(self):
+        """Codex review round 2 and the security review of the first fix (2026-10-12)."""
+        for command in (
+            'git branch -f "$TARGET" HEAD',                 # branch target given as a variable
+            'git update-ref "$REF" HEAD',
+            'git fetch origin feat:"$TARGET"',
+            "git update-ref --stdin <<'EOF'\nupdate refs/heads/main HEAD\nEOF",
+            "git switch -Cdevelop",                          # short option attached to its value
+            "git checkout -Bmaster",
+            "git branch -fmain HEAD",
+            "git ship",                                      # an alias, whatever it expands to
+            "git -calias.x=commit x",
+            "git --config-env=alias.x=VAR x",
+            "git filter-branch -- --all",                    # rewrites several refs at once
+            "G=git; $G commit -m x",                         # git reached through a variable
+            '"$GIT" commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+
+    def test_creating_a_protected_branch_asks(self):
+        """In a repository without one yet, this would seed main or develop with unreviewed work."""
+        for command in ("git branch develop feat/x", "git switch -c main", "git switch --create develop feat/x"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+
     def test_pull_on_a_protected_branch_asks(self):
         self.assertTrue(asks(decide("git pull --ff-only origin master", on("master"))))
 
@@ -232,9 +272,12 @@ class HookEndToEnd(unittest.TestCase):
             self.assertEqual(self.run_hook(payload), "")
 
     def test_unreadable_input_asks(self):
-        result = subprocess.run([sys.executable, HOOK], input="not json", capture_output=True,
-                                text=True, timeout=30, check=True)
-        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "ask")
+        for raw in ("not json", json.dumps({"tool_name": "Bash", "cwd": "/", "tool_input": {"command": None}}),
+                    json.dumps({"tool_name": "Bash", "cwd": "/", "tool_input": {"command": 7}})):
+            with self.subTest(raw=raw):
+                result = subprocess.run([sys.executable, HOOK], input=raw, capture_output=True,
+                                        text=True, timeout=30, check=True)
+                self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "ask")
 
     def test_other_tools_are_ignored(self):
         payload = {"tool_name": "Read", "cwd": "/", "tool_input": {"file_path": "/x"}}

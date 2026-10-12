@@ -4,18 +4,21 @@
 Global CLAUDE.md § Git Operations makes approving a task standing permission to commit on its
 feature branch, while history written to main, master or develop, and any push, still needs the
 user's permission for that operation. A permission rule matches command text only, so
-`Bash(git commit *)` cannot tell a feature-branch commit from a develop commit. This hook can:
-it resolves the branch each git run would write to and answers "ask" for a protected one.
+`Bash(git commit *)` cannot tell a feature-branch commit from a develop commit. This hook can.
 
-It is conservative by design. It stays silent only for git runs it fully understands and that
-write to a branch it can name as unprotected; everything else asks: git inside another program
-(`bash -c`, `eval`, `env`, `xargs`, `$(…)`, backticks, interpreter heredocs), environment or
-alias redirects, a branch switch earlier in the same command, unknown subcommands, and ref moves
-that name a protected branch. Silence means "no opinion": the normal permission flow decides.
+It works from an allowlist. It stays silent only for git runs whose effect it can state exactly:
+read-only and index-only subcommands, listing or plainly creating a branch, switching to a named
+unprotected branch, fetching without a refspec, and writes to the current branch when that branch
+can be named and is unprotected. Everything else asks — every other subcommand (aliases,
+`update-ref`, `filter-branch`, `checkout`, …), a branch name that is a variable or an attached
+option, a refspec destination, git found inside another program's text, a program that is itself
+a variable, a `GIT_DIR`-style redirect, a `push`, a `gh pr merge`, unreadable hook input.
+Two rounds of review showed that listing dangerous shapes cannot be completed; listing safe ones can.
 
-What it cannot see: git run by a script or program file (`python3 tool.py`), and a hook process
-that fails to start, which Claude Code treats as no decision. A backstop for both has to sit in
-git itself: a reference-transaction hook refusing non-merge updates of protected branches.
+What it cannot see: git run by a program file (`python3 tool.py`), fetch refspecs configured to
+write local branches, and a hook process that fails to start, which Claude Code treats as no
+decision. A backstop for these has to sit in git itself: a reference-transaction hook refusing
+non-merge updates of protected branches.
 
 Needs Python 3.10 or later; the settings entry names the interpreter by absolute path, because
 macOS's /usr/bin/python3 is Apple's 3.9. Entry and reasons: README.md § The one file this repo
@@ -30,11 +33,11 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 PROTECTED = frozenset({"main", "master", "develop"})
 
-# Never move a branch, wherever they run.
+# Never write anything a branch points at, wherever they run.
 READ_ONLY = frozenset({
     "status", "log", "diff", "show", "ls-files", "ls-tree", "ls-remote", "rev-parse", "rev-list",
     "describe", "blame", "grep", "shortlog", "cat-file", "for-each-ref", "merge-base", "name-rev",
@@ -42,33 +45,37 @@ READ_ONLY = frozenset({
     "check-attr", "diff-tree", "diff-index", "diff-files", "cherry", "range-diff", "format-patch",
 })
 
-# Change the index, the working tree, tags, remotes or configuration, but never move a branch.
-NO_BRANCH_WRITE = frozenset({
-    "add", "rm", "mv", "restore", "stash", "fetch", "tag", "notes", "apply", "init", "clone",
-    "remote", "gc", "prune", "clean", "config", "sparse-checkout", "branch", "worktree",
+# Change the index, the working tree, tags, the stash or configuration, but never a branch.
+INDEX_ONLY = frozenset({
+    "add", "rm", "mv", "restore", "stash", "apply", "notes", "tag", "init", "clone", "remote",
+    "gc", "prune", "clean", "config", "sparse-checkout",
 })
 
-# Change what is checked out, so later writes in the same command cannot be resolved beforehand.
-MOVES_HEAD = frozenset({"switch", "checkout", "bisect", "symbolic-ref"})
-
-# Name refs they may create, move or delete: asking when one of those names is protected.
-REF_MOVERS = frozenset({"branch", "update-ref", "switch", "checkout", "worktree", "symbolic-ref", "reset", "fetch"})
-
-# What counts as a branch write when git is found inside another program's text (`bash -c`, a heredoc, `$(…)`).
-# Unknown words are NOT treated as writes there, so prose such as "update the git repo" stays silent;
-# a direct git run is stricter (an unknown subcommand, e.g. an alias, counts as a write).
-TEXT_WRITES = frozenset({
-    "commit", "merge", "cherry-pick", "revert", "am", "pull", "rebase", "reset", "push", "update-ref",
-    "branch", "switch", "checkout", "worktree", "symbolic-ref", "fetch", "filter-branch", "replace", "bisect",
-})
+# Write to the branch that is checked out: silent only when that branch is named and unprotected.
+CURRENT_BRANCH_WRITES = frozenset({"commit", "merge", "cherry-pick", "revert", "am", "pull", "rebase", "reset"})
 
 # `--abort` / `--quit` leave the branch where it was; `--continue` still writes the commit.
 LEAVES_BRANCH = frozenset({"--abort", "--quit"})
 
+# `git branch` options that only list.
+LISTING_FLAGS = frozenset({"-a", "--all", "-r", "--remotes", "-l", "--list", "-v", "-vv", "--verbose",
+                           "--show-current", "--color", "--no-color", "-q", "--quiet"})
+LISTING_PREFIXES = ("--format=", "--sort=", "--column", "--no-column", "--abbrev")
+
+# What counts as a branch write when git is found inside another program's text (`bash -c`, a
+# heredoc, `$(…)`). Unknown words are not writes there, so prose such as "the git repo" stays silent.
+TEXT_WRITES = CURRENT_BRANCH_WRITES | frozenset({
+    "push", "update-ref", "branch", "switch", "checkout", "worktree", "symbolic-ref", "fetch",
+    "filter-branch", "filter-repo", "replace", "bisect", "fast-import",
+})
+
 # git's global options that take a separate value (`git -C dir`, `git -c key=value`).
-GIT_OPTS_WITH_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"})
+GIT_OPTS_WITH_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"})
 
 SEPARATORS = frozenset({"&&", "||", ";", "|", "|&", "&", ";;"})
+
+# Print or read their arguments and never run them: only a `$(…)` or backtick inside is executed.
+NON_EXECUTING = frozenset({"echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "wc", "ls", "test", "["})
 
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Point git at another repository or configuration: the target can no longer be named.
@@ -76,15 +83,13 @@ GIT_REDIRECT_ENV = re.compile(r"^GIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFI
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n\s*\2[ \t]*(?=\n|$)", re.S)
 # A git run inside free text: the subcommand after any global options.
 GIT_IN_TEXT = re.compile(
-    r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path)(?:=\S+|\s+\S+)|-\S+))*\s+(?!git\b)([a-z][a-z-]*)"
+    r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path|config-env)(?:=\S+|\s+\S+)|-\S+))*"
+    r"\s+(?!git\b)([a-z][a-z-]*)"
 )
 GH_MERGE_IN_TEXT = re.compile(r"\bgh\s+pr\s+merge\b")
-# Print or read their arguments and never run them: only a `$(…)` or backtick inside is executed.
-NON_EXECUTING = frozenset({"echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "wc", "ls", "test", "["})
-CD_IN_TEXT = re.compile(r"(^|[;&|(]\s*)cd\s")
 
 GH_MERGE_REASON = "gh pr merge puts a pull request into its base branch: that needs your approval"
-NESTED_REASON = ("git runs inside another command here (bash -c, eval, env, xargs, $( ), a heredoc …), "
+NESTED_REASON = ("git runs inside another command here (bash -c, eval, env, xargs, $( ), a heredoc, a variable …), "
                  "so its branch cannot be checked: asking")
 UNPARSED_REASON = "could not parse this command around a git write, so asking"
 UNKNOWN = object()  # a directory or target the hook cannot resolve
@@ -100,6 +105,14 @@ class Invocation:
     directory: str | None | object
     env: tuple[str, ...]
     words: tuple[str, ...]
+
+
+@dataclass
+class State:
+    """What earlier runs in the same command changed: a redirect seen, branches switched to per directory."""
+
+    redirected: bool = False
+    switched: dict[str, str] = field(default_factory=dict)
 
 
 def split_commands(command: str) -> tuple[list[Invocation], list[str]] | None:
@@ -146,11 +159,16 @@ def _env_prefix_length(words: list[str]) -> int:
 
 
 def _join(base: str | None | object, target: str) -> str | None | object:
-    if base is UNKNOWN or target == "-":
+    if base is UNKNOWN or target == "-" or not _literal(target):
         return UNKNOWN
     if target.startswith(("/", "~")) or base is None:
         return target
     return f"{str(base).rstrip('/')}/{target}"
+
+
+def _literal(word: str) -> bool:
+    """Whether a word means what it says: no variable or substitution left for the shell to expand."""
+    return "$" not in word and "`" not in word
 
 
 def is_git(word: str) -> bool:
@@ -164,11 +182,10 @@ def git_subcommand(words: tuple[str, ...]) -> tuple[str | None | object, str, tu
     while index < len(words) and words[index].startswith("-"):
         option = words[index]
         takes_value = option in GIT_OPTS_WITH_VALUE
-        value = words[index + 1] if takes_value and index + 1 < len(words) else ""
-        if option.startswith(("--git-dir", "--work-tree")) or (option == "-c" and value.lower().startswith("alias.")):
+        if option.startswith(("--git-dir", "--work-tree")):
             directory = UNKNOWN
-        elif option == "-C" and directory is not UNKNOWN:
-            directory = _join(directory, value)
+        elif option == "-C" and directory is not UNKNOWN and index + 1 < len(words):
+            directory = _join(directory, words[index + 1])
         index += 2 if takes_value else 1
     if index >= len(words):
         return None
@@ -176,7 +193,7 @@ def git_subcommand(words: tuple[str, ...]) -> tuple[str | None | object, str, tu
 
 
 def text_writes(text: str) -> list[str]:
-    """The branch-writing git subcommands found in free text (an inline `-c alias.` counts as one)."""
+    """The branch-writing git subcommands found in free text (an inline `alias.` setting counts as one)."""
     return [found.group(1) for found in GIT_IN_TEXT.finditer(text)
             if found.group(1) in TEXT_WRITES or "alias." in found.group(0)]
 
@@ -186,24 +203,16 @@ def writes_in_text(text: str) -> bool:
     return bool(GH_MERGE_IN_TEXT.search(text) or text_writes(text))
 
 
-def names_protected(subcommand: str, args: tuple[str, ...]) -> bool:
-    """Whether a ref-moving subcommand names a protected branch among its arguments."""
-    if subcommand not in REF_MOVERS:
-        return False
-    for arg in args:
-        if subcommand == "fetch":  # only a refspec's destination moves a local branch
-            if ":" in arg and _is_protected_ref(arg.rsplit(":", 1)[1]):
-                return True
-        elif _is_protected_ref(arg.rsplit(":", 1)[-1]):
-            return True
-    return False
-
-
 def _is_protected_ref(name: str) -> bool:
     name = name.lstrip("+")
     if name.startswith("refs/heads/"):
         name = name[len("refs/heads/"):]
     return name in PROTECTED
+
+
+def _plain_branch(word: str) -> bool:
+    """A branch name given literally, not an option, and not a protected one."""
+    return _literal(word) and not word.startswith("-") and not _is_protected_ref(word)
 
 
 def decide(command: str, branch_of: BranchOf) -> Decision | None:
@@ -214,51 +223,90 @@ def decide(command: str, branch_of: BranchOf) -> Decision | None:
     runs, bodies = parsed
     if any(writes_in_text(body) for body in bodies) and any(run.words and not is_git(run.words[0]) for run in runs):
         return "ask", NESTED_REASON
-    drifted = False  # an earlier run may have changed what is checked out, or where git points
+    state = State()
     for run in runs:
         exported = run.words[1:] if run.words[:1] == ("export",) else ()
         if any(GIT_REDIRECT_ENV.match(word) for word in exported) or (
                 not run.words and any(GIT_REDIRECT_ENV.match(word) for word in run.env)):
-            drifted = True  # GIT_DIR and the like now apply to every later git run
+            state.redirected = True  # GIT_DIR and the like now apply to every later git run
         if not run.words:
             continue
-        if run.words[:3] == ("gh", "pr", "merge"):
-            return "ask", GH_MERGE_REASON
-        if not is_git(run.words[0]):
-            scanned = _substitutions(run.words) if run.words[0] in NON_EXECUTING else run.words
-            if writes_in_text(" ".join(scanned)):
-                return "ask", NESTED_REASON
-            continue
-        verdict, moves_head = _decide_git_run(run, branch_of, drifted)
+        verdict = _decide_run(run, branch_of, state)
         if verdict:
             return verdict
-        drifted = drifted or moves_head
     return None
 
 
-def _decide_git_run(run: Invocation, branch_of: BranchOf, drifted: bool) -> tuple[Decision | None, bool]:
-    """(the verdict for one direct git run, whether it may change what is checked out)."""
+def _decide_run(run: Invocation, branch_of: BranchOf, state: State) -> Decision | None:
+    if run.words[:3] == ("gh", "pr", "merge"):
+        return "ask", GH_MERGE_REASON
+    if is_git(run.words[0]):
+        return _decide_git_run(run, branch_of, state)
+    if not _literal(run.words[0]) and any(word in TEXT_WRITES for word in run.words[1:]):
+        return "ask", NESTED_REASON  # `$G commit` where G=git
+    scanned = _substitutions(run.words) if run.words[0] in NON_EXECUTING else run.words
+    return ("ask", NESTED_REASON) if writes_in_text(" ".join(scanned)) else None
+
+
+def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decision | None:
     parsed = git_subcommand(run.words)
     if parsed is None:
-        return None, False
+        return None
     git_dir, subcommand, args = parsed
     substituted = _substitutions(args)
     if substituted and writes_in_text(" ".join(substituted)):
-        return ("ask", NESTED_REASON), False
-    if subcommand in READ_ONLY:
-        return None, False
+        return "ask", NESTED_REASON
+    if subcommand in READ_ONLY or subcommand in INDEX_ONLY:
+        return None
+    target = _target(run.directory, git_dir)
+    if subcommand in CURRENT_BRANCH_WRITES:
+        if LEAVES_BRANCH & set(args):
+            return None
+        return _decide_branch(subcommand, _branch_at(target, run, branch_of, state))
+    if subcommand == "switch":
+        new = _switch_target(args)
+        if new is None or target is UNKNOWN:
+            return "ask", "git switch: the branch it lands on is protected, or cannot be read from the command: asking"
+        state.switched[str(target)] = new
+        return None
+    if subcommand == "branch" and (_is_listing(args) or _is_plain_create(args)):
+        return None
+    if subcommand == "fetch" and all(":" not in arg and _literal(arg) for arg in args):
+        return None
+    if subcommand == "worktree" and args[:1] in (("list",), ("prune",)):
+        return None
+    if subcommand == "symbolic-ref" and len([arg for arg in args if not arg.startswith("-")]) <= 1:
+        return None
     if subcommand == "push":
-        return ("ask", "git push publishes history: that needs your approval"), False
-    if names_protected(subcommand, args):
-        return ("ask", f"git {subcommand} names a protected branch (main, master or develop): asking"), False
-    if subcommand in MOVES_HEAD:
-        return None, True
-    if subcommand in NO_BRANCH_WRITE or LEAVES_BRANCH & set(args):
-        return None, False
-    redirected = git_dir is UNKNOWN or any(GIT_REDIRECT_ENV.match(word) for word in run.env)
-    if drifted or redirected:
-        return _decide_branch(subcommand, None), False
-    return _decide_branch(subcommand, branch_of(_target(run.directory, git_dir))), False
+        return "ask", "git push publishes history: that needs your approval"
+    return "ask", f"git {subcommand}: not a form this gate can show leaves main, master and develop alone, so asking"
+
+
+def _branch_at(target: str | None | object, run: Invocation, branch_of: BranchOf, state: State) -> str | None:
+    if target is UNKNOWN or state.redirected or any(GIT_REDIRECT_ENV.match(word) for word in run.env):
+        return None
+    return state.switched.get(str(target)) or branch_of(None if target is None else str(target))
+
+
+def _switch_target(args: tuple[str, ...]) -> str | None:
+    """The branch `git switch` lands on, when given plainly: `switch NAME` or `switch -c NAME [START]`."""
+    if len(args) == 1 and _plain_branch(args[0]):
+        return args[0]
+    if len(args) in (2, 3) and args[0] in ("-c", "--create") and _plain_branch(args[1]):
+        if len(args) == 2 or (_literal(args[2]) and not args[2].startswith("-")):
+            return args[1]
+    return None
+
+
+def _is_listing(args: tuple[str, ...]) -> bool:
+    return all(arg in LISTING_FLAGS or arg.startswith(LISTING_PREFIXES) for arg in args)
+
+
+def _is_plain_create(args: tuple[str, ...]) -> bool:
+    """`git branch NEW [START]`: creates a new branch and moves nothing else."""
+    if len(args) not in (1, 2) or not _plain_branch(args[0]):
+        return False
+    return len(args) == 1 or (_literal(args[1]) and not args[1].startswith("-"))
 
 
 def _substitutions(words: tuple[str, ...]) -> tuple[str, ...]:
@@ -271,8 +319,8 @@ def _substitutions(words: tuple[str, ...]) -> tuple[str, ...]:
 
 def _target(run_directory: str | None | object, git_dir: str | None | object) -> str | None | object:
     """Where a git run writes: its `cd` directory, moved by `git -C`."""
-    if git_dir is None:
-        return run_directory
+    if git_dir is None or git_dir is UNKNOWN:
+        return git_dir if git_dir is UNKNOWN else run_directory
     return _join(run_directory, str(git_dir))
 
 
@@ -288,10 +336,10 @@ def _decide_unparsed(command: str, branch_of: BranchOf) -> Decision | None:
     if not writes_in_text(command):
         return None
     found = text_writes(command)
-    if GH_MERGE_IN_TEXT.search(command) or CD_IN_TEXT.search(command) or any(
-            sub in MOVES_HEAD or sub == "push" for sub in found):
+    if GH_MERGE_IN_TEXT.search(command) or any(sub not in CURRENT_BRANCH_WRITES for sub in found) or re.search(
+            r"(^|[;&|(]\s*)cd\s", command):
         return "ask", UNPARSED_REASON
-    return _decide_branch(found[0] if found else "write", branch_of(None))
+    return _decide_branch(found[0], branch_of(None))
 
 
 def current_branch(cwd: str, directory: str | None | object) -> str | None:
@@ -326,7 +374,9 @@ def main() -> int:
             return 0
         command = payload.get("tool_input", {}).get("command", "")
         cwd = payload.get("cwd") or os.getcwd()
-    except (ValueError, AttributeError) as error:
+        if not isinstance(command, str) or not isinstance(cwd, str):
+            raise TypeError("command or cwd is not a string")
+    except (ValueError, AttributeError, TypeError) as error:
         # Without the command there is no telling whether it writes history.
         emit("ask", f"git gate could not read the hook input ({type(error).__name__}), so asking")
         return 0
