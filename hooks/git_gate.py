@@ -658,10 +658,12 @@ def _decide_branch(subcommand: str, branch: str | None) -> Decision | None:
 
 
 # In text the lexer cannot split, what may point a git write somewhere other than the session's branch: a
-# directory change, git's global options (`-C`, `-c`, `--git-dir`), a GIT_DIR-style variable, Apple's git,
-# or a program given as a variable followed by a write (`$G push`), which names no `git` at all.
+# directory change, git's global options (`-C`, `-c`, `--git-dir`), a GIT_DIR-style variable, a hooks or
+# include setting or `git config` (which can switch off the reference-transaction hook), Apple's git, or a
+# program given as a variable followed by a write (`$G push`), which names no `git` at all.
 UNPARSED_TARGET_CHANGE = re.compile(
     r"(?:^|[\s;&|(`])(?:cd|pushd|popd)\b|\bgit\s+-|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)="
+    r"|(?i:hookspath|\bhook\.\w|\binclude(?:if)?\.)|\bgit\s+config\b"
     r"|/usr/bin/git\b|\$\{?\w+\}?\s+(?:" + "|".join(sorted(TEXT_WRITES)) + r")\b"
 )
 

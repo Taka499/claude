@@ -432,7 +432,9 @@ class BypassRegressions(unittest.TestCase):
         for command in ("printf $'x\\n' && git -C ../main merge feat/x", "printf $'x' && G=git && $G push origin develop",
                         "printf $'x' && $G merge feat/x", "printf $'x' && GIT_DIR=../m/.git git commit -m x",
                         "printf $'x' && pushd ../m && git commit -m x", "printf $'x'\ncd ../m && git commit -m x",
-                        "printf $'x' && /usr/bin/git commit -m x", "printf $'x' && git -c core.hooksPath=/dev/null commit -m x"):
+                        "printf $'x' && /usr/bin/git commit -m x", "printf $'x' && git -c core.hooksPath=/dev/null commit -m x",
+                        "printf $'x'; git config core.hooksPath /dev/null; git commit -m x",
+                        "printf $'x'; GIT_CONFIG_PARAMETERS=\"'hook.p.enabled=false'\" git commit -m x"):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
         self.assertIsNone(decide("printf $'a\\tb\\n' > x.txt && git commit -m x", on("feat/x")))
