@@ -234,10 +234,11 @@ class _Level:
 def _operators(token: str) -> list[str]:
     """A token split into shell operators when it is punctuation only: shlex keeps a run of punctuation as
     one token, so `&&(` and `);` would otherwise hide a separator or a subshell from the run splitting.
-    A process substitution's `<(` or `>(` stays one word, so what it runs stays in the run it feeds."""
+    A process substitution's `<(` or `>(` stays one word, so what it runs stays in the run it feeds, and so
+    does zsh's clobbering redirection `>|` (`>&|`, `&>|`), which writes a file and is no pipe."""
     if not token or any(char not in "();<>|&" for char in token):
         return [token]
-    return re.findall(r"&&|\|\||;;|\|&|\(\)|[<>]\(|&>>?|[<>]+&?|[;|&()]", token)  # `<(` stays whole
+    return re.findall(r"&&|\|\||;;|\|&|\(\)|[<>]\(|>&?\||&>>?\|?|[<>]+&?|[;|&()]", token)
 
 
 def _set_aside_heredocs(command: str) -> tuple[str, list[tuple[str, bool]]]:

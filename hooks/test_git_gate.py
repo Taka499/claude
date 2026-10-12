@@ -486,6 +486,11 @@ class BypassRegressions(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, elsewhere)))
         self.assertIsNone(decide("(cd ../protected && git status)&&git commit -m x", elsewhere))  # back out of it
+        for command in ("echo 'git push origin develop' >| sh", "echo 'git push origin develop' &>| sh",
+                        "echo 'git push origin develop' >&| sh"):
+            with self.subTest(command=command):  # Codex round 12: zsh's clobbering redirection is no pipe
+                self.assertIsNone(decide(command, on("feat/x")))
+        self.assertTrue(asks(decide("echo 'git push origin develop'|sh", on("feat/x"))))
 
     def test_a_hash_hides_nothing_after_it(self):
         """Found reviewing the heredoc fix (2026-10-13), also on master: shlex read `#` as a comment

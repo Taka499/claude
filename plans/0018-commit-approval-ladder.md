@@ -173,10 +173,11 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
       - **zsh's `repeat 1 cd …` (contrived).** Fixed anyway: it was cheap.
       - **A function body with a real `git push` asks (Low), answered.** A definition is usually followed by a call, and the ask errs safe.
       - **The agent's own finding: operators written without spaces.** This was on master too, and checking round 11's `cdpath=(..)` case found it. shlex keeps a run of punctuation as one token, so in `true&&(cd ../main&&git merge topic)` or `(true);cd ../main && git merge topic`, `&&(` and `);` were plain words: the runs were mis-split, and the merge into `develop` passed. Fixed: punctuation-only tokens are split into the shell's operators, except that `<(` and `>(` stay whole, so a process substitution's text stays in the run it feeds.
+    - **Round 12** confirmed round 11's fixes and found no plausible good-faith shape left that misses a push, a merge into `develop` or a protected write. Its one finding, a Low, was fixed: the operator splitting broke zsh's clobbering redirection `>|` into `>` and a pipe, so `echo … >| sh`, which writes a file named `sh`, asked. `>|`, `>&|` and `&>|` now stay whole.
     - **Two bugs of the agent's own were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
   - **A fetch into a remote-tracking ref asked (the user's report, 2026-10-13).** `/codex-review`'s snapshot step runs `git -C <snapshot> fetch -q <repository> "<base>:refs/remotes/origin/<base>"`, and the hook asked every round: `fetch` was silent only with no refspec at all. A fetch is now silent when each refspec after the repository word stores into `refs/remotes/…` or `refs/tags/…`, or has no destination; such a fetch writes no branch. Every word must still be literal, since a variable may expand to `x:develop`. The skill's step now fetches from `origin`, which a clone points at the repository it was cloned from, instead of naming the repository, which an agent tends to fill in with a variable.
   - **Stray objects during round 4, not an incident.** The post-review check found two unreachable commits in this clone's object store, written about a minute into the run: a `git stash create` pair ("WIP on …", "index on …") whose blobs matched the uncommitted working files. No ref moved. They came from the security-guidance plugin, which snapshots the working tree with `git stash create` and leaves `.git/sg-*` marker files. Codex ran in its snapshot clone, which has its own object store.
-  - **Verification:** 70 test methods pass. Forty-nine deliberate breakages each failed tests:
+  - **Verification:** 70 test methods pass. Fifty deliberate breakages each failed tests:
     - no look-through;
     - a look-through that never accepts a `git` after an option;
     - one that always demands a known subcommand;
@@ -225,7 +226,8 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - no `noglob`/`nocorrect`;
     - no `repeat`;
     - no `CDPATH` rule;
-    - the `CDPATH` rule applied to `./` paths too.
+    - the `CDPATH` rule applied to `./` paths too;
+    - `>|` split into a pipe.
 
     Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (believed redundant because `shlex` fails on such commands; round 7 proved that wrong, see the review history), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check, twice (no delimiter word follows its `<<`). Several heredoc misreads were at first caught only by the coarse fallback, because the misread left an unbalanced quote; their tests now close the quote in a line the shell takes for a comment (`# '`), so each breakage shows.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
