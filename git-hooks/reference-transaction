@@ -24,6 +24,9 @@
 GIT_NO_REPLACE_OBJECTS=1
 GIT_GRAFT_FILE=/dev/null
 export GIT_NO_REPLACE_OBJECTS GIT_GRAFT_FILE
+# The commit-graph cache (.git/objects/info/commit-graph) also answers parent and ancestry questions;
+# read the commit objects themselves instead.
+git() { command git -c core.commitGraph=false "$@"; }
 common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1
 status=0
 refuse() {
