@@ -11,7 +11,7 @@ read-only and index-only subcommands, listing or plainly creating a branch, swit
 unprotected branch, fetching into remote-tracking refs or tags only, and writes to the current branch when that branch
 can be named and is unprotected. Everything else asks — every other subcommand (aliases,
 `update-ref`, `filter-branch`, `checkout`, …), a branch name that is a variable or an attached
-option, a refspec destination, git found inside another program's text, a program that is itself
+option, a refspec destination other than a remote-tracking ref or tag, git found inside another program's text, a program that is itself
 a variable, a `GIT_DIR`-style redirect, a `push`, a `gh pr merge`, unreadable hook input.
 Two rounds of review showed that listing dangerous shapes cannot be completed; listing safe ones can.
 

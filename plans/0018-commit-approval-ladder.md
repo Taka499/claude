@@ -25,7 +25,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
   - read-only and index-only subcommands;
   - listing or plainly creating a branch;
   - `switch` to a literal, unprotected name, remembered for the rest of the command;
-  - `fetch` with no refspec;
+  - `fetch` with no refspec (since 2026-10-13, also with refspecs that store only into `refs/remotes/…` or `refs/tags/…`; see the after-merge note on fetch below);
   - a current-branch write (`commit`, `merge`, `pull`, `cherry-pick`, `revert`, `am`) on a branch it can name as unprotected.
 
   Everything else asks, as README § The one file this repo does not deploy lists. The rule is a pure function, `decide(command, branch_of)`, with git reached only through the injected `branch_of`.
