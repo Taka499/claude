@@ -128,19 +128,31 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
 - **After merge (2026-10-13): git text is judged per program, not per command.** In the coordination worker of gkms-contest-ai, a `python3 - <<'EOF'` script rewriting its ExecPlan made the hook ask on 2026-10-12. The script's replacement strings were git commands written as prose, and the hook scanned the heredoc of any command containing a non-git program. That cost the user an approval for a markdown edit, the very kind of prompt this plan removes.
   - **A first narrowing scanned text only when the command contained a listed shell-like program.** Codex rejected it on two counts. It was command-wide, so `env python3 - <<EOF …` still asked, as did a Python edit followed by `time true`. And a fixed list missed launchers: `busybox sh -c`, `find … -exec`, `git -c core.pager=…`.
   - **The rule now works per program.**
-    - Wrappers (`env`, `time`, `xargs`, `find -exec`, `busybox`, …) are looked through to the git or shell they run. Git found that way is judged as a git run, so `env git commit` on a feature branch is silent and on `develop` asks.
-    - A shell's own arguments, its own heredoc and output piped into it are scanned.
-    - Every other program has only `$(…)`, backticks and `<(…)` scanned, which the shell itself runs.
+    - Any program is looked through to the first `git` or shell it starts, with no list of launchers (`env`, `time`, `xargs`, `find -exec`, `busybox`, `arch`, `setsid`, `cat <(…)`, …). A `git` right after an option may be that option's value (`find -name git`, `sudo -u git`), so there it counts only when a known git subcommand follows. Git found that way is judged as a git run, so `env git commit` on a feature branch is silent and on `develop` asks.
+    - A shell's own arguments, its own heredoc and everything piped into it, however many stages back, are scanned.
+    - Every other program has only `$(…)` and backticks scanned, which the shell itself runs. A process substitution needs no scan: its `git` is found by the look-through.
     - `-c` values and `GIT_*` variables given for a git command are scanned for git it would run.
 
   - **Two of the agent's own bugs were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
   - **The program-file case grows by one:** a shell running a script file, as in `printf … > s.sh; sh s.sh`, is no longer scanned. The global reference-transaction hook (plan 0020) holds there.
-  - **Verification:** 58 test methods pass. Seven deliberate breakages each failed tests: no look-through, no pipe feed, no own heredoc, the heredoc eating its line, no `-c` scan, no process-substitution scan, and builtins matching.
+  - **Round 2 of Codex** found three things, all fixed: multi-stage pipes into a shell were missed (only the stage before the shell was read), launchers missing from a fixed list (`arch`, `setsid`) were not looked through, and `find -name git` was taken for a git run.
+  - **Verification:** 59 test methods pass. Eleven deliberate breakages each failed tests:
+    - no look-through;
+    - a look-through that never accepts a `git` after an option;
+    - one that always demands a known subcommand;
+    - only the last pipeline stage fed to a shell;
+    - no own heredoc;
+    - the heredoc eating its line;
+    - no `-c` scan;
+    - builtins matching;
+    - `gh pr merge` seen only first in a run.
+
+    Two of the eleven had at first survived: an alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test. Both now do.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification
 
-- `python3 -m unittest discover -s hooks`: 50 test methods pass under Python 3.14.3. Each review shape is a subtest:
+- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (59 after the 2026-10-13 change below). Each review shape is a subtest:
   - 24 from round 1 in `BypassRegressions.SHAPES`;
   - 13 from round 2 and the security review;
   - 3 for creating a protected branch.

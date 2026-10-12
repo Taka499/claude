@@ -293,6 +293,22 @@ class BypassRegressions(unittest.TestCase):
                 self.assertTrue(asks(decide(command, on("develop"))))
                 self.assertIsNone(decide(command, on("feat/x")))
 
+    def test_codex_round_two_shapes(self):
+        """Codex review round 2 of the per-program rule (2026-10-13)."""
+        for command in ("echo 'git commit -m x' | cat | bash", "printf 'git commit -m x' | sed 's/x/x/' | sh"):
+            with self.subTest(command=command):  # multi-stage pipelines into a shell
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+        for command in ("arch git commit -m x", "setsid git commit -m x"):
+            with self.subTest(command=command):  # launchers on no list
+                self.assertTrue(asks(decide(command, on("develop"))))
+                self.assertIsNone(decide(command, on("feat/x")))
+        for command in ("env git sync", "time git co develop", "env gh pr merge 5", "time gh pr merge 5 --merge"):
+            with self.subTest(command=command):  # an alias or gh behind a launcher is still seen
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+        for command in ("find . -name git -exec echo {} \\;", "sudo -u git true", "env -u git true"):
+            with self.subTest(command=command):  # an argument named git is not a git run
+                self.assertIsNone(decide(command, on("develop")))
+
     def test_launchers_codex_found_unscanned(self):
         """Codex review of the narrowing (2026-10-13): runners missing from a fixed list."""
         for command in ("busybox sh -c 'git commit -m x'",
@@ -310,7 +326,9 @@ class BypassRegressions(unittest.TestCase):
 
     def test_process_substitution_runs_its_contents(self):
         """Security review of the narrowing (2026-10-13): `cat <(git commit)` runs the commit."""
-        self.assertTrue(asks(decide("cat <(git commit -m x)", on("feat/x"))))
+        self.assertTrue(asks(decide("cat <(git commit -m x)", on("develop"))))
+        self.assertIsNone(decide("cat <(git commit -m x)", on("feat/x")))  # it commits on feat/x
+        self.assertTrue(asks(decide("cat -n <(git push origin develop)", on("feat/x"))))
         self.assertIsNone(decide("diff <(git log -1) <(git log -2)", on("develop")))
 
     def test_a_script_file_is_the_program_file_case(self):

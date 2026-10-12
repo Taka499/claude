@@ -83,6 +83,9 @@ TEXT_WRITES = CURRENT_BRANCH_WRITES | frozenset({
     "filter-branch", "filter-repo", "replace", "bisect", "fast-import",
 })
 
+# Git subcommands, for telling `env git commit` (a git run) from `sudo -u git true` (an option's value).
+KNOWN_SUBCOMMANDS = READ_ONLY | INDEX_ONLY | CURRENT_BRANCH_WRITES | TEXT_WRITES
+
 # git's global options that take a separate value (`git -C dir`, `git -c key=value`).
 GIT_OPTS_WITH_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"})
 
@@ -95,13 +98,6 @@ SEPARATORS = frozenset({"&&", "||", ";", "|", "|&", "&", ";;"})
 # are the program-file case this hook cannot see; the global reference-transaction hook holds there.
 SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "eval", "source", "."})
 BUILTIN_SHELLS = frozenset({"eval", "source", "."})
-
-# Programs that run another program named in their arguments. They are looked through, so `env git commit`
-# is judged as the git run it is, and `find … -exec git commit` or `busybox sh -c …` is not missed.
-WRAPPERS = frozenset({
-    "env", "time", "nohup", "nice", "timeout", "sudo", "doas", "su", "command", "builtin", "exec", "xargs",
-    "watch", "parallel", "stdbuf", "caffeinate", "find", "busybox", "script",
-})
 
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Point git at another repository or configuration: the target can no longer be named.
@@ -274,32 +270,41 @@ def decide(command: str, branch_of: BranchOf) -> Decision | None:
     if runs is None:
         return _decide_unparsed(command, branch_of)
     state = State()
-    previous: Invocation | None = None
+    pipeline: list[Invocation] = []  # the runs before this one in its pipeline (`a | b | c`)
     for run in runs:
         exported = run.words[1:] if run.words[:1] == ("export",) else ()
         if any(GIT_REDIRECT_ENV.match(word) for word in exported) or (
                 not run.words and any(GIT_REDIRECT_ENV.match(word) for word in run.env)):
             state.redirected = True  # GIT_DIR and the like now apply to every later git run
+        if not run.piped:
+            pipeline = []
         if run.words:
-            verdict = _decide_run(run, previous if run.piped else None, branch_of, state)
+            verdict = _decide_run(run, tuple(pipeline), branch_of, state)
             if verdict:
                 return verdict
-        previous = run
+        pipeline.append(run)
     return None
 
 
 def _unwrap(words: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """(the words of the program actually run, the VAR=value assignments a wrapper sets for it).
+    """(the words of the git or shell program this run actually starts, the VAR=value words before it).
 
-    A wrapper's own options and their values cannot be told apart from the program reliably, so the
-    program is the first git or shell found after it; a wrapper running neither returns no words.
+    Any program may launch another (`env`, `time`, `xargs`, `find -exec`, `busybox`, `arch`, `setsid`, …),
+    so no list of launchers is kept: the run is looked through to the first `git` or shell. A `git` right
+    after an option may be that option's value (`find . -name git -exec echo`, `sudo -u git true`), so there
+    it counts only when a known git subcommand follows. A run starting neither returns no words.
     """
-    if not words or os.path.basename(words[0]) not in WRAPPERS:
+    if not words or is_git(words[0]) or _is_shell(words[:1]):
         return words, ()
     for index, word in enumerate(words[1:], start=1):
-        # `.`, `source` and `eval` are shell builtins a wrapper cannot run; `find .` must not match one.
-        if is_git(word) or os.path.basename(word) in SHELLS - BUILTIN_SHELLS:
-            return words[index:], tuple(w for w in words[1:index] if ENV_ASSIGNMENT.match(w))
+        launched = words[index:]
+        if is_git(word):
+            parsed = git_subcommand(launched)
+            if words[index - 1].startswith("-") and (parsed is None or parsed[1] not in KNOWN_SUBCOMMANDS):
+                continue
+        elif os.path.basename(word) not in SHELLS - BUILTIN_SHELLS:  # `.`, `source`, `eval` are builtins
+            continue
+        return launched, tuple(w for w in words[1:index] if ENV_ASSIGNMENT.match(w))
     return (), ()
 
 
@@ -307,18 +312,17 @@ def _is_shell(words: tuple[str, ...]) -> bool:
     return bool(words) and os.path.basename(words[0]) in SHELLS
 
 
-def _decide_run(run: Invocation, upstream: Invocation | None, branch_of: BranchOf, state: State) -> Decision | None:
+def _decide_run(run: Invocation, upstream: tuple[Invocation, ...], branch_of: BranchOf, state: State) -> Decision | None:
     words, assignments = _unwrap(run.words)
-    if words[:3] == ("gh", "pr", "merge") or run.words[:3] == ("gh", "pr", "merge") or (
-            os.path.basename(run.words[0]) in WRAPPERS and GH_MERGE_IN_TEXT.search(" ".join(run.words))):
+    if any(run.words[i:i + 3] == ("gh", "pr", "merge") for i in range(len(run.words))):
         return "ask", GH_MERGE_REASON
     if words and is_git(words[0]):
         unwrapped = Invocation(run.directory, run.env + assignments, words, run.heredocs, run.piped)
         return _decide_git_run(unwrapped, branch_of, state)
     if _is_shell(words):
         fed = list(words[1:]) + list(run.heredocs)
-        if upstream is not None:
-            fed += list(upstream.words) + list(upstream.heredocs)
+        for earlier in upstream:  # everything piped into the shell, however many stages back
+            fed += list(earlier.words) + list(earlier.heredocs)
         return ("ask", NESTED_REASON) if writes_in_text(" ".join(fed)) else None
     if not _literal(run.words[0]) and (
             any(word in TEXT_WRITES or "alias." in word or word.startswith(HIDDEN_EFFECT_OPTIONS) for word in run.words[1:])
@@ -424,13 +428,13 @@ def _is_plain_create(args: tuple[str, ...]) -> bool:
 
 
 def _substitutions(words: tuple[str, ...]) -> tuple[str, ...]:
-    """All the words when any holds something the shell runs before the command: `$(…)`, backticks, or a
-    process substitution `<(…)` / `>(…)`.
+    """All the words when any holds something the shell runs before the command: `$(…)` or backticks.
 
-    All, not only the marked ones: unquoted, `echo `git commit -m x`` tokenizes as "`git", "commit", …, and
-    the shell lexer keeps `<(` as one word, so `cat <(git commit -m x)` arrives as "cat", "<(", "git", ….
+    All, not only the marked ones: unquoted, `echo `git commit -m x`` tokenizes as "`git", "commit", ….
+    A process substitution needs no case here: the lexer splits `cat <(git commit)` into words with a
+    plain `git`, which the look-through finds and judges as the git run it is.
     """
-    marked = any("$(" in word or "`" in word or word.startswith(("<(", ">(")) for word in words)
+    marked = any("$(" in word or "`" in word for word in words)
     return words if marked else ()
 
 
