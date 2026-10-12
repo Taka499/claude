@@ -149,10 +149,13 @@ class State:
 def split_commands(command: str) -> list[Invocation] | None:
     """Split a shell command into its program runs, tracking `cd`, subshells, pipes and heredocs.
 
-    Returns None when the text cannot be tokenized (unbalanced quotes), so the caller falls back
-    to a coarser scan instead of trusting a partial parse.
+    Returns None when the text cannot be tokenized (unbalanced quotes) or uses quoting the hook does not
+    model (`$'…'`), so the caller falls back to a coarser scan instead of trusting a partial parse.
     """
-    text, bodies = _set_aside_heredocs(command)
+    try:
+        text, bodies = _set_aside_heredocs(command)
+    except _Unreadable:
+        return None
     text = text.replace("\n", " ; ")
     lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
@@ -190,6 +193,10 @@ def split_commands(command: str) -> list[Invocation] | None:
     return runs
 
 
+class _Unreadable(Exception):
+    """Shell text whose quoting the hook does not model; the caller falls back to the coarse scan."""
+
+
 @dataclass
 class _Level:
     """One `$(…)` nesting level of shell text: its open quote, its open `(`s, its open `case`s."""
@@ -209,8 +216,8 @@ def _set_aside_heredocs(command: str) -> tuple[str, list[str]]:
       not close.
     - Every `<<WORD` on a line takes a body, in order, from the lines after it; each body ends at the first
       line equal to its delimiter (leading tabs removed for `<<-`), or with the command.
-    `$'…'` is not tracked: the lexer below has no such quoting, so a command whose meaning depends on it
-    fails to tokenize and takes the coarse scan.
+    Raises _Unreadable on `$'…'` quoting outside quotes, in a heredoc's word too: its escapes would shift
+    where quotes close (`$'\\''` is one quote character), and the lexer below has no such quoting.
     """
     out: list[str] = []
     bodies: list[str] = []
@@ -231,6 +238,8 @@ def _set_aside_heredocs(command: str) -> tuple[str, list[str]]:
             step = 2
         elif level.quote == '"':
             level.quote = "" if char == '"' else '"'
+        elif command.startswith("$'", index):
+            raise _Unreadable(command)
         elif char in "'\"":
             level.quote = char
         elif char == "(":
@@ -313,6 +322,8 @@ def _heredoc_operator(command: str, index: int) -> tuple[str, bool, bool, int] |
                 word.append(char)
         elif char in METACHARACTERS:
             break
+        elif command.startswith("$'", position):
+            raise _Unreadable(command)
         elif char in "'\"":
             quote, quoted = char, True
         elif char == "\\":

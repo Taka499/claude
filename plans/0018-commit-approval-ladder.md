@@ -146,7 +146,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - shell names behind symlinks, and interactive escapes (`less` `!`);
     - an alias right after a launcher's option (`xargs -0 git co`).
 
-    The global reference-transaction hook (plan 0020) refuses any non-merge update of a protected branch in all of these. `$'…'` quoting is not a gap: `shlex` cannot tokenize it, so such a command takes the coarse whole-text scan, which asks.
+    The global reference-transaction hook (plan 0020) refuses any non-merge update of a protected branch in all of these. `$'…'` quoting is not a gap either: a command using it outside quotes, in a heredoc's word too, takes the coarse whole-text scan, which asks whenever git-write text appears anywhere in it. The hook does not model its escapes, which shift where quotes close.
   - **Review history.** Codex ran five rounds, and the security-guidance plugin reviewed each commit.
     - **Round 1** rejected a first narrowing, which scanned text only when the command contained a listed shell-like program. It was command-wide, so `env python3 - <<EOF …` still asked, as did a Python edit followed by `time true`, and its fixed list missed `busybox sh -c`, `find … -exec` and `git -c core.pager=…`.
     - **Round 2** found that multi-stage pipes into a shell were missed, that unlisted launchers (`arch`, `setsid`) were not looked through, and that `find -name git` was taken for a git run.
@@ -156,10 +156,11 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - **The plugin's review of round 4** found that the launched-printer rule hid `find echo -exec git commit`. It also found that a `<<EOF` in quotes or a comment hid the following lines; master had asked there, because it scanned every body. The launched-printer rule was removed, so round 4's false ask stays, and heredocs became quote- and comment-aware. Checking that fix found the `#` bug, which dates from before this branch.
     - **Round 5** found the launched-printer rule incomplete (`env -i echo …`), which was moot once the rule was removed.
     - **Round 6** found two shapes in which the regex heredoc reading hid a `git push` that the shell runs: a `<<EOF` inside `$((…))`, and a second heredoc on one line. The plugin's review of the same commit reported parser differentials too. The reading was rewritten to follow the shell's rules, above. Checking those rules against bash found three more misreads, all fixed: an indented delimiter line, `\`-newline joining, and a `)` of a subshell or `case` pattern closing a `$(…)`.
+    - **Round 7** found that `cat <<$'EOF'` took `$EOF` for the delimiter and hid every later line, a `git push` included. The agent then built a line on which `$'\''` shifted the scanner's quote parity, so that a real `git push` was set aside as a heredoc body while `shlex` still tokenized the rest. The earlier removal of `$'…'` tracking had rested on the belief that `shlex` always fails there. Fixed: `$'…'` outside quotes makes the command unreadable, and the coarse scan applies. Its Low finding was answered, not fixed: `git fetch origin --filter blob:none` asks, because an option's value after the repository word reads as a refspec. The same options before the repository are silent, the ordering is rare, and the ask errs safe; modelling every value-taking option of `fetch` would add parsing for little gain.
     - **Two bugs of the agent's own were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
   - **A fetch into a remote-tracking ref asked (the user's report, 2026-10-13).** `/codex-review`'s snapshot step runs `git -C <snapshot> fetch -q <repository> "<base>:refs/remotes/origin/<base>"`, and the hook asked every round: `fetch` was silent only with no refspec at all. A fetch is now silent when each refspec after the repository word stores into `refs/remotes/…` or `refs/tags/…`, or has no destination; such a fetch writes no branch. Every word must still be literal, since a variable may expand to `x:develop`. The skill's step now fetches from `origin`, which a clone points at the repository it was cloned from, instead of naming the repository, which an agent tends to fill in with a variable.
   - **Stray objects during round 4, not an incident.** The post-review check found two unreachable commits in this clone's object store, written about a minute into the run: a `git stash create` pair ("WIP on …", "index on …") whose blobs matched the uncommitted working files. No ref moved. They came from the security-guidance plugin, which snapshots the working tree with `git stash create` and leaves `.git/sg-*` marker files. Codex ran in its snapshot clone, which has its own object store.
-  - **Verification:** 66 test methods pass. Twenty-five deliberate breakages each failed tests:
+  - **Verification:** 66 test methods pass. Twenty-seven deliberate breakages each failed tests:
     - no look-through;
     - a look-through that never accepts a `git` after an option;
     - one that always demands a known subcommand;
@@ -184,9 +185,11 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - joining under a quoted delimiter too;
     - a delimiter line compared loosely;
     - no `(` counting inside `$(…)`;
-    - no `case` tracking.
+    - no `case` tracking;
+    - `$'…'` read by the scanner;
+    - `$'…'` read in a heredoc's word.
 
-    Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (`shlex` fails there anyway), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check, twice (no delimiter word follows its `<<`). Several heredoc misreads were at first caught only by the coarse fallback, because the misread left an unbalanced quote; their tests now close the quote in a line the shell takes for a comment (`# '`), so each breakage shows.
+    Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (believed redundant because `shlex` fails on such commands; round 7 proved that wrong, see the review history), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check, twice (no delimiter word follows its `<<`). Several heredoc misreads were at first caught only by the coarse fallback, because the misread left an unbalanced quote; their tests now close the quote in a line the shell takes for a comment (`# '`), so each breakage shows.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification

@@ -395,6 +395,8 @@ class BypassRegressions(unittest.TestCase):
             "cat <<EOF\n  EOF\ny='\nEOF\ngit push origin develop\n# '",
             "cat <<A <<B\nx\nA\ny='\nB\ngit push origin develop\n# '",
             "cat <<'EOF'\nx\\\nEOF\ngit push origin develop",  # a quoted delimiter joins no lines
+            "cat <<$'EOF'\ntext\nEOF\ngit push origin develop",  # Codex round 7: ANSI-C quoted delimiter
+            "echo $'\\'' '<<EOF' $'\\''\n\\'\ngit push origin develop\nEOF",  # $'\'' shifting quote parity
         ):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
