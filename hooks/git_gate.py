@@ -98,6 +98,9 @@ SEPARATORS = frozenset({"&&", "||", ";", "|", "|&", "&", ";;"})
 # are the program-file case this hook cannot see; the global reference-transaction hook holds there.
 SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "eval", "source", "."})
 BUILTIN_SHELLS = frozenset({"eval", "source", "."})
+# Programs that only print their arguments, so a `git` among them is text, not a run (`echo git commit`).
+# Missing a printer here costs a false ask, never a missed one. Piped into a shell, their words are still read.
+PRINTERS = frozenset({"echo", "printf"})
 
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Point git at another repository or configuration: the target can no longer be named.
@@ -296,6 +299,8 @@ def _unwrap(words: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """
     if not words or is_git(words[0]) or _is_shell(words[:1]):
         return words, ()
+    if os.path.basename(words[0]) in PRINTERS:
+        return (), ()
     for index, word in enumerate(words[1:], start=1):
         launched = words[index:]
         if is_git(word):

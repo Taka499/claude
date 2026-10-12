@@ -331,6 +331,18 @@ class BypassRegressions(unittest.TestCase):
         self.assertTrue(asks(decide("cat -n <(git push origin develop)", on("feat/x"))))
         self.assertIsNone(decide("diff <(git log -1) <(git log -2)", on("develop")))
 
+    def test_printed_git_is_text_until_a_shell_reads_it(self):
+        """Codex review round 3 (2026-10-13): `echo git commit` on develop asked."""
+        self.assertIsNone(decide("echo git commit -m x", on("develop")))
+        self.assertIsNone(decide("printf '%s\\n' git merge feat/x", on("develop")))
+        self.assertTrue(asks(decide("echo git commit -m x | sh", on("feat/x"))))
+
+    def test_git_spelled_out_only_at_run_time_is_not_seen(self):
+        """Accepted gap (Codex round 3): text built while it runs. The global git hook refuses the write."""
+        for command in ("printf 'git com%s' mit | sh", "bash -c \"$(printf %s git) commit -m x\""):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("develop")))
+
     def test_a_script_file_is_the_program_file_case(self):
         """Not seen here, by design: a shell running a script file. The global git hook covers it."""
         self.assertIsNone(decide("printf 'git commit -m x' > s.sh; sh s.sh", on("develop")))
