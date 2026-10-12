@@ -2,15 +2,20 @@
 
 ## Goal
 
-`/codex-review` said Codex "reads the diff read-only". Nothing enforced that. Codex runs inside the Claude Code sandbox with the write access the session has, which includes the repository under review. Only the prompt's "Do NOT modify anything" kept it read-only. On 2026-10-12, during a review of this repository's `feat/commit-approval-ladder` branch, Codex made an empty commit, `0f0b81f` "init", authored `x <x>`. The branch had to be rebuilt without it (plan 0018 § Evidence). The skill now gives Codex a copy to read and records the real repository's state, so that any write shows.
+`/codex-review` said Codex "reads the diff read-only". Nothing enforced that. Codex runs inside the Claude Code sandbox with the write access the session has, which includes the repository under review. Only the prompt's "Do NOT modify anything" kept it read-only. On 2026-10-12, during a review of this repository's `feat/commit-approval-ladder` branch, Codex made an empty commit, `0f0b81f` "init", authored `x <x>`. The branch had to be rebuilt without it (plan 0018 § Evidence). The skill now has Codex work in a copy, which keeps its ordinary relative-path commands out of the repository but does not confine it, since the sandbox still lets it reach the repository by path. Afterwards it lists every file in the repository written since the snapshot, so that any ordinary write shows.
 
 ## Changes
 
 - **`skills/codex-review/SKILL.md`:**
   - **Description and opening:** they no longer claim read-only. They say what happened, and that Codex now reviews a snapshot that is checked afterwards.
-  - **New step 2:** clone the branch into `mktemp -d "$TMPDIR/codex-review.XXXXXX"`; for uncommitted work, apply `git diff HEAD` to the clone. Record the repository's last reflog entry, all refs and `git status --porcelain`. It also explains why `mktemp -d` needs the `$TMPDIR` template on macOS.
+  - **New step 2:** take the snapshot, stopping at the first failed command.
+    - Clone with `--revision=<HEAD's commit>` (git 2.49+) into `mktemp -d "$TMPDIR/codex-review.XXXXXX"`, which lands on that commit detached and also works from a detached `HEAD`.
+    - For uncommitted work, apply `git diff --binary HEAD` (all-or-nothing) and copy untracked files with `tar`.
+    - Record the refs and a start marker.
+    - A repository with no commit is reviewed in place, and the report says so.
+    - It also explains why `mktemp -d` needs the `$TMPDIR` template on macOS.
   - **Step 3** runs Codex from the snapshot, and its prompt names the snapshot path and adds "do not commit".
-  - **New step 4:** record the three lists again, and report any difference to the user as an incident, before any finding. The user decides what to undo, because the global rules forbid rewriting history or deleting untracked files on one's own.
+  - **New step 4:** `find <repository> -newer <start marker>` lists every file written since the snapshot, `.git` included, and the refs are compared. Anything the agent did not write itself is reported to the user as an incident, before any finding. This catches every write that changes a modification time, not one that sets it back deliberately. The user decides what to undo, because the global rules forbid rewriting history or deleting untracked files on one's own.
   - **Renumbering:** the remaining steps are renumbered (evaluate is 5, re-run is 6, report is 7), with their cross-references updated; a re-run takes a fresh snapshot.
 - **Global `CLAUDE.md` § Skills:** the `/codex-review` line no longer says "read-only".
 
@@ -23,6 +28,13 @@
 ## Decision Log (session 2026-10-12)
 
 - **A clone, not a worktree.** A worktree shares the repository's refs and object store, so a commit made in it lands in the repository. A clone does not.
+- **Codex review of this change (CHANGES REQUESTED), all fixed:**
+  - the wording claimed Codex never touches the repository, but the snapshot redirects it without confining it;
+  - comparing refs, one reflog entry and `git status` missed many writes; replaced by `find -newer`;
+  - `git diff HEAD` lost untracked files and binary content;
+  - detached and unborn `HEAD` were unhandled;
+  - a failed clone or apply did not stop the procedure.
+- **`--revision`, not a separate checkout.** Running the revised procedure on a scratch repository showed the first version's `git -C "$snapshot/repo" checkout --detach` cannot run here. The user's permission rules deny every mutating `git -C` form, so the skill's own step would have been refused. `git clone --revision` reaches the commit without a checkout command. The same run confirmed the snapshot is detached at `HEAD` and matches the working tree, binary edit and untracked file included, and that an empty uncommitted diff applies cleanly.
 - **Report and stop; do not undo.** The incident is the user's to resolve. The agent may not rewrite history or delete untracked files without permission.
 - **No ADR.** This is a procedure in a skill, easy to change again.
 
