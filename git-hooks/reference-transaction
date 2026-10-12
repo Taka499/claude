@@ -1,0 +1,55 @@
+#!/bin/sh
+# protect-branches: Taka499/claude — git's reference-transaction hook guarding main, master and develop.
+#
+# Refuses any update of those branches that is not a merge:
+#   - deleting the branch;
+#   - moving it to a commit that does not contain its current tip (reset, rewind, amend, force);
+#   - advancing it by a commit that is not a merge commit (a direct commit, a revert, a cherry-pick,
+#     a fast-forward over plain commits).
+# Creating the branch is allowed: a repository's first commit, `git branch develop <start>`.
+#
+# Git runs this for every ref update, however the command was spelled or whatever program ran git,
+# so it holds where a check of command text cannot. It runs in the "prepared" state, after the refs
+# are locked and before they change; a non-zero exit aborts the whole transaction.
+#
+# Installed per repository by git-hooks/protect-branches.sh in the Taka499/claude repository.
+# The user's own bypass, for a deliberate exception: git -c core.hooksPath=/dev/null <command>
+
+[ "$1" = prepared ] || exit 0
+
+status=0
+refuse() {
+    echo "protect-branches: refusing to $2 ${1#refs/heads/}: main, master and develop change only by merges" >&2
+    status=1
+}
+
+while read -r old new ref; do
+    case "$ref" in
+        refs/heads/main | refs/heads/master | refs/heads/develop) ;;
+        *) continue ;;
+    esac
+    case "$new" in
+        ref:*) refuse "$ref" "make a symbolic ref of"; continue ;;
+    esac
+    case "$old" in
+        *[!0]*) ;;
+        *)
+            # All zeroes: a new branch, or a forced update that did not state the old value.
+            old=$(git rev-parse -q --verify "$ref^{commit}") || continue
+            ;;
+    esac
+    case "$new" in
+        *[!0]*) ;;
+        *) refuse "$ref" "delete"; continue ;;
+    esac
+    [ "$old" = "$new" ] && continue
+    if ! git merge-base --is-ancestor "$old" "$new"; then
+        refuse "$ref" "rewind or rewrite"
+        continue
+    fi
+    if [ -n "$(git rev-list --first-parent --max-parents=1 "$old..$new")" ]; then
+        refuse "$ref" "add a commit that is not a merge to"
+    fi
+done
+
+exit "$status"
