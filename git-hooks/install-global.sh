@@ -8,7 +8,7 @@
 # Config-defined hooks run alongside each repository's own .git/hooks (Git LFS keeps working) and need
 # no per-repository step. They need a git that supports them: Homebrew's 2.56 does, Apple's /usr/bin/git
 # 2.50 ignores them (git-hooks/protect-branches.sh installs a per-repository copy for such a git).
-# The hook acts only in the user's own repositories; it reads origin to tell. Both files written here sit
+# The hook acts only in the user's own repositories; it reads every remote's URL to tell. Both files written here sit
 # outside the Claude Code sandbox's writable paths, so a sandboxed session cannot alter them; for the same
 # reason run this script outside the sandbox. Re-running it updates the copy.
 set -eu
@@ -24,15 +24,21 @@ if [ "${1:-}" != --check ]; then
     git config --global hook.protect-branches.command "$target"
 fi
 
-# Prove it runs with the git on PATH: a direct commit on develop in a scratch repository must be refused,
-# by this hook (its own message), not by some other hook that happens to refuse too.
+# Prove it is set up and runs with the git on PATH. Configured: the command is this copy, unchanged, and not
+# disabled. Running: a direct commit on develop in a scratch repository is refused with this hook's own
+# message. The probe's commits skip signing and --no-verify skips commit hooks, which a machine's global
+# setup may have, so neither can fail the probe; reference-transaction is not a commit hook and still runs.
+[ "$(git config --global --get hook.protect-branches.command || true)" = "$target" ] &&
+    cmp -s "$source_hook" "$target" &&
+    [ "$(git config --global --type=bool --get hook.protect-branches.enabled || echo true)" = true ] ||
+    { echo "protect-branches: not configured as installed; run $0 without --check" >&2; exit 1; }
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/protect-branches.XXXXXX")
 (
     cd "$scratch" || exit 1
     git init -q -b develop probe && cd probe || exit 1
-    git -c user.name=p -c user.email=p@p commit -q --allow-empty -m root
+    git -c user.name=p -c user.email=p@p -c commit.gpgSign=false commit -q --no-verify --allow-empty -m root
     before=$(git rev-parse develop)
-    git -c user.name=p -c user.email=p@p commit -q --allow-empty -m direct 2> refused.txt || true
+    git -c user.name=p -c user.email=p@p -c commit.gpgSign=false commit -q --no-verify --allow-empty -m direct 2> refused.txt || true
     [ "$(git rev-parse develop)" = "$before" ] && grep -q "protect-branches: refusing" refused.txt
 ) && active=yes || active=no
 rm -rf "$scratch"

@@ -30,15 +30,18 @@ export GIT_NO_REPLACE_OBJECTS GIT_GRAFT_FILE
 # read the commit objects themselves instead. Any configured graft file, even /dev/null, makes git print a
 # deprecation hint on every call; that advice is switched off, nothing else is silenced.
 git() { command git -c core.commitGraph=false -c advice.graftFileDeprecated=false "$@"; }
-# Only the user's own repositories: any remote whose fetch or push URL is under github.com/Taka499 or
-# tia-tools, or no remote at all. Defined once in ~/.gitconfig, this hook runs in every repository, and a
-# clone of someone else's project (whose main takes direct commits upstream) must still pull. `git remote
-# -v` lists every remote's fetch and push URL with insteadOf aliases applied; GitHub owner names are
-# case-insensitive. A fork the user owns is protected too, so syncing upstream into it takes a merge.
-remotes=$(command git remote -v 2>/dev/null | tr '[:upper:]' '[:lower:]')
-if [ -n "$remotes" ]; then
-    case "$remotes" in
-        *github.com[:/]taka499/* | *github.com[:/]tia-tools/*) ;;
+# Only the user's own repositories: any remote whose fetch or push URL is hosted on github.com with the
+# owner Taka499 or tia-tools, or no remote at all. Defined once in ~/.gitconfig, this hook runs in every
+# repository, and a clone of someone else's project (whose main takes direct commits upstream) must still
+# pull. `git remote -v` lists every remote's fetch and push URL with insteadOf aliases applied. The owner is
+# read from the URL's host and first path segment (https://, ssh:// with a port, git@host:owner/…), not
+# found anywhere in its text; GitHub owner names are case-insensitive. A fork the user owns is protected
+# too, so syncing upstream into it takes a merge.
+owners=$(command git remote -v 2>/dev/null | awk '{print $2}' | tr '[:upper:]' '[:lower:]' |
+    sed -nE 's#^([a-z0-9+.-]+://)?([^@/]*@)?(www\.)?github\.com(:[0-9]+)?[:/]+([^/]+)/.*#\5#p')
+if [ -n "$(command git remote 2>/dev/null)" ]; then
+    case " $(printf '%s ' $owners) " in
+        *" taka499 "* | *" tia-tools "*) ;;
         *) cat > /dev/null; exit 0 ;;
     esac
 fi

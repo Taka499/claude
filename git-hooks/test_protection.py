@@ -265,7 +265,11 @@ class AllowedUpdates(ProtectedRepoTest):
 
 
 class OwnRepositoriesOnly(ProtectedRepoTest):
-    """The hook acts where origin is the user's (Taka499, tia-tools) or absent; others' clones must still pull."""
+    """The hook acts where a remote is the user's (Taka499, tia-tools) or there is none; others' clones must still pull."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.repo.tip("develop")
 
     def direct_commit_moves_develop(self, origin: str) -> bool:
         self.repo.git("remote", "add", "origin", origin)
@@ -297,6 +301,19 @@ class OwnRepositoriesOnly(ProtectedRepoTest):
     def test_the_users_remote_under_another_name_protects(self):
         self.repo.git("remote", "add", "fork", "git@github.com:Taka499/mulmoterminal.git")
         self.assertFalse(self.direct_commit_moves_develop("https://github.com/receptron/mulmoterminal.git"))
+
+    def test_the_owner_is_read_from_the_url_not_found_in_its_text(self):
+        """Codex review, round 2: a substring match protected foreign URLs and missed ssh:// with a port."""
+        for url, protected in (("ssh://git@github.com:22/Taka499/x.git", True),
+                               ("https://example.com/github.com/taka499/x.git", False),
+                               ("https://github.com/someone/github.com/taka499/x.git", False),
+                               ("https://github.com/xtaka499/x.git", False)):
+            with self.subTest(url=url):
+                self.repo.git("remote", "remove", "origin", check=False)
+                self.assertEqual(not self.direct_commit_moves_develop(url), protected)
+                self.repo.git("update-ref", "-d", "refs/heads/develop", check=False,
+                              env={"GIT_CONFIG_PARAMETERS": "'core.hookspath'='/dev/null'"})
+                self.repo.git("branch", "develop", self.root, check=False)
 
     def test_the_users_organization_is_protected(self):
         self.assertFalse(self.direct_commit_moves_develop("https://github.com/tia-tools/gakumas-supportcards.git"))
@@ -376,6 +393,30 @@ class GlobalHook(unittest.TestCase):
         self.assertEqual(command, installed)
         check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, timeout=60,
                                check=False)
+        self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_check_fails_when_the_installed_copy_was_changed(self):
+        """Codex review, round 2: the probe alone could be satisfied by another hook printing the same message."""
+        home = os.path.join(self.temp.name, "home3")
+        os.makedirs(home)
+        env = dict(ENV, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"),
+                   GIT_CONFIG_GLOBAL=os.path.join(home, ".gitconfig"))
+        self.assertEqual(subprocess.run(["sh", INSTALL_GLOBAL], env=env, capture_output=True, check=False).returncode, 0)
+        with open(os.path.join(home, ".config", "git", "protect-branches"), "a") as handle:
+            handle.write("# altered\n")
+        check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, check=False)
+        self.assertNotEqual(check.returncode, 0)
+
+    def test_check_passes_on_a_machine_that_signs_commits(self):
+        """Codex review, round 2: the probe's commits must not depend on the machine's commit setup."""
+        home = os.path.join(self.temp.name, "home4")
+        os.makedirs(home)
+        config = os.path.join(home, ".gitconfig")
+        env = dict(ENV, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"), GIT_CONFIG_GLOBAL=config)
+        self.assertEqual(subprocess.run(["sh", INSTALL_GLOBAL], env=env, capture_output=True, check=False).returncode, 0)
+        with open(config, "a") as handle:
+            handle.write("[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = false\n")
+        check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, check=False)
         self.assertEqual(check.returncode, 0, check.stderr)
 
     def test_check_fails_when_another_hook_does_the_refusing(self):
