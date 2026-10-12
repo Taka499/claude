@@ -269,7 +269,8 @@ class BypassRegressions(unittest.TestCase):
 
     def test_switching_off_gits_own_protection_asks(self):
         for command in ("git -c core.hooksPath=/dev/null commit -m x", "git -ccore.hookspath=/dev/null merge x",
-                        "git config core.hooksPath /tmp/none", "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='x'\" git status"):
+                        "git config core.hooksPath /tmp/none", "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='x'\" git status",
+                        "git config include.path /tmp/evil.cfg", "git config --file .git/config core.editor x"):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
 
