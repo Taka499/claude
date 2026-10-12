@@ -39,7 +39,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
   - `autoMode.soft_deny`: replace `Bash(git commit*) / Bash(git push*) without explicit per-operation permission — CLAUDE.md mandates asking before any history-mutating git command` with: `Git history on protected branches: git commit, merge, cherry-pick, revert or am while main, master or develop is checked out, gh pr merge, and any git push, without the user's explicit permission for that operation (global CLAUDE.md § Git Operations)`.
   - `autoMode.allow` (new; keeps `"$defaults"`) gets two entries:
     - `Feature-branch commits: git add <files> and git commit on any branch other than main, master and develop, and merging one of those three into such a branch to update it, are routine under the user's standing permission for an approved task (global CLAUDE.md § Git Operations); the git_gate hook asks for the protected branches`
-    - `Codex review: codex exec --sandbox danger-full-access with approvals off, run by the /codex-review skill to review the local diff read-only, is allowed. It runs as an ordinary sandboxed Bash command, so Claude Code's OS sandbox still confines it (writes only to the working directory, $TMPDIR and ~/.codex; network only to the allowlist; credential paths denied), and the user accepted sending the diff and the files Codex reads to OpenAI`
+    - `Codex review: codex exec --sandbox danger-full-access with approvals off, run by the /codex-review skill to review the local diff, is allowed. It runs as an ordinary sandboxed Bash command, so Claude Code's OS sandbox confines it (writes only to the working directory, $TMPDIR, ~/Developer/claude and ~/.codex; network only to the allowlist; credential paths denied). Its prompt forbids changes but nothing enforces that, so the skill checks the repository's status and reflog afterwards. The user accepted sending the diff and the files Codex reads to OpenAI`
 
 ## Evidence (session 2026-10-12; Claude Code 2.1.296, git 2.50.1, macOS 26.7.1)
 
@@ -68,6 +68,8 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
 - `autoMode.allow` entries are exceptions to `soft_deny` rules, and lists that omit `"$defaults"` replace the built-ins.
 - `claude auto-mode defaults --label 'Create Unsafe'`: a `soft_deny` rule covering "launching ANY agent … without sandbox isolation AND without a per-action approval/monitor gate". The classifier cannot see that `codex exec` runs inside Claude Code's Seatbelt, hence the allow entry that says so.
 - Hooks: exit 2 blocks the tool call; another non-zero exit is a non-blocking error; a hook that crashes or times out does not block.
+
+**Codex wrote to the repository during review round 2.** Despite "Do NOT modify anything" in its prompt, it made an empty commit, `0f0b81f` "init" authored `x <x>`, on the feature branch at 10:49:17. Nothing else changed: no other ref, no stash, no configuration. It also left `hooks/__pycache__/` from running the tests. Codex runs inside Claude Code's sandbox, which allows writes to this repository, so the prompt instruction is the only thing keeping a review read-only. No hook sees it either: Codex's git commands never pass through Claude Code. The branch was rebuilt without the commit, as `feat/commit-approval-ladder-2`, from `79adc43` with the two later commits cherry-picked; its tree is identical, and the old branch is kept for the user to delete. Round 3 ran against a snapshot clone under `$TMPDIR`, and the repository's reflog was checked afterwards.
 
 **Interpreters.**
 - `/usr/bin/python3` is 3.9.6 (Command Line Tools 27.0) and is not upgradable on its own.
@@ -101,18 +103,23 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
   - fetch refspecs configured to write local branches;
   - non-string hook input.
 
-  The security review of the first fix added git run through a variable (`G=git; $G commit`). Each was a shape the deny-list did not name. Isamu's own `pr-contract` documentation describes the pattern: by the third round, most findings are defects in fixes written during the review. So the rule was inverted again. Silence now needs one of a handful of forms whose effect is fully known, and every other subcommand asks, aliases included. This also removed the round-1 false positive on `git branch NEW develop`.
+  The security review of the first fix added git run through a variable (`G=git; $G commit`). Each was a shape the deny-list did not name. Isamu's own `pr-contract` documentation describes the pattern: by the third round, most findings are defects in fixes written during the review. So the rule was inverted again. Silence now needs one of a handful of forms whose effect is fully known, and every other subcommand asks, aliases included. This also removed the round-1 false positive on `git branch NEW develop`. The security review of the allowlist commit then found three silent forms with branch-moving options, now closed:
+  - `git stash branch NAME`, which creates a branch and switches to it;
+  - `git symbolic-ref -d`, and a second name setting `HEAD`;
+  - `git pull` with a refspec, which writes a local branch other than the current one.
 - **Inside other programs' text, only branch-writing subcommands count.** There, an unknown word after `git` is not treated as a write, so prose such as "the git repo" stays silent; a direct git run is stricter, where an unknown subcommand counts. Programs that only print or read their arguments (`echo`, `printf`, `grep`, `cat`, …) are scanned only when a `$(…)` or backtick, which the shell does run, appears. Config-defined aliases inside other programs (`bash -c "git ci"`) are the residual this leaves; there are none defined on this machine, and a sandboxed session cannot define one (`.git/config` is protected, `~/.gitconfig` is outside the write allowlist).
 - **Fail-open where it cannot be helped, and said so.** Unreadable input, including a `command` that is not a string, now asks. Configured fetch refspecs are not read: a sandboxed session cannot change `.git/config`, so only the user could have set one up. A missing interpreter, or a script that cannot import, still counts as no decision in Claude Code. That, and git run from a program file, is why a git-level guard is the next change.
 - **The interpreter is named by absolute path, and the entry is guarded.** A crashed hook fails open, and an unguarded missing file blocks every Bash call. The code needs 3.10, and the user chose to require a modern Python rather than write for Apple's 3.9.
 - **Python, not TypeScript, for the hook.** The parse needs a shell lexer, which Python has in `shlex`; a TypeScript version would need a package such as `shell-quote`, plus `tsc` for its types to be checked at all. This repo has no `package.json` or toolchain. Node here lives under `nvm`, at versioned paths a hook cannot rely on. Revisit if the harness grows enough scripts to justify a TypeScript toolchain with strict lint.
 - **Push is unchanged.** It is not the bottleneck, and the keychain deny makes it run outside the sandbox anyway.
 - **The rule is replaced in place.** It is a correction of the per-commit rule, made with the user's agreement (§ Continuous Learning). A project that restates the old rule, such as a coordinator's command file asking before every commit, should drop that restatement. Nothing else migrates.
+- **`/codex-review`'s "read-only" is a request, not a guarantee.** Recorded here, and fixed separately in the skill: review a snapshot, and check `git status` and the reflog after every run. Shipping this plan does not wait on that fix.
+- **`__pycache__/` is ignored.** `hooks/` brings Python into the repository, and running its tests leaves bytecode. The directory the review left behind is not deleted, per the user's rule on untracked files; ignored, it stops showing.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification
 
-- `python3 -m unittest discover -s hooks`: 46 test methods pass under Python 3.14.3. Each review shape is a subtest:
+- `python3 -m unittest discover -s hooks`: 47 test methods pass under Python 3.14.3. Each review shape is a subtest:
   - 24 from round 1 in `BypassRegressions.SHAPES`;
   - 13 from round 2 and the security review;
   - 3 for creating a protected branch.
@@ -121,7 +128,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
 - Deliberate breakages, each run on a scratch copy, failed tests in every round:
   - first version: 5 breakages;
   - the conservative version: 10;
-  - the allowlist version: 10, among them the final ask made silent (17 failures), switch targets unchecked, switches not remembered, any `branch` or `fetch` form allowed, the variable-program check removed, non-string input accepted, and the protected-name check on plain branch creation dropped.
+  - the allowlist version: 13, among them the three escapes above, the final ask made silent (17 failures), switch targets unchecked, switches not remembered, any `branch` or `fetch` form allowed, the variable-program check removed, non-string input accepted, and the protected-name check on plain branch creation dropped.
 
   Two of these first passed every test, each exposing a hole the suite then closed:
   - **branch-switch tracking:** every switch test named `develop`, so the protected-name check caught them first; tests for `git switch -`, `"$TARGET"` and `@{-1}` closed it.
