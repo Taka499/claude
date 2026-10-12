@@ -270,7 +270,10 @@ class BypassRegressions(unittest.TestCase):
     def test_switching_off_gits_own_protection_asks(self):
         for command in ("git -c core.hooksPath=/dev/null commit -m x", "git -ccore.hookspath=/dev/null merge x",
                         "git config core.hooksPath /tmp/none", "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='x'\" git status",
-                        "git config include.path /tmp/evil.cfg", "git config --file .git/config core.editor x"):
+                        "git config include.path /tmp/evil.cfg", "git config --file .git/config core.editor x",
+                        "git -c hook.protect-branches.enabled=false commit -m x",
+                        "git config hook.protect-branches.enabled false",
+                        "/usr/bin/git commit -m x"):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
 
@@ -301,6 +304,10 @@ class Negative(unittest.TestCase):
 
     def test_non_git_command(self):
         self.assertIsNone(decide("python3 -m unittest", on("main")))
+
+    def test_read_only_apple_git_and_ordinary_options(self):
+        self.assertIsNone(decide("/usr/bin/git status", on("develop")))
+        self.assertIsNone(decide('git commit -m "fix: the hook. done"', on("feat/x")))
 
     def test_branch_merely_containing_a_protected_name(self):
         self.assertIsNone(decide("git commit -m x", on("feature/main-menu")))

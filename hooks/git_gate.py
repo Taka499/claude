@@ -18,10 +18,11 @@ Two rounds of review showed that listing dangerous shapes cannot be completed; l
 What it cannot see: git run by a program file (`python3 tool.py`), fetch refspecs configured to
 write local branches, and a hook process that fails to start, which Claude Code treats as no
 decision. The backstop for these is git's own reference-transaction hook
-(git-hooks/reference-transaction), installed per repository by git-hooks/protect-branches.sh: it
-refuses every non-merge update of a protected branch made through git, whatever program runs
-it. This hook asks
-whenever a command carries core.hooksPath, the way to switch that off.
+(git-hooks/reference-transaction), defined once per machine in ~/.gitconfig by
+git-hooks/install-global.sh: it refuses every non-merge update of a protected branch made through
+git, whatever program runs it. This hook asks whenever a command carries core.hooksPath or a
+hook.* setting, the ways to switch that off, and
+before Apple's /usr/bin/git, which ignores a hook defined in ~/.gitconfig.
 
 Needs Python 3.10 or later; the settings entry names the interpreter by absolute path, because
 macOS's /usr/bin/python3 is Apple's 3.9. Entry and reasons: README.md § The one file this repo
@@ -284,8 +285,10 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
     if parsed is None:
         return None
     git_dir, subcommand, args = parsed
-    if any("hookspath" in word.lower() for word in run.words + run.env):
-        return "ask", "core.hooksPath would switch off git's own branch protection: asking"
+    if any("hookspath" in word.lower() or word.lower().lstrip("-c").startswith("hook.") for word in run.words + run.env):
+        return "ask", "core.hooksPath or a hook.* setting would switch off git's own branch protection: asking"
+    if run.words[0] == "/usr/bin/git" and subcommand not in READ_ONLY:
+        return "ask", "Apple's /usr/bin/git ignores the branch-protection hook defined in ~/.gitconfig: asking"
     if subcommand == "config" and any(arg.lower().startswith(("include", "--file", "-f", "--blob")) for arg in args):
         return "ask", "git config including or writing another file could set core.hooksPath indirectly: asking"
     substituted = _substitutions(args)

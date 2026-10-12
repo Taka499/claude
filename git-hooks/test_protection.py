@@ -10,6 +10,8 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 INSTALL = os.path.join(HERE, "protect-branches.sh")
 PROTECT_GITHUB = os.path.join(HERE, "protect-github.sh")
+INSTALL_GLOBAL = os.path.join(HERE, "install-global.sh")
+HOOK = os.path.join(HERE, "reference-transaction")
 
 # Real git, isolated from the machine's own configuration (a global core.hooksPath, signing, …).
 ENV = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
@@ -260,6 +262,202 @@ class AllowedUpdates(ProtectedRepoTest):
     def test_the_users_documented_bypass(self):
         result = self.repo.git("-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-m", "x", check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class OwnRepositoriesOnly(ProtectedRepoTest):
+    """The hook acts where a remote is the user's (Taka499, tia-tools) or there is none; others' clones must still pull."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.repo.tip("develop")
+
+    def direct_commit_moves_develop(self, origin: str) -> bool:
+        self.repo.git("remote", "add", "origin", origin)
+        before = self.repo.tip("develop")
+        self.repo.git("commit", "--allow-empty", "-m", "direct", check=False)
+        return self.repo.tip("develop") != before
+
+    def test_someone_elses_repository_is_left_alone(self):
+        self.assertTrue(self.direct_commit_moves_develop("https://github.com/receptron/mulmoterminal.git"))
+
+    def test_the_users_account_is_protected(self):
+        self.assertFalse(self.direct_commit_moves_develop("git@github.com:Taka499/nudge.git"))
+
+    def test_the_owner_in_another_case_is_still_the_user(self):
+        self.assertFalse(self.direct_commit_moves_develop("https://github.com/taka499/nudge.git"))
+
+    def test_an_insteadof_alias_is_expanded(self):
+        self.repo.git("config", "url.https://github.com/Taka499/.insteadOf", "mine:")
+        self.assertFalse(self.direct_commit_moves_develop("mine:nudge.git"))
+
+    def test_a_push_url_to_the_user_protects(self):
+        """Codex review of the global hook (2026-10-12): only origin's first fetch URL was read."""
+        self.repo.git("remote", "add", "origin", "https://github.com/receptron/mulmoterminal.git")
+        self.repo.git("remote", "set-url", "--push", "origin", "git@github.com:Taka499/mulmoterminal.git")
+        before = self.repo.tip("develop")
+        self.repo.git("commit", "--allow-empty", "-m", "direct", check=False)
+        self.assertEqual(self.repo.tip("develop"), before)
+
+    def test_the_users_remote_under_another_name_protects(self):
+        self.repo.git("remote", "add", "fork", "git@github.com:Taka499/mulmoterminal.git")
+        self.assertFalse(self.direct_commit_moves_develop("https://github.com/receptron/mulmoterminal.git"))
+
+    def test_the_owner_is_read_from_the_url_not_found_in_its_text(self):
+        """Codex review, round 2: a substring match protected foreign URLs and missed ssh:// with a port."""
+        for url, protected in (("ssh://git@github.com:22/Taka499/x.git", True),
+                               ("https://example.com/github.com/taka499/x.git", False),
+                               ("https://github.com/someone/github.com/taka499/x.git", False),
+                               ("https://github.com/xtaka499/x.git", False)):
+            with self.subTest(url=url):
+                self.repo.git("remote", "remove", "origin", check=False)
+                self.assertEqual(not self.direct_commit_moves_develop(url), protected)
+                self.repo.git("update-ref", "-d", "refs/heads/develop", check=False,
+                              env={"GIT_CONFIG_PARAMETERS": "'core.hookspath'='/dev/null'"})
+                self.repo.git("branch", "develop", self.root, check=False)
+
+    def test_the_users_organization_is_protected(self):
+        self.assertFalse(self.direct_commit_moves_develop("https://github.com/tia-tools/gakumas-supportcards.git"))
+
+
+def config_hooks_supported() -> bool:
+    """Whether the git on PATH runs hooks defined in config (git 2.56 does; Apple's 2.50 does not)."""
+    with tempfile.TemporaryDirectory() as temp:
+        config = os.path.join(temp, "gitconfig")
+        marker = os.path.join(temp, "ran")
+        with open(config, "w") as handle:
+            handle.write(f'[hook "probe"]\n\tevent = reference-transaction\n\tcommand = touch {marker}\n')
+        env = dict(ENV, GIT_CONFIG_GLOBAL=config)
+        subprocess.run(["git", "init", "-q", os.path.join(temp, "r")], env=env, capture_output=True, check=False)
+        subprocess.run(["git", "-C", os.path.join(temp, "r"), "commit", "-q", "--allow-empty", "-m", "x"],
+                       env=env, capture_output=True, check=False)
+        return os.path.exists(marker)
+
+
+@unittest.skipUnless(config_hooks_supported(), "this git does not run config-defined hooks")
+class GlobalHook(unittest.TestCase):
+    """The hook defined once in global config, the way install-global.sh sets it up."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.config = os.path.join(self.temp.name, "gitconfig")
+        with open(self.config, "w") as handle:
+            handle.write(f'[hook "protect-branches"]\n\tevent = reference-transaction\n\tcommand = {HOOK}\n')
+        self.env = {"GIT_CONFIG_GLOBAL": self.config}
+        self.repo = Repo(os.path.join(self.temp.name, "repo"))
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def run_git(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], env=dict(ENV, **self.env), capture_output=True, text=True, check=False)
+
+    def test_init_and_clone_still_work(self):
+        """The first version asked for the git directory before git init had made one, and aborted the init."""
+        self.assertEqual(self.run_git("init", "-q", "-b", "develop", self.repo.path).returncode, 0)
+        self.repo.git("commit", "-q", "--allow-empty", "-m", "root", env=self.env)
+        clone = os.path.join(self.temp.name, "clone")
+        result = self.run_git("clone", "-q", self.repo.path, clone)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_direct_commit_on_develop_is_refused(self):
+        self.run_git("init", "-q", "-b", "develop", self.repo.path)
+        self.repo.git("commit", "-q", "--allow-empty", "-m", "root", env=self.env)
+        before = self.repo.tip("develop")
+        result = self.repo.git("commit", "--allow-empty", "-m", "direct", check=False, env=self.env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.repo.tip("develop"), before)
+
+    def test_the_repositorys_own_hooks_still_run(self):
+        """Unlike a global core.hooksPath: Git LFS keeps its hooks in .git/hooks."""
+        self.run_git("init", "-q", "-b", "develop", self.repo.path)
+        marker = os.path.join(self.temp.name, "post-commit-ran")
+        hook = os.path.join(self.repo.path, ".git", "hooks", "post-commit")
+        with open(hook, "w") as handle:
+            handle.write(f"#!/bin/sh\ntouch {marker}\n")
+        os.chmod(hook, 0o755)
+        self.repo.git("commit", "-q", "--allow-empty", "-m", "root", env=self.env)
+        self.assertTrue(os.path.exists(marker))
+
+    def test_install_global_sets_the_hook_up_and_proves_it_runs(self):
+        home = os.path.join(self.temp.name, "home")
+        os.makedirs(home)
+        env = dict(ENV, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"),
+                   GIT_CONFIG_GLOBAL=os.path.join(home, ".gitconfig"))
+        result = subprocess.run(["sh", INSTALL_GLOBAL], env=env, capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("active", result.stdout)
+        installed = os.path.join(home, ".config", "git", "protect-branches")
+        self.assertTrue(os.access(installed, os.X_OK))
+        command = subprocess.run(["git", "config", "--global", "--get", "hook.protect-branches.command"], env=env,
+                                 capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(command, installed)
+        check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, timeout=60,
+                               check=False)
+        self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_check_fails_when_the_installed_copy_was_changed(self):
+        """Codex review, round 2: the probe alone could be satisfied by another hook printing the same message."""
+        home = os.path.join(self.temp.name, "home3")
+        os.makedirs(home)
+        env = dict(ENV, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"),
+                   GIT_CONFIG_GLOBAL=os.path.join(home, ".gitconfig"))
+        self.assertEqual(subprocess.run(["sh", INSTALL_GLOBAL], env=env, capture_output=True, check=False).returncode, 0)
+        with open(os.path.join(home, ".config", "git", "protect-branches"), "a") as handle:
+            handle.write("# altered\n")
+        check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, check=False)
+        self.assertNotEqual(check.returncode, 0)
+
+    def test_check_fails_when_the_installed_copy_is_not_executable(self):
+        """Codex review, round 3: a copy git cannot run, with another hook printing the message, passed."""
+        home = os.path.join(self.temp.name, "home5")
+        os.makedirs(home)
+        env = dict(ENV, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"),
+                   GIT_CONFIG_GLOBAL=os.path.join(home, ".gitconfig"))
+        self.assertEqual(subprocess.run(["sh", INSTALL_GLOBAL], env=env, capture_output=True, check=False).returncode, 0)
+        os.chmod(os.path.join(home, ".config", "git", "protect-branches"), 0o644)
+        imitator = os.path.join(home, "imitator")  # refuses updates of an existing develop with this hook's message
+        with open(imitator, "w") as handle:
+            handle.write('#!/bin/sh\n[ "$1" = prepared ] || exit 0\n'
+                         'while read -r old new ref; do\n'
+                         '  case "$old" in *[!0]*) [ "$ref" = refs/heads/develop ] &&'
+                         ' { echo "protect-branches: refusing (imitation)" >&2; exit 1; } ;; esac\n'
+                         'done\nexit 0\n')
+        os.chmod(imitator, 0o755)
+        with open(os.path.join(home, ".gitconfig"), "a") as handle:
+            handle.write(f'[hook "imitator"]\n\tevent = reference-transaction\n\tcommand = {imitator}\n')
+        check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, check=False)
+        self.assertNotEqual(check.returncode, 0)
+
+    def test_check_passes_on_a_machine_that_signs_commits(self):
+        """Codex review, round 2: the probe's commits must not depend on the machine's commit setup."""
+        home = os.path.join(self.temp.name, "home4")
+        os.makedirs(home)
+        config = os.path.join(home, ".gitconfig")
+        env = dict(ENV, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"), GIT_CONFIG_GLOBAL=config)
+        self.assertEqual(subprocess.run(["sh", INSTALL_GLOBAL], env=env, capture_output=True, check=False).returncode, 0)
+        with open(config, "a") as handle:
+            handle.write("[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = false\n")
+        check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_check_fails_when_another_hook_does_the_refusing(self):
+        """Codex review: the probe must see this hook's own refusal, not any refusal."""
+        home = os.path.join(self.temp.name, "home2")
+        os.makedirs(home)
+        config = os.path.join(home, ".gitconfig")
+        other = os.path.join(home, "other-hook")
+        with open(other, "w") as handle:  # refuses only updates of an existing develop, as a real one might
+            handle.write('#!/bin/sh\n[ "$1" = prepared ] || exit 0\n'
+                         'while read -r old new ref; do\n'
+                         '  case "$old" in *[!0]*) [ "$ref" = refs/heads/develop ] && exit 1 ;; esac\n'
+                         'done\nexit 0\n')
+        os.chmod(other, 0o755)
+        with open(config, "w") as handle:
+            handle.write(f'[hook "other"]\n\tevent = reference-transaction\n\tcommand = {other}\n')
+        env = dict(ENV, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"), GIT_CONFIG_GLOBAL=config)
+        check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, timeout=60,
+                               check=False)
+        self.assertNotEqual(check.returncode, 0)
 
 
 class Installer(unittest.TestCase):

@@ -13,7 +13,9 @@
 # below, and a process that writes ref files itself instead of running git. It runs in the "prepared" state, after the refs
 # are locked and before they change; a non-zero exit aborts the whole transaction.
 #
-# Installed per repository by git-hooks/protect-branches.sh in the Taka499/claude repository.
+# Installed once per machine by git-hooks/install-global.sh in the Taka499/claude repository, as a hook
+# defined in ~/.gitconfig (git 2.56 runs it; Apple's git 2.50 ignores config-defined hooks), or per
+# repository by git-hooks/protect-branches.sh where that git is all there is.
 # The user's own bypass, for a deliberate exception: git -c core.hooksPath=/dev/null <command>
 
 [ "$1" = prepared ] || exit 0
@@ -28,7 +30,25 @@ export GIT_NO_REPLACE_OBJECTS GIT_GRAFT_FILE
 # read the commit objects themselves instead. Any configured graft file, even /dev/null, makes git print a
 # deprecation hint on every call; that advice is switched off, nothing else is silenced.
 git() { command git -c core.commitGraph=false -c advice.graftFileDeprecated=false "$@"; }
-common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1
+# Only the user's own repositories: any remote whose fetch or push URL is hosted on github.com with the
+# owner Taka499 or tia-tools, or no remote at all. Defined once in ~/.gitconfig, this hook runs in every
+# repository, and a clone of someone else's project (whose main takes direct commits upstream) must still
+# pull. `git remote -v` lists every remote's fetch and push URL with insteadOf aliases applied. The owner is
+# read from the URL's host and first path segment (https://, ssh:// with a port, git@host:owner/…), not
+# found anywhere in its text; GitHub owner names are case-insensitive. A fork the user owns is protected
+# too, so syncing upstream into it takes a merge.
+owners=$(command git remote -v 2>/dev/null | awk '{print $2}' | tr '[:upper:]' '[:lower:]' |
+    sed -nE 's#^([a-z0-9+.-]+://)?([^@/]*@)?(www\.)?github\.com(:[0-9]+)?[:/]+([^/]+)/.*#\5#p')
+if [ -n "$(command git remote 2>/dev/null)" ]; then
+    case " $(printf '%s ' $owners) " in
+        *" taka499 "* | *" tia-tools "*) ;;
+        *) cat > /dev/null; exit 0 ;;
+    esac
+fi
+
+# The common git directory, found only once a branch is involved: git runs this hook while `git init` and
+# `git clone` create HEAD, before the repository is complete, and asking then fails and aborted the init.
+common=""
 status=0
 refuse() {
     echo "protect-branches: refusing to $2 ${1#refs/heads/}: main, master and develop change only by merges" >&2
@@ -48,7 +68,7 @@ protected_branch() {
     lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     for branch in main master develop; do
         if [ "$lower" = "refs/heads/$branch" ] ||
-            { [ -e "$common/$1.lock" ] && [ "$common/$1.lock" -ef "$common/refs/heads/$branch.lock" ]; }; then
+            { [ -n "$common" ] && [ -e "$common/$1.lock" ] && [ "$common/$1.lock" -ef "$common/refs/heads/$branch.lock" ]; }; then
             echo "$branch"
             return 0
         fi
@@ -58,9 +78,11 @@ protected_branch() {
 
 while read -r old new ref; do
     case "$ref" in
-        refs/heads/*) branch=$(protected_branch "$ref") || continue ;;
+        refs/heads/*) ;;
         *) continue ;;
     esac
+    [ -n "$common" ] || common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
+    branch=$(protected_branch "$ref") || continue
     case "$new" in
         ref:*) refuse "$ref" "make a symbolic ref of"; continue ;;
     esac
