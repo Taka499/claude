@@ -86,6 +86,7 @@ Codex works in a copy, so its ordinary relative-path commands land there. It is 
 snapshot=$(mktemp -d "$TMPDIR/codex-review.XXXXXX") || exit 1
 sha=$(git -C <repository> rev-parse --verify HEAD) || exit 1
 git -c advice.detachedHead=false clone -q --revision="$sha" <repository> "$snapshot/repo" || exit 1
+git -C "$snapshot/repo" fetch -q <repository> "<base>:refs/remotes/origin/<base>" || exit 1
 ```
 
 For uncommitted work, carry it over, binary changes and untracked files included. `git apply` is all-or-nothing, so a failure leaves the snapshot as it was:
@@ -98,7 +99,7 @@ tar -C <repository> --null -T "$snapshot/untracked.list" -cf "$snapshot/untracke
 tar -C "$snapshot/repo" -xf "$snapshot/untracked.tar" || exit 1
 ```
 
-`--revision` (git 2.49 or later) clones straight to that commit, detached. Do not reach it with `git -C <snapshot> checkout` instead: this setup's permission rules deny every mutating `git -C` form, so that step would be refused. The snapshot is detached at `HEAD`, so its base branch is `origin/<base>`: the diff to review is `git diff origin/<base>...HEAD`, plus the uncommitted changes shown by `git diff HEAD` and `git status`. Give `mktemp -d` the `$TMPDIR` template: without one, macOS uses the per-user system temp directory, which the sandbox refuses, and a script that then changes into an empty path runs in the repository instead (measured on 2026-10-12: four stray commits). In the steps below, run Codex from `"$snapshot/repo"` and name that path in the prompt.
+`--revision` (git 2.49 or later) clones straight to that commit, detached, and creates no remote-tracking branches, hence the `fetch` of the base. Do not reach it with `git -C <snapshot> checkout` instead: this setup's permission rules deny every mutating `git -C` form, so that step would be refused. The snapshot is detached at `HEAD`, so its base branch is `origin/<base>`: the diff to review is `git diff origin/<base>...HEAD`, plus the uncommitted changes shown by `git diff HEAD` and `git status`. Give `mktemp -d` the `$TMPDIR` template: without one, macOS uses the per-user system temp directory, which the sandbox refuses, and a script that then changes into an empty path runs in the repository instead (measured on 2026-10-12: four stray commits). In the steps below, run Codex from `"$snapshot/repo"` and name that path in the prompt.
 
 Then, with the snapshot complete and just before Codex runs, record the repository's refs and a start marker. They come last on purpose: cloning a local repository hard-links its object files, which updates their change time, so a marker taken earlier would list the clone's own work in step 4.
 
