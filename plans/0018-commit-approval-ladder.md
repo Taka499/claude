@@ -21,7 +21,13 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
   - A new bullet makes a merge request bring evidence: checks green on the merged result, the `/codex-review` verdict on the branch's whole diff with every finding fixed or answered, and no decision still open.
   - The sandboxed-git bullet now points to `ask` rules or a hook for approvals, instead of recommending an `ask` rule per command.
 - **`commands/commit.md`:** on a feature branch `/commit` commits; on a protected branch it proposes and waits.
-- **`hooks/git_gate.py` (new) and `hooks/test_git_gate.py`:** a PreToolUse hook that asks before a `commit`, `merge`, `cherry-pick`, `revert` or `am` writes to a protected branch. It also asks before `gh pr merge`, and whenever it cannot tell the target branch. The rule is a pure function, `decide(command, branch_of)`, with git reached only through the injected `branch_of`.
+- **`hooks/git_gate.py` (new) and `hooks/test_git_gate.py`:** a conservative PreToolUse hook. It stays silent only for a direct git run it fully understands that writes to a branch it can name as unprotected, or that cannot move a branch at all. It asks for:
+  - **writes to the current branch** (`commit`, `merge`, `pull`, `cherry-pick`, `revert`, `am`, or an unknown subcommand such as an alias) on `main`, `master` or `develop`;
+  - **pushes:** any `push`, and `gh pr merge`;
+  - **ref moves naming a protected branch;**
+  - **targets it cannot resolve:** a write after a branch switch in the same command, git inside another program, `GIT_DIR`-style redirects, inline `-c alias.*`, and unreadable hook input.
+
+  The rule is a pure function, `decide(command, branch_of)`, with git reached only through the injected `branch_of`. README § The one file this repo does not deploy lists the same cases for the settings reader.
 - **`README.md`:** § Layout gains `hooks/`. § The one file this repo does not deploy gets three updates:
   - the git invariant is rewritten;
   - a new invariant gives the hook's settings entry and why it is guarded;
@@ -72,6 +78,22 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
 - **Standing permission comes per task, not per commit.** This is the reference practice, and it keeps a human decision where one exists: what to build, and whether to integrate it. A commit on an unshared feature branch can be undone until it merges.
 - **Merges stay human in Phase 1.** Phase 2, automatic merging when every check passes and nothing waits on the user, is decided after a week of data: approvals per day, commits per day, time from DONE to merge, and reverts or fixes of merged work.
 - **A hook, not an `ask` rule.** Only a hook can see the branch. It asks when it cannot tell, so an unparseable command or an unknown directory prompts rather than passing.
+- **Conservative after review: ask about anything not fully modelled.** The first version listed five history-writing subcommands and parsed only direct `git` runs. The Codex review (round 1, CHANGES REQUESTED) and the background security review of the hook commit found protected-branch writes that passed with no ask. A probe of `decide()` reproduced all of them before any fix:
+  - a branch switch earlier in the same command (`git switch develop && git commit`);
+  - git inside another program: `bash -c`, `sh -c`, `eval`, `env`, `command`, `exec`, `time`, `xargs`, backticks, interpreter heredocs;
+  - inline aliases (`git -c alias.ci=commit ci`);
+  - `git pull`;
+  - direct ref moves (`branch -f develop`, `update-ref refs/heads/develop`, `switch -C develop`, `fetch x:develop`);
+  - environment redirects (`GIT_DIR=… git commit`, `export GIT_DIR=…`).
+
+  A text gate can never enumerate every shape, so the rule was inverted: silence must be earned by a run the hook fully understands. The cost is accepted false positives, each one prompt:
+  - `time git commit` on a feature branch;
+  - `git branch new develop` (names `develop`);
+  - `git worktree add -b feature/x ../wt develop`, which runs unsandboxed and prompts anyway;
+  - a commit after `git switch feat/other` in the same command;
+  - interpreter heredocs or `gh pr create` bodies whose text contains a branch-writing git command.
+- **Inside other programs' text, only branch-writing subcommands count.** There, an unknown word after `git` is not treated as a write, so prose such as "the git repo" stays silent; a direct git run is stricter, where an unknown subcommand counts. Programs that only print or read their arguments (`echo`, `printf`, `grep`, `cat`, …) are scanned only when a `$(…)` or backtick, which the shell does run, appears. Config-defined aliases inside other programs (`bash -c "git ci"`) are the residual this leaves; there are none defined on this machine, and a sandboxed session cannot define one (`.git/config` is protected, `~/.gitconfig` is outside the write allowlist).
+- **Fail-open where it cannot be helped, and said so.** Unreadable input now asks. A missing interpreter, or a script that cannot import, still counts as no decision in Claude Code. That, and git run from a program file, is why a git-level guard is the next change.
 - **The interpreter is named by absolute path, and the entry is guarded.** A crashed hook fails open, and an unguarded missing file blocks every Bash call. The code needs 3.10, and the user chose to require a modern Python rather than write for Apple's 3.9.
 - **Python, not TypeScript, for the hook.** The parse needs a shell lexer, which Python has in `shlex`; a TypeScript version would need a package such as `shell-quote`, plus `tsc` for its types to be checked at all. This repo has no `package.json` or toolchain. Node here lives under `nvm`, at versioned paths a hook cannot rely on. Revisit if the harness grows enough scripts to justify a TypeScript toolchain with strict lint.
 - **Push is unchanged.** It is not the bottleneck, and the keychain deny makes it run outside the sandbox anyway.
@@ -80,13 +102,27 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
 
 ## Verification
 
-- `python3 -m unittest discover -s hooks`: 32 tests pass under Python 3.14.3. The suite includes an end-to-end run of the script against a real throwaway repository on `develop` and on a feature branch.
-- Each of five deliberate breakages, run on a scratch copy, failed tests:
-  - an empty protected set: 16 failures and 1 error;
-  - no subshell scope for `cd`: 1 failure;
-  - no fail-closed path on an error: 1 error;
-  - no `--abort` exemption: 1 failure;
-  - unknown branches passing: 4 failures.
+- `python3 -m unittest discover -s hooks`: 41 test methods pass under Python 3.14.3. The 24 bypass shapes from the review are each a subtest of `BypassRegressions`. The suite includes end-to-end runs of the script: against a real throwaway repository on `develop` and on a feature branch, and with unreadable input.
+- Deliberate breakages, each run on a scratch copy, all failed tests.
+  - First version, five breakages:
+    - an empty protected set;
+    - no subshell scope for `cd`;
+    - no fail-closed path on an error;
+    - no `--abort` exemption;
+    - unknown branches passing.
+  - Revised version, ten breakages:
+    - no branch-switch tracking;
+    - no scan of other programs' text;
+    - no protected-name check on ref moves;
+    - no environment-redirect check;
+    - no `export GIT_DIR` tracking;
+    - no substitution scan;
+    - the `.git git commit` regex overlap restored;
+    - no push ask;
+    - no unreadable-input ask;
+    - unknown subcommands silent.
+
+  Branch-switch tracking first passed every test, which exposed a hole: every switch test named `develop`, so the protected-name check caught them first. Tests for `git switch -`, `git switch "$TARGET"` and `git checkout @{-1}` closed it.
 - The guarded hook command was run against a present and a missing script file.
 - After the user applies the settings, check in a live session:
   - a commit on a feature branch runs with no prompt;
