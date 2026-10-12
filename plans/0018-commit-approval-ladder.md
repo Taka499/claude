@@ -1,0 +1,149 @@
+# Plan: Approve tasks and merges, not commits
+
+## Goal
+
+Every commit needed the user's approval, two or three times over:
+- the agent asked in chat, per `CLAUDE.md` § Git Operations ("NEVER run `git commit` … without explicit user permission for that operation");
+- the `Bash(git commit *)` ask rule prompted again;
+- in auto mode the classifier enforced the same rule a third time, through an `autoMode.soft_deny` entry and its own reading of `CLAUDE.md`.
+
+With several parallel sessions, those approvals became the bottleneck. This change moves the user's review to where it carries information:
+- **the task or plan:** approving it is standing permission to commit on its feature branch;
+- **the merge into `main`, `master` or `develop`:** it still needs the user's approval, and it now has to bring the evidence the user needs to approve without reading the diff.
+
+Between the two, machine checks and `/codex-review` stand in for per-commit sign-off. This is Phase 1. Merges stay human until there is a week of data to judge an automatic merge by.
+
+## Changes
+
+- **Global `CLAUDE.md` § Git Operations:**
+  - The permission bullet now grants standing permission to commit on a feature branch (and to merge the integration branch into it). Commits on, merges into, pushes to and rebases of `main`, `master` and `develop` still need the user's permission per operation.
+  - The commit-size bullet now says "commit and report", where it said "propose".
+  - A new bullet makes a merge request bring evidence: checks green on the merged result, the `/codex-review` verdict on the branch's whole diff with every finding fixed or answered, and no decision still open.
+  - The sandboxed-git bullet now points to `ask` rules or a hook for approvals, instead of recommending an `ask` rule per command.
+- **`commands/commit.md`:** on a feature branch `/commit` commits; on a protected branch it proposes and waits.
+- **`hooks/git_gate.py` (new) and `hooks/test_git_gate.py`:** a PreToolUse hook built on an allowlist of silent forms:
+  - read-only and index-only subcommands;
+  - listing or plainly creating a branch;
+  - `switch` to a literal, unprotected name, remembered for the rest of the command;
+  - `fetch` with no refspec;
+  - a current-branch write (`commit`, `merge`, `pull`, `cherry-pick`, `revert`, `am`) on a branch it can name as unprotected.
+
+  Everything else asks, as README § The one file this repo does not deploy lists. The rule is a pure function, `decide(command, branch_of)`, with git reached only through the injected `branch_of`.
+- **`README.md`:** § Layout gains `hooks/`. § The one file this repo does not deploy gets three updates:
+  - the git invariant is rewritten;
+  - a new invariant gives the hook's settings entry and why it is guarded;
+  - a new invariant says `autoMode` must agree with the rule.
+- **`~/.claude/settings.json`** (untracked, applied by the user after merge, so the hook file exists on `master` first):
+  - `permissions.ask`: remove `Bash(git commit *)` and `Bash(git merge *)`. The merge rule was added on 2026-10-12, before this design. An `ask` rule cannot be overridden by the hook, so it would make every merge prompt, including merging `develop` into a feature branch. `Bash(git branch -D *)`, added at the same time, stays.
+  - `hooks.PreToolUse`: add `{"matcher": "Bash", "hooks": [{"type": "command", "command": "f=\"$HOME/Developer/claude/hooks/git_gate.py\"; if [ -f \"$f\" ]; then /opt/homebrew/bin/python3 \"$f\"; else echo \"git_gate.py not found at $f: the commit gate is off\" >&2; exit 1; fi"}]}`.
+  - `autoMode.soft_deny`: replace `Bash(git commit*) / Bash(git push*) without explicit per-operation permission — CLAUDE.md mandates asking before any history-mutating git command` with: `Git history on protected branches: git commit, merge, cherry-pick, revert or am while main, master or develop is checked out, gh pr merge, and any git push, without the user's explicit permission for that operation (global CLAUDE.md § Git Operations)`.
+  - `autoMode.allow` (new; keeps `"$defaults"`) gets two entries:
+    - `Feature-branch commits: git add <files> and git commit on any branch other than main, master and develop, and merging one of those three into such a branch to update it, are routine under the user's standing permission for an approved task (global CLAUDE.md § Git Operations); the git_gate hook asks for the protected branches`
+    - `Codex review: codex exec --sandbox danger-full-access with approvals off, run by the /codex-review skill to review the local diff, is allowed. It runs as an ordinary sandboxed Bash command, so Claude Code's OS sandbox confines it (writes only to the working directory, $TMPDIR, ~/Developer/claude and ~/.codex; network only to the allowlist; credential paths denied). Its prompt forbids changes but nothing enforces that, so the skill checks the repository's status and reflog afterwards. The user accepted sending the diff and the files Codex reads to OpenAI`
+
+## Evidence (session 2026-10-12; Claude Code 2.1.296, git 2.50.1, macOS 26.7.1)
+
+**The cost (gkms-contest-ai).**
+- Commits per day across all branches: 44, 21, 17 and 9 on 2026-10-08 to 2026-10-11.
+- A worker's two reviewed commits waited for approval from 2026-10-11 13:13 into the next day.
+- Each commit took the chat approval, the `ask` prompt and, where the session ran git unsandboxed, the sandbox-retry prompt.
+- `/codex-review` was refused four times by the classifier with `[Create Unsafe Agents]`.
+
+**The reference practice.** isamu, who wrote the article this harness's testing doctrine comes from, and who maintains MulmoTerminal:
+- **The last 100 merged PRs of `receptron/mulmoterminal`** (created 2026-10-02 to 2026-10-11):
+  - 99 were merged by their author's account, with 0 human approving reviews and 0 GitHub auto-merge;
+  - median 24 minutes from open to merge (p90 169), median 1 commit per PR;
+  - CodeRabbit commented on 55;
+  - PR bodies carry Summary (96), Items to Confirm (87) and User Prompt (87).
+- **`main` has no branch protection and no rulesets.** Its first-parent history from 2026-09-28 to 2026-10-09 has 377 merges and 27 direct commits, all release version bumps or release notes.
+- **The Codex GitHub workflow has been manual-only since 2026-09-10** (8485fad2d). The loop runs locally through his `/codex-cross-review` skill.
+- **His public text lags his practice.** `isamu/claude` at e70498e still says "NEVER run `git commit`, `push`, `merge` … without explicit user permission", and its `pr-babysit` skill confirms each merge. He told the user directly that everything not needing human judgment now merges automatically, and that Codex cross-review is what made that safe.
+- **The article (2026-07-27):**
+  - Merge condition: all bots sign off, CI is green, and a human confirms, which he calls a formality.
+  - Before full automation: reliable rollback and a record of what happened.
+
+**Claude Code behaviour (documentation, read 2026-10-12):**
+- Permissions § Extend permissions with hooks: "a matching ask rule still prompts even when the hook returned `"allow"` or `"ask"`". So the `git commit` ask rule has to go for the hook to matter.
+- Auto-mode config § Where the classifier reads configuration: "The classifier reads the same CLAUDE.md content Claude itself loads". So the rule text and `autoMode` have to change together.
+- `autoMode.allow` entries are exceptions to `soft_deny` rules, and lists that omit `"$defaults"` replace the built-ins.
+- `claude auto-mode defaults --label 'Create Unsafe'`: a `soft_deny` rule covering "launching ANY agent … without sandbox isolation AND without a per-action approval/monitor gate". The classifier cannot see that `codex exec` runs inside Claude Code's Seatbelt, hence the allow entry that says so.
+- Hooks: exit 2 blocks the tool call; another non-zero exit is a non-blocking error; a hook that crashes or times out does not block.
+
+**Codex wrote to the repository during review round 2.** Despite "Do NOT modify anything" in its prompt, it made an empty commit, `0f0b81f` "init" authored `x <x>`, on the feature branch at 10:49:17. Nothing else changed: no other ref, no stash, no configuration. It also left `hooks/__pycache__/` from running the tests. Codex runs inside Claude Code's sandbox, which allows writes to this repository, so the prompt instruction is the only thing keeping a review read-only. No hook sees it either: Codex's git commands never pass through Claude Code. The branch was rebuilt without the commit, as `feat/commit-approval-ladder-2`, from `79adc43` with the two later commits cherry-picked; its tree is identical, and the old branch is kept for the user to delete. Round 3 ran against a snapshot clone under `$TMPDIR`, and the repository's reflog was checked afterwards.
+
+**Interpreters.**
+- `/usr/bin/python3` is 3.9.6 (Command Line Tools 27.0) and is not upgradable on its own.
+- `/opt/homebrew/bin/python3` is 3.14.3 and comes first on the session `PATH`.
+- Python exits 2 on a missing script file. Measured: the unguarded command exits 2; the guarded one exits 1 with its message.
+
+## Decision Log (session 2026-10-12)
+
+- **Standing permission comes per task, not per commit.** This is the reference practice, and it keeps a human decision where one exists: what to build, and whether to integrate it. A commit on an unshared feature branch can be undone until it merges.
+- **Merges stay human in Phase 1.** Phase 2, automatic merging when every check passes and nothing waits on the user, is decided after a week of data: approvals per day, commits per day, time from DONE to merge, and reverts or fixes of merged work.
+- **A hook, not an `ask` rule.** Only a hook can see the branch. It asks when it cannot tell, so an unparseable command or an unknown directory prompts rather than passing.
+- **Conservative after review: ask about anything not fully modelled.** The first version listed five history-writing subcommands and parsed only direct `git` runs. The Codex review (round 1, CHANGES REQUESTED) and the background security review of the hook commit found protected-branch writes that passed with no ask. A probe of `decide()` reproduced all of them before any fix:
+  - a branch switch earlier in the same command (`git switch develop && git commit`);
+  - git inside another program: `bash -c`, `sh -c`, `eval`, `env`, `command`, `exec`, `time`, `xargs`, backticks, interpreter heredocs;
+  - inline aliases (`git -c alias.ci=commit ci`);
+  - `git pull`;
+  - direct ref moves (`branch -f develop`, `update-ref refs/heads/develop`, `switch -C develop`, `fetch x:develop`);
+  - environment redirects (`GIT_DIR=… git commit`, `export GIT_DIR=…`).
+
+  A text gate can never enumerate every shape, so the rule was inverted: silence must be earned by a run the hook fully understands. The cost is accepted false positives, each one prompt:
+  - `time git commit` on a feature branch;
+  - `git branch new develop` (names `develop`);
+  - `git worktree add -b feature/x ../wt develop`, which runs unsandboxed and prompts anyway;
+  - a commit after `git switch feat/other` in the same command;
+  - interpreter heredocs or `gh pr create` bodies whose text contains a branch-writing git command.
+- **Then an allowlist: list the safe forms, not the dangerous ones.** Round 2 of the Codex review (CHANGES REQUESTED) confirmed every round-1 finding resolved, and found new gaps in the conservative version:
+  - a branch target given as a variable (`git branch -f "$TARGET"`, `git update-ref "$REF"`, `update-ref --stdin`);
+  - a short option attached to its value (`switch -Cdevelop`, `branch -fmain`);
+  - an alias that moves another branch;
+  - `filter-branch -- --all`;
+  - fetch refspecs configured to write local branches;
+  - non-string hook input.
+
+  The security review of the first fix added git run through a variable (`G=git; $G commit`). Each was a shape the deny-list did not name. Isamu's own `pr-contract` documentation describes the pattern: by the third round, most findings are defects in fixes written during the review. So the rule was inverted again. Silence now needs one of a handful of forms whose effect is fully known, and every other subcommand asks, aliases included. This also removed the round-1 false positive on `git branch NEW develop`. The security review of the allowlist commit then found three silent forms with branch-moving options, now closed:
+  - `git stash branch NAME`, which creates a branch and switches to it;
+  - `git symbolic-ref -d`, and a second name setting `HEAD`;
+  - `git pull` with a refspec, which writes a local branch other than the current one.
+- **Round 3, on a snapshot clone, and the security reviews of the fixes.** Codex confirmed every round-2 finding resolved and found no false positive on ordinary feature-branch work. It found three more gaps, all closed:
+  - an alias or `--stdin` run through a variable (`$G -c alias.x=push x origin HEAD:main`), which also slips past the textual `git push *` rule;
+  - `git fetch --stdin`, whose refspecs never appear in the command;
+  - `git clone`, filed as index-only although `--upload-pack` runs a program and `-c`/`--template` install hooks into the new repository.
+
+  The security review of the escape fixes found two more bypass classes, also closed:
+  - directory changes other than `cd` (`pushd`, `builtin cd`, `command cd`, `popd`);
+  - git printed by `echo` into something that runs it (`| bash`, `<(…)`, `printf … > s.sh; sh s.sh`). The print-only exemption now holds only when nothing in the command can execute text.
+
+  These were closed with a short list of options with hidden effects, which ask on any run, rather than by moving whole subcommands out of the allowlist. `--template` and `--config` count only for `clone` and `init`, because `commit --template` is a harmless message template; a breakage test guards that false positive.
+- **Inside other programs' text, only branch-writing subcommands count.** There, an unknown word after `git` is not treated as a write, so prose such as "the git repo" stays silent; a direct git run is stricter, where an unknown subcommand counts. Programs that only print or read their arguments (`echo`, `printf`, `grep`, `cat`, …) are scanned only when a `$(…)` or backtick, which the shell does run, appears. Config-defined aliases inside other programs (`bash -c "git ci"`) are the residual this leaves; there are none defined on this machine, and a sandboxed session cannot define one (`.git/config` is protected, `~/.gitconfig` is outside the write allowlist).
+- **Fail-open where it cannot be helped, and said so.** Unreadable input, including a `command` that is not a string, now asks. Configured fetch refspecs are not read: a sandboxed session cannot change `.git/config`, so only the user could have set one up. A missing interpreter, or a script that cannot import, still counts as no decision in Claude Code. That, and git run from a program file, is why a git-level guard is the next change.
+- **The interpreter is named by absolute path, and the entry is guarded.** A crashed hook fails open, and an unguarded missing file blocks every Bash call. The code needs 3.10, and the user chose to require a modern Python rather than write for Apple's 3.9.
+- **Python, not TypeScript, for the hook.** The parse needs a shell lexer, which Python has in `shlex`; a TypeScript version would need a package such as `shell-quote`, plus `tsc` for its types to be checked at all. This repo has no `package.json` or toolchain. Node here lives under `nvm`, at versioned paths a hook cannot rely on. Revisit if the harness grows enough scripts to justify a TypeScript toolchain with strict lint.
+- **Push is unchanged.** It is not the bottleneck, and the keychain deny makes it run outside the sandbox anyway.
+- **The rule is replaced in place.** It is a correction of the per-commit rule, made with the user's agreement (§ Continuous Learning). A project that restates the old rule, such as a coordinator's command file asking before every commit, should drop that restatement. Nothing else migrates.
+- **`/codex-review`'s "read-only" is a request, not a guarantee.** Recorded here, and fixed separately in the skill: review a snapshot, and check `git status` and the reflog after every run. Shipping this plan does not wait on that fix.
+- **`__pycache__/` is ignored.** `hooks/` brings Python into the repository, and running its tests leaves bytecode. The directory the review left behind is not deleted, per the user's rule on untracked files; ignored, it stops showing.
+- **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
+
+## Verification
+
+- `python3 -m unittest discover -s hooks`: 50 test methods pass under Python 3.14.3. Each review shape is a subtest:
+  - 24 from round 1 in `BypassRegressions.SHAPES`;
+  - 13 from round 2 and the security review;
+  - 3 for creating a protected branch.
+
+  End-to-end runs of the script cover a real throwaway repository on `develop` and on a feature branch, and three kinds of unreadable input.
+- Deliberate breakages, each run on a scratch copy, failed tests in every round:
+  - first version: 5 breakages;
+  - the conservative version: 10;
+  - the allowlist version: 22, among them the round-3 and security-review closures (hidden-effect options, the per-subcommand list, variable runs, `pushd`/`popd`/`builtin cd`, the print-only exemption) and the three escapes above, the final ask made silent (17 failures), switch targets unchecked, switches not remembered, any `branch` or `fetch` form allowed, the variable-program check removed, non-string input accepted, and the protected-name check on plain branch creation dropped.
+
+  Two of these first passed every test, each exposing a hole the suite then closed:
+  - **branch-switch tracking:** every switch test named `develop`, so the protected-name check caught them first; tests for `git switch -`, `"$TARGET"` and `@{-1}` closed it.
+  - **plain branch creation:** no test created a protected branch; tests that `git branch develop feat/x` and `git switch -c main` ask closed it.
+- The guarded hook command was run against a present and a missing script file.
+- After the user applies the settings, check in a live session:
+  - a commit on a feature branch runs with no prompt;
+  - a commit on `develop` prompts with the hook's reason.

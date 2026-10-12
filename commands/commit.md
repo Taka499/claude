@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git branch:*)
-description: Propose a commit for the current changes
+description: Commit the current changes on a feature branch, or propose the commit on main, master or develop
 ---
 
 ## Context
@@ -12,11 +12,14 @@ description: Propose a commit for the current changes
 
 ## Your task
 
-Propose a commit for the affected files — do not create one yet. Global `CLAUDE.md` § Git Operations governs this command:
+Global `CLAUDE.md` § Git Operations governs this command. What to do depends on the branch:
 
-- **Never run `git commit` until the user has approved this specific commit.** Present the message and the exact file list, then wait.
-- If the changes cover more than one meaningful unit of work, propose a small series rather than one batched commit, and say what each one contains.
+- **On a feature branch**, running `/commit` is the user's permission: commit now. Run the checks for what changed first; if they fail, say so and do not commit. Report each commit made (short hash and message).
+- **On `main`, `master` or `develop`**, do not commit. Say so, propose a feature branch, and present the message and the exact file list for approval. The `git_gate.py` hook asks before any commit there anyway.
+
+Either way:
+
+- If the changes cover more than one meaningful unit of work, make (or propose) a small series rather than one batched commit, and say what each contains.
 - Stage affected files individually. Never `git add .`, never add whole directories, and leave untracked files alone unless the user names them.
 - Message format: a type prefix (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`, `ci:`) following the house pattern `type: summary — key detail`.
 - No coding-agent attribution: no `Co-Authored-By`, no session trailers, no model IDs.
-- If the current branch is the default branch, say so and propose a feature branch first.
