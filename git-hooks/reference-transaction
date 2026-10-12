@@ -18,10 +18,12 @@
 
 [ "$1" = prepared ] || exit 0
 
-# Judge the real commits: replacement objects (`git replace --graft`) can make a plain commit look like a
-# merge while this hook looks, and be deleted afterwards.
+# Judge the real commits. Two mechanisms rewrite a commit's parents as git sees them, and either can make
+# a plain commit look like a merge while this hook looks, then be removed: replacement objects
+# (`git replace --graft`) and the legacy graft file (.git/info/grafts, or GIT_GRAFT_FILE pointing elsewhere).
 GIT_NO_REPLACE_OBJECTS=1
-export GIT_NO_REPLACE_OBJECTS
+GIT_GRAFT_FILE=/dev/null
+export GIT_NO_REPLACE_OBJECTS GIT_GRAFT_FILE
 common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1
 status=0
 refuse() {
