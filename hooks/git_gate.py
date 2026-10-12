@@ -96,8 +96,9 @@ SEPARATORS = frozenset({"&&", "||", ";", "|", "|&", "&", ";;"})
 # script rewriting a plan full of git prose does not ask (it did, 2026-10-12, costing the user an approval for
 # a markdown edit). Code an interpreter runs (python3, node, awk's system()) and a script file a shell runs
 # are the program-file case this hook cannot see; the global reference-transaction hook holds there.
-SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "eval", "source", "."})
-BUILTIN_SHELLS = frozenset({"eval", "source", "."})
+SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "eval", "source", ".", "alias"})
+# The ones that run their text in the current shell (an alias when it is used), so a `cd` in it moves it.
+BUILTIN_SHELLS = frozenset({"eval", "source", ".", "alias"})
 # Programs that only print their arguments, so a `git` among them is text, not a run (`echo git commit`).
 # Only as the run's own program: behind a launcher, `echo` may be an argument (`find echo -exec git commit`),
 # so `env echo git commit` asks. Missing a printer here costs a false ask, never a missed one. Piped into a shell, their words are still read,
@@ -109,6 +110,7 @@ ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 GIT_REDIRECT_ENV = re.compile(r"^GIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)=")
 # Builtins that change the shell's directory to an operand (zsh's `chdir` is `cd`).
 DIRECTORY_CHANGERS = frozenset({"cd", "chdir", "pushd"})
+DIRECTORY_CHANGE_IN_TEXT = re.compile(r"(?:^|[\s;&|(=`'\"])(?:cd|chdir|pushd|popd)(?=$|[\s;&|)`'\"])")
 
 # Characters that end an unquoted shell word.
 METACHARACTERS = " \t\n;&|()<>"
@@ -190,6 +192,8 @@ def split_commands(command: str) -> list[Invocation] | None:
             directory = UNKNOWN if changes_to is UNKNOWN else _join(directory, str(changes_to))
         elif words or env:
             runs.append(Invocation(directory, env, words, heredocs, piped, expanded))
+            if _moves_in_its_text(words):
+                directory = UNKNOWN
         current = []
         piped = token in ("|", "|&")
         if token == "(":
@@ -369,6 +373,14 @@ def _line_at(command: str, index: int) -> tuple[str, int]:
     if newline < 0:
         return command[index:], len(command)
     return command[index:newline], newline + 1
+
+
+def _moves_in_its_text(words: tuple[str, ...]) -> bool:
+    """Whether a run of text in the current shell holds a directory change: `eval "cd ../main"`, `source
+    <(echo cd ../main)`, or an alias that a later line uses (`alias c='cd ../main'`)."""
+    while words[:1] in (("builtin",), ("command",)):
+        words = words[1:]
+    return bool(words) and words[0] in BUILTIN_SHELLS and bool(DIRECTORY_CHANGE_IN_TEXT.search(" ".join(words[1:])))
 
 
 def _directory_change(words: tuple[str, ...]) -> str | object | None:

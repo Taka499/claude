@@ -451,6 +451,14 @@ class BypassRegressions(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, elsewhere)))
         self.assertIsNone(decide("cd feat && git merge topic", elsewhere))  # a named feature checkout
+        for command in ('eval "cd ../protected" && git merge topic', "alias c='cd ../protected'\nc && git merge topic",
+                        "source <(echo cd ../protected) && git merge topic", "builtin eval 'pushd ../protected' && git merge topic",
+                        "alias g='git push origin develop'"):
+            with self.subTest(command=command):  # text the current shell runs moves it, or runs git
+                self.assertTrue(asks(decide(command, elsewhere)))
+        for command in ('eval "$(ssh-agent -s)" && git commit -m x', "source .venv/bin/activate && git commit -m x"):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("feat/x")))
         self.assertIsNone(decide("printf $'x' && git --no-pager commit -m x", on("feat/x")))  # Codex round 9, Low
 
     def test_a_hash_hides_nothing_after_it(self):
