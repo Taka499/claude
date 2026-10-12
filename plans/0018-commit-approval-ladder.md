@@ -107,6 +107,16 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
   - `git stash branch NAME`, which creates a branch and switches to it;
   - `git symbolic-ref -d`, and a second name setting `HEAD`;
   - `git pull` with a refspec, which writes a local branch other than the current one.
+- **Round 3, on a snapshot clone, and the security reviews of the fixes.** Codex confirmed every round-2 finding resolved and found no false positive on ordinary feature-branch work. It found three more gaps, all closed:
+  - an alias or `--stdin` run through a variable (`$G -c alias.x=push x origin HEAD:main`), which also slips past the textual `git push *` rule;
+  - `git fetch --stdin`, whose refspecs never appear in the command;
+  - `git clone`, filed as index-only although `--upload-pack` runs a program and `-c`/`--template` install hooks into the new repository.
+
+  The security review of the escape fixes found two more bypass classes, also closed:
+  - directory changes other than `cd` (`pushd`, `builtin cd`, `command cd`, `popd`);
+  - git printed by `echo` into something that runs it (`| bash`, `<(…)`, `printf … > s.sh; sh s.sh`). The print-only exemption now holds only when nothing in the command can execute text.
+
+  These were closed with a short list of options with hidden effects, which ask on any run, rather than by moving whole subcommands out of the allowlist. `--template` and `--config` count only for `clone` and `init`, because `commit --template` is a harmless message template; a breakage test guards that false positive.
 - **Inside other programs' text, only branch-writing subcommands count.** There, an unknown word after `git` is not treated as a write, so prose such as "the git repo" stays silent; a direct git run is stricter, where an unknown subcommand counts. Programs that only print or read their arguments (`echo`, `printf`, `grep`, `cat`, …) are scanned only when a `$(…)` or backtick, which the shell does run, appears. Config-defined aliases inside other programs (`bash -c "git ci"`) are the residual this leaves; there are none defined on this machine, and a sandboxed session cannot define one (`.git/config` is protected, `~/.gitconfig` is outside the write allowlist).
 - **Fail-open where it cannot be helped, and said so.** Unreadable input, including a `command` that is not a string, now asks. Configured fetch refspecs are not read: a sandboxed session cannot change `.git/config`, so only the user could have set one up. A missing interpreter, or a script that cannot import, still counts as no decision in Claude Code. That, and git run from a program file, is why a git-level guard is the next change.
 - **The interpreter is named by absolute path, and the entry is guarded.** A crashed hook fails open, and an unguarded missing file blocks every Bash call. The code needs 3.10, and the user chose to require a modern Python rather than write for Apple's 3.9.
@@ -119,7 +129,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
 
 ## Verification
 
-- `python3 -m unittest discover -s hooks`: 47 test methods pass under Python 3.14.3. Each review shape is a subtest:
+- `python3 -m unittest discover -s hooks`: 50 test methods pass under Python 3.14.3. Each review shape is a subtest:
   - 24 from round 1 in `BypassRegressions.SHAPES`;
   - 13 from round 2 and the security review;
   - 3 for creating a protected branch.
@@ -128,7 +138,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
 - Deliberate breakages, each run on a scratch copy, failed tests in every round:
   - first version: 5 breakages;
   - the conservative version: 10;
-  - the allowlist version: 13, among them the three escapes above, the final ask made silent (17 failures), switch targets unchecked, switches not remembered, any `branch` or `fetch` form allowed, the variable-program check removed, non-string input accepted, and the protected-name check on plain branch creation dropped.
+  - the allowlist version: 22, among them the round-3 and security-review closures (hidden-effect options, the per-subcommand list, variable runs, `pushd`/`popd`/`builtin cd`, the print-only exemption) and the three escapes above, the final ask made silent (17 failures), switch targets unchecked, switches not remembered, any `branch` or `fetch` form allowed, the variable-program check removed, non-string input accepted, and the protected-name check on plain branch creation dropped.
 
   Two of these first passed every test, each exposing a hole the suite then closed:
   - **branch-switch tracking:** every switch test named `develop`, so the protected-name check caught them first; tests for `git switch -`, `"$TARGET"` and `@{-1}` closed it.

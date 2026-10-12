@@ -43,13 +43,16 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
   - read-only and index-only subcommands (`status`, `diff`, `add`, `stash`, …);
   - listing a branch, or plainly creating one (`git branch NEW [START]`);
   - `switch NAME` or `switch -c NAME [START]` with a literal, unprotected name, which it remembers for the rest of the command;
-  - `fetch` with no refspec;
+  - `fetch` with no refspec and no `--stdin` or `--refmap`;
   - `commit`, `merge`, `pull`, `cherry-pick`, `revert` or `am` on a branch it can name and that is not `main`, `master` or `develop`.
 
   Everything else asks:
   - every other subcommand, aliases included (`update-ref`, `filter-branch`, `checkout`, `bisect`);
   - a branch given as a variable or as an attached option (`-Cdevelop`), or a refspec destination;
-  - git found inside another program's text (`bash -c`, `eval`, `env`, `xargs`, `$(…)`, backticks, an interpreter heredoc), or run through a variable (`$G commit`);
+  - an option that runs a program or reads refs the command does not show (`--upload-pack`, `--stdin`, `--refmap`, and for `clone`/`init` the hooks and configuration they install: `-c`, `--config`, `--template`);
+  - git found inside another program's text (`bash -c`, `eval`, `env`, `xargs`, `$(…)`, backticks, an interpreter heredoc), or printed by `echo`/`printf` in a command that also runs something able to execute it (`| bash`, `<(…)`, `sh s.sh`);
+  - git run through a variable (`$G commit`, `$G -c alias.x=push x`);
+  - a commit after `pushd`, `builtin cd` or `command cd` into a protected checkout, or after `popd` (they move the shell like `cd`);
   - `GIT_DIR`-style redirects;
   - any `push` or `gh pr merge`;
   - unreadable hook input.
