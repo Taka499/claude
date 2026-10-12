@@ -1,0 +1,97 @@
+#!/bin/sh
+# protect-branches: Taka499/claude — git's reference-transaction hook guarding main, master and develop.
+#
+# Refuses any update of those branches that is not a merge:
+#   - deleting the branch;
+#   - moving it to a commit that does not contain its current tip (reset, rewind, amend, force);
+#   - advancing it by a commit that is not a merge commit (a direct commit, a revert, a cherry-pick,
+#     a fast-forward over plain commits).
+# Creating the branch is allowed: a repository's first commit, `git branch develop <start>`.
+#
+# Git runs this for every ref update, however the command was spelled or whatever program ran git,
+# so it holds where a check of command text cannot. Two things pass it: the user's core.hooksPath bypass
+# below, and a process that writes ref files itself instead of running git. It runs in the "prepared" state, after the refs
+# are locked and before they change; a non-zero exit aborts the whole transaction.
+#
+# Installed per repository by git-hooks/protect-branches.sh in the Taka499/claude repository.
+# The user's own bypass, for a deliberate exception: git -c core.hooksPath=/dev/null <command>
+
+[ "$1" = prepared ] || exit 0
+
+# Judge the real commits: replacement objects (`git replace --graft`) can make a plain commit look like a
+# merge while this hook looks, and be deleted afterwards.
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
+common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1
+status=0
+refuse() {
+    echo "protect-branches: refusing to $2 ${1#refs/heads/}: main, master and develop change only by merges" >&2
+    status=1
+}
+
+# Whether a ref is one of the protected branches, under whatever name the command used for it.
+# A case-insensitive filesystem (APFS, NTFS) stores refs/heads/DEVELOP and refs/heads/develop in one file,
+# and its Unicode folding does the same for refs/heads/maſter (long s) and refs/heads/master; both moved
+# the branch past a comparison of names. So the filesystem decides: in the prepared state git holds a
+# lock file for every ref in the transaction, and a ref is protected when its lock is the same file as
+# a protected branch's lock. The name comparison stays for a ref git updates without a loose lock.
+# Prints the protected branch the ref is, so its current value can be read under the canonical name: a
+# packed `master` has no loose file, and reading the alias `maſter` would find nothing and look like a
+# new branch.
+protected_branch() {
+    lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    for branch in main master develop; do
+        if [ "$lower" = "refs/heads/$branch" ] ||
+            { [ -e "$common/$1.lock" ] && [ "$common/$1.lock" -ef "$common/refs/heads/$branch.lock" ]; }; then
+            echo "$branch"
+            return 0
+        fi
+    done
+    return 1
+}
+
+while read -r old new ref; do
+    case "$ref" in
+        refs/heads/*) branch=$(protected_branch "$ref") || continue ;;
+        *) continue ;;
+    esac
+    case "$new" in
+        ref:*) refuse "$ref" "make a symbolic ref of"; continue ;;
+    esac
+    case "$old" in
+        *[!0]*) ;;
+        *)
+            # All zeroes: a new branch, or a forced update that did not state the old value.
+            old=$(git rev-parse -q --verify "refs/heads/$branch^{commit}") || continue
+            ;;
+    esac
+    case "$new" in
+        *[!0]*) ;;
+        *)
+            # `git pack-refs` (and so `git gc`) writes the refs into packed-refs, then deletes each loose copy
+            # with no packed-refs.lock held; the branch keeps its value. A real deletion holds that lock.
+            if [ ! -e "$common/packed-refs.lock" ] && grep -qx "$old $ref" "$common/packed-refs" 2>/dev/null; then
+                continue
+            fi
+            refuse "$ref" "delete"
+            continue
+            ;;
+    esac
+    [ "$old" = "$new" ] && continue
+    if ! git merge-base --is-ancestor "$old" "$new"; then
+        refuse "$ref" "rewind or rewrite"
+        continue
+    fi
+    added=$(git rev-list --first-parent "$old..$new")
+    # The old tip must stay on the first-parent line: a merge that takes it in only as a second parent
+    # replaces the branch's history, and `git revert -m 1` then no longer undoes one merge of it.
+    if [ "$(git rev-parse "$(printf '%s\n' "$added" | tail -n 1)^1")" != "$old" ]; then
+        refuse "$ref" "replace the first-parent history of"
+        continue
+    fi
+    if [ -n "$(git rev-list --first-parent --max-parents=1 "$old..$new")" ]; then
+        refuse "$ref" "add a commit that is not a merge to"
+    fi
+done
+
+exit "$status"
