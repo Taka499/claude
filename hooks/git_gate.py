@@ -88,8 +88,17 @@ GIT_OPTS_WITH_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--name
 
 SEPARATORS = frozenset({"&&", "||", ";", "|", "|&", "&", ";;"})
 
-# Print or read their arguments and never run them: only a `$(…)` or backtick inside is executed.
-NON_EXECUTING = frozenset({"echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "wc", "ls", "test", "["})
+# Programs that run their arguments, or text piped or fed to them, as commands. Git found in a command's
+# text counts only when one of these is in the command: `bash -c "git commit"`, `echo "git commit" | sh`,
+# `env git commit`, a heredoc fed to a shell. Other programs, a Python script editing a plan full of git
+# prose above all, only get their `$(…)` and backticks scanned, which the shell itself runs. Code an
+# interpreter runs (python3, node) is the program-file case this hook cannot see; the global
+# reference-transaction hook is what holds there. Scanning every program's text made such plan edits ask
+# (a coordination worker, 2026-10-12), costing the user an approval for a write to a markdown file.
+SHELL_RUNNERS = frozenset({
+    "bash", "sh", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "exec", "env", "xargs", "time",
+    "nohup", "nice", "timeout", "sudo", "doas", "su", "command", "builtin", "watch", "parallel", "script",
+})
 
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Point git at another repository or configuration: the target can no longer be named.
@@ -248,11 +257,9 @@ def decide(command: str, branch_of: BranchOf) -> Decision | None:
     if parsed is None:
         return _decide_unparsed(command, branch_of)
     runs, bodies = parsed
-    if any(writes_in_text(body) for body in bodies) and any(run.words and not is_git(run.words[0]) for run in runs):
+    executes = any(run.words and os.path.basename(run.words[0]) in SHELL_RUNNERS for run in runs)
+    if executes and any(writes_in_text(body) for body in bodies):
         return "ask", NESTED_REASON
-    # The print-only exemption holds only when nothing in the command can execute text:
-    # `echo "git commit" | bash` and `bash <(echo git commit)` run what echo prints.
-    inert = all(not run.words or is_git(run.words[0]) or run.words[0] in NON_EXECUTING for run in runs)
     state = State()
     for run in runs:
         exported = run.words[1:] if run.words[:1] == ("export",) else ()
@@ -261,13 +268,13 @@ def decide(command: str, branch_of: BranchOf) -> Decision | None:
             state.redirected = True  # GIT_DIR and the like now apply to every later git run
         if not run.words:
             continue
-        verdict = _decide_run(run, branch_of, state, inert)
+        verdict = _decide_run(run, branch_of, state, executes)
         if verdict:
             return verdict
     return None
 
 
-def _decide_run(run: Invocation, branch_of: BranchOf, state: State, inert: bool) -> Decision | None:
+def _decide_run(run: Invocation, branch_of: BranchOf, state: State, executes: bool) -> Decision | None:
     if run.words[:3] == ("gh", "pr", "merge"):
         return "ask", GH_MERGE_REASON
     if is_git(run.words[0]):
@@ -276,7 +283,7 @@ def _decide_run(run: Invocation, branch_of: BranchOf, state: State, inert: bool)
             any(word in TEXT_WRITES or "alias." in word or word.startswith(HIDDEN_EFFECT_OPTIONS) for word in run.words[1:])
             or any(GIT_REDIRECT_ENV.match(word) for word in run.env)):
         return "ask", NESTED_REASON  # `$G commit`, `$G -c alias.x=push x`, where G=git
-    scanned = _substitutions(run.words) if inert and run.words[0] in NON_EXECUTING else run.words
+    scanned = run.words if executes else _substitutions(run.words)
     return ("ask", NESTED_REASON) if writes_in_text(" ".join(scanned)) else None
 
 

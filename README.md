@@ -56,7 +56,7 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
   - every other subcommand, aliases included (`update-ref`, `filter-branch`, `checkout`, `bisect`);
   - a branch given as a variable or as an attached option (`-Cdevelop`), or a refspec destination;
   - an option that runs a program or reads refs the command does not show (`--upload-pack`, `--stdin`, `--refmap`, and for `clone`/`init` the hooks and configuration they install: `-c`, `--config`, `--template`);
-  - git found inside another program's text (`bash -c`, `eval`, `env`, `xargs`, `$(…)`, backticks, an interpreter heredoc), or printed by `echo`/`printf` in a command that also runs something able to execute it (`| bash`, `<(…)`, `sh s.sh`);
+  - git found in text a shell will run: the arguments or heredoc of a program that runs commands (`bash -c`, `sh`, `eval`, `env`, `xargs`, `exec`, …), anything printed in a command that also contains such a program (`echo … | bash`, `printf … > s.sh; sh s.sh`), and any `$(…)` or backticks. Other programs' text is not scanned: a Python script rewriting a document full of git prose does not ask. Code an interpreter runs (`python3`, `node`) is the program-file case below;
   - git run through a variable (`$G commit`, `$G -c alias.x=push x`);
   - a commit after `pushd`, `builtin cd` or `command cd` into a protected checkout, or after `popd` (they move the shell like `cd`);
   - `GIT_DIR`-style redirects;

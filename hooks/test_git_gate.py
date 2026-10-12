@@ -69,6 +69,15 @@ class FeatureBranchWork(unittest.TestCase):
         command = "python3 - <<'EOF'\nprint('update the git repo; git add later')\nEOF"
         self.assertIsNone(decide(command, on("feat/x")))
 
+    def test_python_rewriting_a_plan_full_of_git_prose(self):
+        """Regression (a coordination worker, 2026-10-12): a plan edit asked, costing the user an approval."""
+        command = ("python3 - <<'EOF'\nfrom pathlib import Path\np = Path('docs/plans/EXECPLAN.md')\n"
+                   "t = p.read_text().replace('merge it', 'run git merge --no-ff feature/x, then git push origin develop')\n"
+                   "p.write_text(t)\nEOF")
+        self.assertIsNone(decide(command, on("feat/x")))
+        self.assertIsNone(decide(command, on("develop")))
+        self.assertIsNone(decide('python3 -c "print(\'git commit -m x\')"', on("develop")))
+
     def test_message_from_a_command_substitution(self):
         self.assertIsNone(decide('git commit -m "$(cat msg.txt)"', on("feat/x")))
 
