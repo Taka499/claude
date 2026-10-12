@@ -107,9 +107,8 @@ PRINTERS = frozenset({"echo", "printf"})
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Point git at another repository or configuration: the target can no longer be named.
 GIT_REDIRECT_ENV = re.compile(r"^GIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)=")
-# A heredoc: the rest of its first line stays part of the command (`cat <<EOF | bash`); the body is set aside
-# and attached to the program run that reads it.
-HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1([^\n]*)\n(.*?)\n\s*\2[ \t]*(?=\n|$)", re.S)
+# Characters that end an unquoted shell word.
+METACHARACTERS = " \t\n;&|()<>"
 HEREDOC_MARK = re.compile(r"^__heredoc_(\d+)__$")
 # A git run inside free text: the subcommand after any global options.
 GIT_IN_TEXT = re.compile(
@@ -191,51 +190,167 @@ def split_commands(command: str) -> list[Invocation] | None:
     return runs
 
 
-def _set_aside_heredocs(command: str) -> tuple[str, list[str]]:
-    """The command with each heredoc body replaced by a marker word and its comments removed, and the bodies.
+@dataclass
+class _Level:
+    """One `$(…)` nesting level of shell text: its open quote, its open `(`s, its open `case`s."""
 
-    A `<<WORD` counts only where bash reads one: outside quotes and comments. Inside them it is text, and
-    the lines after it are commands (`echo '<<EOF'` then `git commit`): taking them for a body would hide
-    them. Quotes are tracked as bash nests them: `'…'`, `"…"`, and a fresh level inside each `$(…)`, whose
-    own quotes do not close the outer ones. `$'…'` is not tracked: the lexer below has no such quoting, so a
-    command whose meaning depends on it fails to tokenize and takes the coarse scan.
+    quote: str = ""
+    parens: int = 0
+    cases: int = 0
+
+
+def _set_aside_heredocs(command: str) -> tuple[str, list[str]]:
+    """The command with each heredoc replaced by a marker word and its comments removed, and the bodies.
+
+    It follows the rules zsh and bash share, because text it takes for a body is never read as commands,
+    and a quote left in a misread body can hide the commands after it from the lexer below.
+    - A `<<WORD` counts only outside quotes and comments, and not inside arithmetic (`$((1 <<EOF))` shifts).
+    - Quotes nest: `'…'`, `"…"`, and a fresh level inside each `$(…)`, which a `case` pattern's `)` does
+      not close.
+    - Every `<<WORD` on a line takes a body, in order, from the lines after it; each body ends at the first
+      line equal to its delimiter (leading tabs removed for `<<-`), or with the command.
+    `$'…'` is not tracked: the lexer below has no such quoting, so a command whose meaning depends on it
+    fails to tokenize and takes the coarse scan.
     """
     out: list[str] = []
     bodies: list[str] = []
-    quotes = [""]  # the open quote at each `$(` nesting level: "", "'" or '"'
-    levels = 0
+    pending: list[tuple[str, bool, bool]] = []  # this line's heredocs: (delimiter, strip tabs, quoted)
+    levels = [_Level()]
     index = 0
     while index < len(command):
-        char, quote = command[index], quotes[-1]
+        char, level = command[index], levels[-1]
         step = 1
-        if quote == "'":
-            quotes[-1] = "" if char == "'" else quote
+        if level.quote == "'":
+            level.quote = "" if char == "'" else "'"
         elif char == "\\":
             step = 2
+        elif command.startswith(("$((", "$["), index) or (command.startswith("((", index) and not level.quote):
+            step = _arithmetic_end(command, index) - index
         elif command.startswith("$(", index):
-            quotes.append("")
-            levels += 1
+            levels.append(_Level())
             step = 2
-        elif char == ")" and quote == "" and levels:
-            quotes.pop()
-            levels -= 1
-        elif quote == '"':
-            quotes[-1] = "" if char == '"' else quote
+        elif level.quote == '"':
+            level.quote = "" if char == '"' else '"'
         elif char in "'\"":
-            quotes[-1] = char
-        elif char == "#" and (index == 0 or command[index - 1] in " \t\n;&|()"):
-            end = command.find("\n", index)
-            index = len(command) if end < 0 else end  # a comment: dropped, since the lexer must not read `#`
+            level.quote = char
+        elif char == "(":
+            level.parens += 1
+        elif char == ")":
+            if level.parens:
+                level.parens -= 1
+            elif not level.cases and len(levels) > 1:
+                levels.pop()
+        elif _word_at(command, index, "case"):
+            level.cases += 1
+        elif _word_at(command, index, "esac"):
+            level.cases = max(0, level.cases - 1)
+        elif char == "#" and (index == 0 or command[index - 1] in METACHARACTERS):
+            newline = command.find("\n", index)
+            index = len(command) if newline < 0 else newline  # a comment: dropped, the lexer must not read `#`
             continue
         elif command.startswith("<<", index) and (index == 0 or command[index - 1] != "<") and \
-                (match := HEREDOC.match(command, index)):  # not the tail of a `<<<` here-string
-            bodies.append(match.group(4))
-            out.append(f" __heredoc_{len(bodies) - 1}__ {match.group(3)}\n")
-            index = match.end()
+                (operator := _heredoc_operator(command, index)):  # `<<<` is a here-string: no word follows
+            delimiter, strip, quoted, index = operator
+            out.append(f" __heredoc_{len(bodies) + len(pending)}__ ")
+            pending.append((delimiter, strip, quoted))
+            continue
+        elif char == "\n" and pending:
+            out.append("\n")
+            index += 1
+            for delimiter, strip, quoted in pending:
+                body, index = _heredoc_body(command, index, delimiter, strip, quoted)
+                bodies.append(body)
+            pending = []
             continue
         out.append(command[index:index + step])
         index += step
+    bodies.extend("" for _ in pending)  # heredocs on the last line: their bodies end with the command
     return "".join(out), bodies
+
+
+def _word_at(command: str, index: int, word: str) -> bool:
+    """Whether `word` stands alone at `index`, as a shell word."""
+    after = index + len(word)
+    return command.startswith(word, index) and (index == 0 or command[index - 1] in METACHARACTERS) and (
+        after == len(command) or command[after] in METACHARACTERS)
+
+
+def _arithmetic_end(command: str, index: int) -> int:
+    """Where the arithmetic starting at `index` (`$((`, `((` or `$[`) ends, or the command's end."""
+    opener, closer = ("[", "]") if command.startswith("$[", index) else ("(", ")")
+    depth = 0
+    for position in range(command.index(opener, index), len(command)):
+        if command[position] == opener:
+            depth += 1
+        elif command[position] == closer:
+            depth -= 1
+            if depth == 0:
+                return position + 1
+    return len(command)
+
+
+def _heredoc_operator(command: str, index: int) -> tuple[str, bool, bool, int] | None:
+    """The `<<WORD` or `<<-WORD` at `index`: (the delimiter unquoted, strip tabs, quoted, where it ends).
+
+    None when no word follows, or its quote never closes: the shell refuses such a command.
+    """
+    position = index + 2
+    strip = command.startswith("-", position)
+    position += strip
+    while position < len(command) and command[position] in " \t":
+        position += 1
+    word: list[str] = []
+    quote, quoted = "", False
+    while position < len(command):
+        char = command[position]
+        if quote:
+            if char == quote:
+                quote = ""
+            elif char == "\\" and quote == '"' and command[position + 1:position + 2] in ('"', "\\", "$", "`"):
+                position += 1
+                word.append(command[position])
+            else:
+                word.append(char)
+        elif char in METACHARACTERS:
+            break
+        elif char in "'\"":
+            quote, quoted = char, True
+        elif char == "\\":
+            quoted = True
+            position += 1
+            word.append(command[position:position + 1])
+        else:
+            word.append(char)
+        position += 1
+    if quote or not (word or quoted):
+        return None
+    return "".join(word), strip, quoted, position
+
+
+def _heredoc_body(command: str, index: int, delimiter: str, strip: bool, quoted: bool) -> tuple[str, int]:
+    """The heredoc body starting at `index`, and where the text after its delimiter line starts.
+
+    With an unquoted delimiter, a line ending in an odd number of backslashes runs on into the next, so
+    `x\\` then `EOF` is not a delimiter line (bash 3.2, checked 2026-10-13).
+    """
+    lines: list[str] = []
+    while index < len(command):
+        line, index = _line_at(command, index)
+        while not quoted and (len(line) - len(line.rstrip("\\"))) % 2 and index < len(command):
+            rest, index = _line_at(command, index)
+            line = line[:-1] + rest
+        if (line.lstrip("\t") if strip else line) == delimiter:
+            return "\n".join(lines), index
+        lines.append(line)
+    return "\n".join(lines), index
+
+
+def _line_at(command: str, index: int) -> tuple[str, int]:
+    """The line starting at `index`, without its newline, and where the next line starts."""
+    newline = command.find("\n", index)
+    if newline < 0:
+        return command[index:], len(command)
+    return command[index:newline], newline + 1
 
 
 def _directory_change(words: tuple[str, ...]) -> str | object | None:

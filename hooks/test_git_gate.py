@@ -377,6 +377,38 @@ class BypassRegressions(unittest.TestCase):
         nested = "x=$(python3 - <<'EOF'\nprint('git push origin develop')\nEOF\n)\ngit status"
         self.assertIsNone(decide(nested, on("develop")))  # a heredoc inside $( ) is still a heredoc
 
+    def test_heredocs_end_where_the_shell_ends_them(self):
+        """Codex review round 6 (2026-10-13) and the shell checks behind the rewrite: each of these hid a
+        command from the hook while the shell runs it."""
+        for command in (
+            "echo $((1 <<EOF\n))\ngit push origin develop\nEOF",            # arithmetic shift, not a heredoc
+            "(( x = 1 <<EOF ))\ngit push origin develop\nEOF",
+            "cat <<A <<B\nx\nA\n'\nB\ngit push origin 'develop'",            # two heredocs on one line
+            "cat <<EOF\nx\\\nEOF\n'\nEOF\ngit push origin 'develop'",         # x\ + EOF is no delimiter line
+            "cat <<EOF\n  EOF\n'\nEOF\ngit push origin 'develop'",            # nor is an indented EOF
+            "cat <<EOF\nEOF \n'\nEOF\ngit push origin 'develop'",             # nor one with a trailing space
+            'echo "$(case x in a) echo "<<EOF";; esac)"\ngit push origin develop\nEOF',  # a case pattern's )
+            'echo "$( (true) ; echo "<<EOF" )"\ngit push origin develop\nEOF',  # a subshell's ) inside $( )
+            # The same misreads with quotes left balanced, closed in a line the shell takes for a comment,
+            # so the lexer's fallback cannot catch them:
+            "cat <<EOF\nx\\\nEOF\ny='\nEOF\ngit push origin develop\n# '",
+            "cat <<EOF\n  EOF\ny='\nEOF\ngit push origin develop\n# '",
+            "cat <<A <<B\nx\nA\ny='\nB\ngit push origin develop\n# '",
+            "cat <<'EOF'\nx\\\nEOF\ngit push origin develop",  # a quoted delimiter joins no lines
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+
+    def test_ordinary_heredocs_stay_silent(self):
+        for command in (
+            "git commit -m \"$(cat <<'EOF'\nfix: explain git push origin develop\nEOF\n)\"",
+            "python3 - <<-EOF\n\tprint('git push origin develop')\n\tEOF",
+            "python3 - <<'A' && cat <<B\nprint('git push origin develop')\nA\ngit merge x\nB",
+            "cat <<\"EOF\"\ngit push origin develop\nEOF\ngit status",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("feat/x")))
+
     def test_a_hash_hides_nothing_after_it(self):
         """Found reviewing the heredoc fix (2026-10-13), also on master: shlex read `#` as a comment
         to the end of the whole command, after newlines were joined, and mid-word as well."""

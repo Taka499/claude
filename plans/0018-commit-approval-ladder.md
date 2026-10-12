@@ -132,7 +132,12 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - **A shell's own arguments, its own heredoc and everything piped into it,** however many stages back, are scanned for git.
     - **Every other program** has only `$(…)` and backticks scanned, which the shell itself runs.
     - **`-c` values and `GIT_*` variables** given for a git command are scanned for git they would run (`core.pager`, `GIT_PAGER`).
-    - **A heredoc counts only where bash reads one:** outside `'…'` and `"…"` quotes, with a fresh quoting level inside each `$(…)`, and outside comments. A `<<EOF` inside quotes or a comment had hidden the following lines as a body, though bash runs them.
+    - **Heredocs are read by the rules zsh and bash share.** Claude Code runs commands in the user's login shell, zsh here. Text taken for a body is never read as commands, and a quote left in a misread body can hide the commands after it, so the reading has to match the shell's:
+      - a `<<WORD` counts only outside quotes (`'…'`, `"…"`, a fresh level inside each `$(…)`, which a `case` pattern's `)` does not close), outside comments and outside arithmetic, where `$((1 <<EOF))` is a shift;
+      - every `<<WORD` on a line takes a body, in order, from the lines after it;
+      - each body ends at the first line exactly equal to its delimiter, with leading tabs removed for `<<-`. With an unquoted delimiter, a line ending in `\` runs on into the next, so `x\` followed by `EOF` ends nothing (checked with bash 3.2).
+
+      The first version, a regular expression, misread all of these. It took a `<<EOF` in quotes, a comment or arithmetic for a heredoc. It read only the first of two heredocs on a line, and it ended a body at an indented `EOF`.
     - **A `#` hides only its own comment.** Comments are removed where bash sees them, at a word start, and Python's `shlex` no longer reads `#` at all. On master it did. With the command's newlines already joined, `shlex` took everything after a `#` as one comment, and it also started a comment mid-word, so `curl …/y#frag && git push origin develop` and a `git commit` on the line after a comment passed with no ask. The global git hook still refused a non-merge update of a protected branch, but a push or a merge passed with no ask.
   - **Accepted gaps, named in the README:**
     - code an interpreter runs (`python3 -c`, `node`, `awk`'s `system()`);
@@ -150,10 +155,11 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - **Round 4** found a false ask for `env echo git commit`. A launched-printer rule fixed it.
     - **The plugin's review of round 4** found that the launched-printer rule hid `find echo -exec git commit`. It also found that a `<<EOF` in quotes or a comment hid the following lines; master had asked there, because it scanned every body. The launched-printer rule was removed, so round 4's false ask stays, and heredocs became quote- and comment-aware. Checking that fix found the `#` bug, which dates from before this branch.
     - **Round 5** found the launched-printer rule incomplete (`env -i echo …`), which was moot once the rule was removed.
+    - **Round 6** found two shapes in which the regex heredoc reading hid a `git push` that the shell runs: a `<<EOF` inside `$((…))`, and a second heredoc on one line. The plugin's review of the same commit reported parser differentials too. The reading was rewritten to follow the shell's rules, above. Checking those rules against bash found three more misreads, all fixed: an indented delimiter line, `\`-newline joining, and a `)` of a subshell or `case` pattern closing a `$(…)`.
     - **Two bugs of the agent's own were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
   - **A fetch into a remote-tracking ref asked (the user's report, 2026-10-13).** `/codex-review`'s snapshot step runs `git -C <snapshot> fetch -q <repository> "<base>:refs/remotes/origin/<base>"`, and the hook asked every round: `fetch` was silent only with no refspec at all. A fetch is now silent when each refspec after the repository word stores into `refs/remotes/…` or `refs/tags/…`, or has no destination; such a fetch writes no branch. Every word must still be literal, since a variable may expand to `x:develop`. The skill's step now fetches from `origin`, which a clone points at the repository it was cloned from, instead of naming the repository, which an agent tends to fill in with a variable.
   - **Stray objects during round 4, not an incident.** The post-review check found two unreachable commits in this clone's object store, written about a minute into the run: a `git stash create` pair ("WIP on …", "index on …") whose blobs matched the uncommitted working files. No ref moved. They came from the security-guidance plugin, which snapshots the working tree with `git stash create` and leaves `.git/sg-*` marker files. Codex ran in its snapshot clone, which has its own object store.
-  - **Verification:** 63 test methods pass. Eighteen deliberate breakages each failed tests:
+  - **Verification:** 66 test methods pass. Twenty-five deliberate breakages each failed tests:
     - no look-through;
     - a look-through that never accepts a `git` after an option;
     - one that always demands a known subcommand;
@@ -171,14 +177,21 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - no comment removal;
     - `shlex` comments back;
     - no backslash escape;
-    - no here-string guard.
+    - no here-string guard;
+    - no arithmetic skip;
+    - only the first heredoc on a line given a body;
+    - no `\`-newline joining;
+    - joining under a quoted delimiter too;
+    - a delimiter line compared loosely;
+    - no `(` counting inside `$(…)`;
+    - no `case` tracking.
 
-    Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (`shlex` fails there anyway), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check.
+    Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (`shlex` fails there anyway), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check, twice (no delimiter word follows its `<<`). Several heredoc misreads were at first caught only by the coarse fallback, because the misread left an unbalanced quote; their tests now close the quote in a line the shell takes for a comment (`# '`), so each breakage shows.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification
 
-- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (63 after the 2026-10-13 change below). Each review shape is a subtest:
+- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (66 after the 2026-10-13 change below). Each review shape is a subtest:
   - 24 from round 1 in `BypassRegressions.SHAPES`;
   - 13 from round 2 and the security review;
   - 3 for creating a protected branch.
