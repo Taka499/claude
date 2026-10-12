@@ -41,6 +41,12 @@ Plan 0019 installs git's `reference-transaction` hook into each repository with 
   - the probe accepted any refusal; it now requires the hook's own message;
   - the test count in this plan was stale.
 
+  **Round 2 (CHANGES REQUESTED)** confirmed the round-1 fixes and found more, all fixed:
+  - **The owner check matched text, not the owner.** It protected foreign URLs that merely contained `github.com/taka499/` (`https://example.com/github.com/taka499/x`) and missed `ssh://git@github.com:22/Taka499/x.git`. It now parses each URL's host and first path segment.
+  - **`--check` could be satisfied by another hook imitating the message.** It now also confirms the configured command is the unchanged copy and not disabled.
+  - **The probe's commits inherited the machine's commit signing and commit hooks,** which could fail it while protection was active. They now run with `commit.gpgSign=false` and `--no-verify`; `reference-transaction` is not a commit hook and still runs.
+  - **A stale comment** in the installer.
+
   Before the review, the agent had already made the comparison case-insensitive and gone through `git remote get-url`, which applies `insteadOf` aliases. A breakage test of the stricter probe at first passed every test, because its competing hook refused `git init` too. It now refuses only updates of an existing `develop`, as a real hook might.
 - **Apple's git is the accepted gap.** A process that runs `/usr/bin/git`, or that runs with a `PATH` without Homebrew's, gets no protection. Sessions here put `/opt/homebrew/bin` first, and `git_gate.py` asks before an explicit `/usr/bin/git` that writes.
 - **The per-repository copy already installed in this clone stays.** It runs as well as the global hook, which does no harm.
@@ -48,7 +54,7 @@ Plan 0019 installs git's `reference-transaction` hook into each repository with 
 
 ## Verification
 
-- **`python3 -m unittest discover -s git-hooks`:** 45 tests pass with Homebrew git 2.56. The config-hook tests skip on a git that does not run config-defined hooks; none were skipped here. New:
+- **`python3 -m unittest discover -s git-hooks`:** 48 tests pass with Homebrew git 2.56. The config-hook tests skip on a git that does not run config-defined hooks; none were skipped here. New:
   - **Owner check:** someone else's repository is left alone; the user's account and organization are protected, as are another case of the owner, an `insteadOf` alias, a push URL to the user and the user's remote under another name.
   - **The global hook:** `init` and `clone` work, a direct commit is refused, and the repository's own hooks still run.
   - **`install-global.sh`:** it sets up the hook and proves it runs; `--check` passes after install, and fails when only another hook does the refusing.
@@ -58,6 +64,10 @@ Plan 0019 installs git's `reference-transaction` hook into each repository with 
   - restoring the early git-directory lookup;
   - the installer not setting the command;
   - the owner check reading only `origin`'s fetch URL;
-  - the probe accepting any refusal.
+  - the probe accepting any refusal;
+  - the owner parsed without the port;
+  - the host not anchored;
+  - no identity check;
+  - the probe's commits signing.
 - **`python3 -m unittest discover -s hooks`:** passes. Removing the `hook.*` check and removing the Apple-git check each failed tests.
 - **After merge:** run `git-hooks/install-global.sh` outside the sandbox. It reports `active` only after its own probe is refused.
