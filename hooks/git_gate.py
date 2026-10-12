@@ -111,8 +111,12 @@ GIT_REDIRECT_ENV = re.compile(r"^GIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFI
 # Shell words that open a group or a clause: the command after them is an ordinary run in the same shell.
 RESERVED_WORDS = frozenset({"{", "!", "if", "then", "else", "elif", "do", "while", "until"})
 
+# Words in front of a command that leave it running in the current shell (zsh's `noglob` and `nocorrect`).
+PRECOMMAND_MODIFIERS = frozenset({"builtin", "command", "noglob", "nocorrect"})
+
 # Builtins that change the shell's directory to an operand (zsh's `chdir` is `cd`).
 DIRECTORY_CHANGERS = frozenset({"cd", "chdir", "pushd"})
+CDPATH_ASSIGNMENT = re.compile(r"^(?:CDPATH|cdpath)\+?=")
 DIRECTORY_CHANGE_IN_TEXT = re.compile(r"(?:^|[\s;&|(=`'\"])(?:cd|chdir|pushd|popd)(?=$|[\s;&|)`'\"])")
 
 # Characters that end an unquoted shell word.
@@ -172,7 +176,7 @@ def split_commands(command: str) -> list[Invocation] | None:
     # and with newlines joined above, the comment would swallow the rest of the command.
     lexer.commenters = ""
     try:
-        tokens = list(lexer)
+        tokens = [part for token in lexer for part in _operators(token)]
     except ValueError:
         return None
     runs: list[Invocation] = []
@@ -180,19 +184,25 @@ def split_commands(command: str) -> list[Invocation] | None:
     saved: list[str | None | object] = []
     current: list[str] = []
     piped = False
+    cdpath = False  # a CDPATH set earlier in the command: `cd name` may land anywhere on it
     for token in tokens + [";"]:
         if token not in SEPARATORS and token not in ("(", ")", "()"):  # `()`: a function header, `f() { …; }`
             current.append(token)
             continue
-        while current and current[0] in RESERVED_WORDS:
-            current = current[1:]  # `{ cd x; …}`, `if cd x; then git merge …`: the command follows the word
+        while current and (current[0] in RESERVED_WORDS or current[0] == "repeat"):
+            # `{ cd x; …}`, `if cd x; then git merge …`, zsh's `repeat 2 cd x`: the command follows the word
+            current = current[2:] if current[0] == "repeat" else current[1:]
         split = _env_prefix_length(current)
         env, words = tuple(current[:split]), tuple(current[split:])
         read = [bodies[int(mark.group(1))] for word in words if (mark := HEREDOC_MARK.match(word))]
         heredocs = tuple(text for text, _ in read)
         expanded = tuple(text for text, quoted in read if not quoted)
         words = tuple(word for word in words if not HEREDOC_MARK.match(word))
+        if any(CDPATH_ASSIGNMENT.match(word) for word in env + words):
+            cdpath = True
         changes_to = _directory_change(words)
+        if cdpath and isinstance(changes_to, str) and not changes_to.startswith(("/", "./", "../", "~")):
+            changes_to = UNKNOWN
         if changes_to is not None:
             directory = UNKNOWN if changes_to is UNKNOWN else _join(directory, str(changes_to))
         elif words or env:
@@ -219,6 +229,15 @@ class _Level:
     quote: str = ""
     parens: int = 0
     cases: int = 0
+
+
+def _operators(token: str) -> list[str]:
+    """A token split into shell operators when it is punctuation only: shlex keeps a run of punctuation as
+    one token, so `&&(` and `);` would otherwise hide a separator or a subshell from the run splitting.
+    A process substitution's `<(` or `>(` stays one word, so what it runs stays in the run it feeds."""
+    if not token or any(char not in "();<>|&" for char in token):
+        return [token]
+    return re.findall(r"&&|\|\||;;|\|&|\(\)|[<>]\(|&>>?|[<>]+&?|[;|&()]", token)  # `<(` stays whole
 
 
 def _set_aside_heredocs(command: str) -> tuple[str, list[tuple[str, bool]]]:
@@ -383,7 +402,7 @@ def _line_at(command: str, index: int) -> tuple[str, int]:
 def _moves_in_its_text(words: tuple[str, ...]) -> bool:
     """Whether a run of text in the current shell holds a directory change: `eval "cd ../main"`, `source
     <(echo cd ../main)`, or an alias that a later line uses (`alias c='cd ../main'`)."""
-    while words[:1] in (("builtin",), ("command",)):
+    while words[:1] and words[0] in PRECOMMAND_MODIFIERS:
         words = words[1:]
     return bool(words) and words[0] in BUILTIN_SHELLS and bool(DIRECTORY_CHANGE_IN_TEXT.search(" ".join(words[1:])))
 
@@ -395,7 +414,7 @@ def _directory_change(words: tuple[str, ...]) -> str | object | None:
     `pushd +1`), `pushd` alone (it swaps the top two), and zsh's `cd old new`, which replaces `old` with
     `new` in the current path. `builtin` and `command` in front, and zsh's `chdir`, change nothing.
     """
-    while words[:1] in (("builtin",), ("command",)):
+    while words[:1] and words[0] in PRECOMMAND_MODIFIERS:
         words = words[1:]
     if not words or words[0] not in DIRECTORY_CHANGERS:
         return UNKNOWN if words[:1] == ("popd",) else None

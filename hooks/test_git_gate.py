@@ -466,10 +466,26 @@ class BypassRegressions(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, named))
         self.assertIsNone(decide("deploy() { echo git push origin develop; }", on("feat/x")))  # round 10, Low
+        for command in ("noglob cd ../protected && git merge topic", "nocorrect cd ../protected && git merge topic",
+                        "repeat 1 cd ../protected; git merge topic", "CDPATH=..; cd protected && git merge topic",
+                        "export CDPATH=..; cd protected && git merge topic", "cdpath=(..); cd protected && git merge topic"):
+            with self.subTest(command=command):  # Codex review round 11
+                self.assertTrue(asks(decide(command, on("feat/x", {"../protected": "develop", "protected": "feat/z"}))))
+        self.assertIsNone(decide("CDPATH=..; cd ./protected && git merge topic", on("feat/x", {"./protected": "feat/z"})))
         for command in ('eval "$(ssh-agent -s)" && git commit -m x', "source .venv/bin/activate && git commit -m x"):
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("feat/x")))
         self.assertIsNone(decide("printf $'x' && git --no-pager commit -m x", on("feat/x")))  # Codex round 9, Low
+
+    def test_operators_written_without_spaces(self):
+        """Found checking Codex round 11 (2026-10-13), also on master: shlex joins adjacent punctuation, so
+        `&&(` and `);` were single words and the move into a protected checkout was missed."""
+        elsewhere = on("feat/x", {"../protected": "develop"})
+        for command in ("true&&(cd ../protected&&git merge topic)", "git status&&(cd ../protected && git merge topic)",
+                        "(true);cd ../protected && git merge topic", "true||(cd ../protected;git merge topic)"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, elsewhere)))
+        self.assertIsNone(decide("(cd ../protected && git status)&&git commit -m x", elsewhere))  # back out of it
 
     def test_a_hash_hides_nothing_after_it(self):
         """Found reviewing the heredoc fix (2026-10-13), also on master: shlex read `#` as a comment

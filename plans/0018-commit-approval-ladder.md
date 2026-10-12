@@ -164,13 +164,19 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - **Round 10** reviewed the tip before the `eval`/alias fix, so its same-command alias finding was already fixed. Its other findings:
       - **A reserved word hid a move (High, also on master).** `{ cd ../main; git merge topic; }` kept `{` attached to `cd`, so the move was missed, and `if`, `then`, `do` and the like hid a command the same way. Fixed: leading `{`, `!`, `if`, `then`, `else`, `elif`, `do`, `while` and `until` are stripped before a run is read, and a function header's `()` ends a run.
       - **`hash -d n=../main; cd ~n` (Medium).** Python would resolve `~n` as a user's home. Fixed: a `~name` target is unknown.
-      - **A false ask for `deploy() { echo git push origin develop; }` (Low).** Fixed by the same stripping.
+      - **A false ask for `deploy() { echo git push origin develop; }` (Low).** Fixed by the same stripping, for that body. Round 11 pointed out that a body with a real `git push` still asks; see there.
       - **Assigning zsh's `PWD` moves git (High), rejected.** In zsh 5.9 and bash, `PWD=../b && git symbolic-ref --short HEAD`, an exported `PWD`, and a `PWD=` prefix all still reported repo `a`'s branch, because git ignores a `PWD` that does not name the real current directory.
       - **A stale line in this plan (Low).** It said Codex ran five rounds; fixed.
+    - **Round 11** confirmed round 10's fixes, and was asked to rank what remained by how plausibly an agent would write it.
+      - **zsh's `noglob` and `nocorrect` (High, plausible).** In front of `cd`, they hid the move. Fixed: they are stripped like `builtin` and `command`.
+      - **`CDPATH` (High, less plausible).** Set in the command, `CDPATH=..; cd protected` lands on `../protected`. Fixed: after a `CDPATH` or `cdpath` assignment, a `cd` to a bare name is unknown. An inherited `CDPATH` is a named gap; it is unset on this machine.
+      - **zsh's `repeat 1 cd …` (contrived).** Fixed anyway: it was cheap.
+      - **A function body with a real `git push` asks (Low), answered.** A definition is usually followed by a call, and the ask errs safe.
+      - **The agent's own finding: operators written without spaces.** This was on master too, and checking round 11's `cdpath=(..)` case found it. shlex keeps a run of punctuation as one token, so in `true&&(cd ../main&&git merge topic)` or `(true);cd ../main && git merge topic`, `&&(` and `);` were plain words: the runs were mis-split, and the merge into `develop` passed. Fixed: punctuation-only tokens are split into the shell's operators, except that `<(` and `>(` stay whole, so a process substitution's text stays in the run it feeds.
     - **Two bugs of the agent's own were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
   - **A fetch into a remote-tracking ref asked (the user's report, 2026-10-13).** `/codex-review`'s snapshot step runs `git -C <snapshot> fetch -q <repository> "<base>:refs/remotes/origin/<base>"`, and the hook asked every round: `fetch` was silent only with no refspec at all. A fetch is now silent when each refspec after the repository word stores into `refs/remotes/…` or `refs/tags/…`, or has no destination; such a fetch writes no branch. Every word must still be literal, since a variable may expand to `x:develop`. The skill's step now fetches from `origin`, which a clone points at the repository it was cloned from, instead of naming the repository, which an agent tends to fill in with a variable.
   - **Stray objects during round 4, not an incident.** The post-review check found two unreachable commits in this clone's object store, written about a minute into the run: a `git stash create` pair ("WIP on …", "index on …") whose blobs matched the uncommitted working files. No ref moved. They came from the security-guidance plugin, which snapshots the working tree with `git stash create` and leaves `.git/sg-*` marker files. Codex ran in its snapshot clone, which has its own object store.
-  - **Verification:** 69 test methods pass. Forty-three deliberate breakages each failed tests:
+  - **Verification:** 70 test methods pass. Forty-nine deliberate breakages each failed tests:
     - no look-through;
     - a look-through that never accepts a `git` after an option;
     - one that always demands a known subcommand;
@@ -213,14 +219,20 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - alias text not scanned;
     - no reserved-word stripping;
     - a function header kept in its body's run;
-    - a `~name` target read as a path.
+    - a `~name` target read as a path;
+    - no operator splitting;
+    - `<(` split too;
+    - no `noglob`/`nocorrect`;
+    - no `repeat`;
+    - no `CDPATH` rule;
+    - the `CDPATH` rule applied to `./` paths too.
 
     Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (believed redundant because `shlex` fails on such commands; round 7 proved that wrong, see the review history), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check, twice (no delimiter word follows its `<<`). Several heredoc misreads were at first caught only by the coarse fallback, because the misread left an unbalanced quote; their tests now close the quote in a line the shell takes for a comment (`# '`), so each breakage shows.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification
 
-- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (69 after the 2026-10-13 change below). Each review shape is a subtest:
+- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (70 after the 2026-10-13 change below). Each review shape is a subtest:
   - 24 from round 1 in `BypassRegressions.SHAPES`;
   - 13 from round 2 and the security review;
   - 3 for creating a protected branch.
