@@ -10,6 +10,8 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 INSTALL = os.path.join(HERE, "protect-branches.sh")
 PROTECT_GITHUB = os.path.join(HERE, "protect-github.sh")
+INSTALL_GLOBAL = os.path.join(HERE, "install-global.sh")
+HOOK = os.path.join(HERE, "reference-transaction")
 
 # Real git, isolated from the machine's own configuration (a global core.hooksPath, signing, …).
 ENV = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
@@ -260,6 +262,99 @@ class AllowedUpdates(ProtectedRepoTest):
     def test_the_users_documented_bypass(self):
         result = self.repo.git("-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-m", "x", check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class OwnRepositoriesOnly(ProtectedRepoTest):
+    """The hook acts where origin is the user's (Taka499, tia-tools) or absent; others' clones must still pull."""
+
+    def direct_commit_moves_develop(self, origin: str) -> bool:
+        self.repo.git("remote", "add", "origin", origin)
+        before = self.repo.tip("develop")
+        self.repo.git("commit", "--allow-empty", "-m", "direct", check=False)
+        return self.repo.tip("develop") != before
+
+    def test_someone_elses_repository_is_left_alone(self):
+        self.assertTrue(self.direct_commit_moves_develop("https://github.com/receptron/mulmoterminal.git"))
+
+    def test_the_users_account_is_protected(self):
+        self.assertFalse(self.direct_commit_moves_develop("git@github.com:Taka499/nudge.git"))
+
+    def test_the_users_organization_is_protected(self):
+        self.assertFalse(self.direct_commit_moves_develop("https://github.com/tia-tools/gakumas-supportcards.git"))
+
+
+def config_hooks_supported() -> bool:
+    """Whether the git on PATH runs hooks defined in config (git 2.56 does; Apple's 2.50 does not)."""
+    with tempfile.TemporaryDirectory() as temp:
+        config = os.path.join(temp, "gitconfig")
+        marker = os.path.join(temp, "ran")
+        with open(config, "w") as handle:
+            handle.write(f'[hook "probe"]\n\tevent = reference-transaction\n\tcommand = touch {marker}\n')
+        env = dict(ENV, GIT_CONFIG_GLOBAL=config)
+        subprocess.run(["git", "init", "-q", os.path.join(temp, "r")], env=env, capture_output=True, check=False)
+        subprocess.run(["git", "-C", os.path.join(temp, "r"), "commit", "-q", "--allow-empty", "-m", "x"],
+                       env=env, capture_output=True, check=False)
+        return os.path.exists(marker)
+
+
+@unittest.skipUnless(config_hooks_supported(), "this git does not run config-defined hooks")
+class GlobalHook(unittest.TestCase):
+    """The hook defined once in global config, the way install-global.sh sets it up."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.config = os.path.join(self.temp.name, "gitconfig")
+        with open(self.config, "w") as handle:
+            handle.write(f'[hook "protect-branches"]\n\tevent = reference-transaction\n\tcommand = {HOOK}\n')
+        self.env = {"GIT_CONFIG_GLOBAL": self.config}
+        self.repo = Repo(os.path.join(self.temp.name, "repo"))
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def run_git(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], env=dict(ENV, **self.env), capture_output=True, text=True, check=False)
+
+    def test_init_and_clone_still_work(self):
+        """The first version asked for the git directory before git init had made one, and aborted the init."""
+        self.assertEqual(self.run_git("init", "-q", "-b", "develop", self.repo.path).returncode, 0)
+        self.repo.git("commit", "-q", "--allow-empty", "-m", "root", env=self.env)
+        clone = os.path.join(self.temp.name, "clone")
+        result = self.run_git("clone", "-q", self.repo.path, clone)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_direct_commit_on_develop_is_refused(self):
+        self.run_git("init", "-q", "-b", "develop", self.repo.path)
+        self.repo.git("commit", "-q", "--allow-empty", "-m", "root", env=self.env)
+        before = self.repo.tip("develop")
+        result = self.repo.git("commit", "--allow-empty", "-m", "direct", check=False, env=self.env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.repo.tip("develop"), before)
+
+    def test_the_repositorys_own_hooks_still_run(self):
+        """Unlike a global core.hooksPath: Git LFS keeps its hooks in .git/hooks."""
+        self.run_git("init", "-q", "-b", "develop", self.repo.path)
+        marker = os.path.join(self.temp.name, "post-commit-ran")
+        hook = os.path.join(self.repo.path, ".git", "hooks", "post-commit")
+        with open(hook, "w") as handle:
+            handle.write(f"#!/bin/sh\ntouch {marker}\n")
+        os.chmod(hook, 0o755)
+        self.repo.git("commit", "-q", "--allow-empty", "-m", "root", env=self.env)
+        self.assertTrue(os.path.exists(marker))
+
+    def test_install_global_sets_the_hook_up_and_proves_it_runs(self):
+        home = os.path.join(self.temp.name, "home")
+        os.makedirs(home)
+        env = dict(ENV, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"),
+                   GIT_CONFIG_GLOBAL=os.path.join(home, ".gitconfig"))
+        result = subprocess.run(["sh", INSTALL_GLOBAL], env=env, capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("active", result.stdout)
+        installed = os.path.join(home, ".config", "git", "protect-branches")
+        self.assertTrue(os.access(installed, os.X_OK))
+        command = subprocess.run(["git", "config", "--global", "--get", "hook.protect-branches.command"], env=env,
+                                 capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(command, installed)
 
 
 class Installer(unittest.TestCase):
