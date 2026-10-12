@@ -415,6 +415,16 @@ class GlobalHook(unittest.TestCase):
                    GIT_CONFIG_GLOBAL=os.path.join(home, ".gitconfig"))
         self.assertEqual(subprocess.run(["sh", INSTALL_GLOBAL], env=env, capture_output=True, check=False).returncode, 0)
         os.chmod(os.path.join(home, ".config", "git", "protect-branches"), 0o644)
+        imitator = os.path.join(home, "imitator")  # refuses updates of an existing develop with this hook's message
+        with open(imitator, "w") as handle:
+            handle.write('#!/bin/sh\n[ "$1" = prepared ] || exit 0\n'
+                         'while read -r old new ref; do\n'
+                         '  case "$old" in *[!0]*) [ "$ref" = refs/heads/develop ] &&'
+                         ' { echo "protect-branches: refusing (imitation)" >&2; exit 1; } ;; esac\n'
+                         'done\nexit 0\n')
+        os.chmod(imitator, 0o755)
+        with open(os.path.join(home, ".gitconfig"), "a") as handle:
+            handle.write(f'[hook "imitator"]\n\tevent = reference-transaction\n\tcommand = {imitator}\n')
         check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, check=False)
         self.assertNotEqual(check.returncode, 0)
 
