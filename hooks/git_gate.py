@@ -17,8 +17,10 @@ Two rounds of review showed that listing dangerous shapes cannot be completed; l
 
 What it cannot see: git run by a program file (`python3 tool.py`), fetch refspecs configured to
 write local branches, and a hook process that fails to start, which Claude Code treats as no
-decision. A backstop for these has to sit in git itself: a reference-transaction hook refusing
-non-merge updates of protected branches.
+decision. The backstop for these is git's own reference-transaction hook
+(git-hooks/reference-transaction), installed per repository by git-hooks/protect-branches.sh: it
+refuses every non-merge update of a protected branch however git was invoked. This hook asks
+whenever a command carries core.hooksPath, the way to switch that off.
 
 Needs Python 3.10 or later; the settings entry names the interpreter by absolute path, because
 macOS's /usr/bin/python3 is Apple's 3.9. Entry and reasons: README.md § The one file this repo
@@ -281,6 +283,8 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
     if parsed is None:
         return None
     git_dir, subcommand, args = parsed
+    if any("hookspath" in word.lower() for word in run.words + run.env):
+        return "ask", "core.hooksPath would switch off git's own branch protection: asking"
     substituted = _substitutions(args)
     if substituted and writes_in_text(" ".join(substituted)):
         return "ask", NESTED_REASON

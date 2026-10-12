@@ -267,6 +267,12 @@ class BypassRegressions(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("feat/x")))
 
+    def test_switching_off_gits_own_protection_asks(self):
+        for command in ("git -c core.hooksPath=/dev/null commit -m x", "git -ccore.hookspath=/dev/null merge x",
+                        "git config core.hooksPath /tmp/none", "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='x'\" git status"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+
     def test_creating_a_protected_branch_asks(self):
         """In a repository without one yet, this would seed main or develop with unreviewed work."""
         for command in ("git branch develop feat/x", "git switch -c main", "git switch --create develop feat/x"):
