@@ -107,6 +107,9 @@ PRINTERS = frozenset({"echo", "printf"})
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Point git at another repository or configuration: the target can no longer be named.
 GIT_REDIRECT_ENV = re.compile(r"^GIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)=")
+# Builtins that change the shell's directory to an operand (zsh's `chdir` is `cd`).
+DIRECTORY_CHANGERS = frozenset({"cd", "chdir", "pushd"})
+
 # Characters that end an unquoted shell word.
 METACHARACTERS = " \t\n;&|()<>"
 HEREDOC_MARK = re.compile(r"^__heredoc_(\d+)__$")
@@ -369,15 +372,23 @@ def _line_at(command: str, index: int) -> tuple[str, int]:
 
 
 def _directory_change(words: tuple[str, ...]) -> str | object | None:
-    """Where a `cd`-like run moves the shell: a path, UNKNOWN (`popd`, `cd -`), or None if it is not one."""
-    if words[:2] in (("builtin", "cd"), ("command", "cd")):
+    """Where a `cd`-like run moves the shell: a path, UNKNOWN, or None if it is not one.
+
+    UNKNOWN where the target is not in the command: `popd`, `cd -`, a directory-stack entry (`cd -2`,
+    `pushd +1`), `pushd` alone (it swaps the top two), and zsh's `cd old new`, which replaces `old` with
+    `new` in the current path. `builtin` and `command` in front, and zsh's `chdir`, change nothing.
+    """
+    while words[:1] in (("builtin",), ("command",)):
         words = words[1:]
-    if words[:1] in (("cd",), ("pushd",)):
-        operands = [word for word in words[1:] if not word.startswith("-") or word == "-"]
-        return operands[0] if operands else "~"
-    if words[:1] == ("popd",):
+    if not words or words[0] not in DIRECTORY_CHANGERS:
+        return UNKNOWN if words[:1] == ("popd",) else None
+    arguments = words[1:]
+    if any(re.fullmatch(r"[+-]\d+", word) for word in arguments):
         return UNKNOWN
-    return None
+    operands = [word for word in arguments if not word.startswith("-") or word == "-"]
+    if len(operands) > 1 or (words[0] == "pushd" and not operands):
+        return UNKNOWN
+    return operands[0] if operands else "~"
 
 
 def _env_prefix_length(words: list[str]) -> int:
@@ -658,11 +669,12 @@ def _decide_branch(subcommand: str, branch: str | None) -> Decision | None:
 
 
 # In text the lexer cannot split, what may point a git write somewhere other than the session's branch: a
-# directory change, git's global options (`-C`, `-c`, `--git-dir`), a GIT_DIR-style variable, a hooks or
+# directory change, git's global options that pick the repository or settings (`-C`, `-c`, `--git-dir`, …,
+# not `--no-pager`), a GIT_DIR-style variable, a hooks or
 # include setting or `git config` (which can switch off the reference-transaction hook), Apple's git, or a
 # program given as a variable followed by a write (`$G push`), which names no `git` at all.
 UNPARSED_TARGET_CHANGE = re.compile(
-    r"(?:^|[\s;&|(`])(?:cd|pushd|popd)\b|\bgit\s+-|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)="
+    r"(?:^|[\s;&|(`])(?:cd|chdir|pushd|popd)\b|\bgit(?:\s+-\S*)*?\s+(?:-[Cc]|--(?:git-dir|work-tree|namespace|exec-path|config-env|bare))|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)="
     r"|(?i:hookspath|\bhook\.\w|\binclude(?:if)?\.)|\bgit\s+config\b"
     r"|/usr/bin/git\b|\$\{?\w+\}?\s+(?:" + "|".join(sorted(TEXT_WRITES)) + r")\b"
 )

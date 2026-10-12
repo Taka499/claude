@@ -440,6 +440,19 @@ class BypassRegressions(unittest.TestCase):
         self.assertIsNone(decide("printf $'a\\tb\\n' > x.txt && git commit -m x", on("feat/x")))
         self.assertTrue(asks(decide("printf $'a\\tb\\n' > x.txt && git commit -m x", on("develop"))))
 
+    def test_every_directory_change_is_followed(self):
+        """Codex review round 9 (2026-10-13), also on master: zsh's `chdir` and a `builtin`/`command` in front
+        of `pushd` or `popd` were not taken for directory changes, so a merge could land on develop silently."""
+        elsewhere = on("feat/x", {"../protected": "develop", "~": "feat/z", "feat": "feat/y", "+1": "feat/z"})
+        for command in ("chdir ../protected && git merge topic", "builtin pushd ../protected && git merge topic",
+                        "command pushd ../protected && git merge topic", "builtin popd && git merge topic",
+                        "cd feat main && git merge topic",          # zsh: replace feat with main in the path
+                        "cd -2 && git merge topic", "pushd && git merge topic", "pushd +1 && git merge topic"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, elsewhere)))
+        self.assertIsNone(decide("cd feat && git merge topic", elsewhere))  # a named feature checkout
+        self.assertIsNone(decide("printf $'x' && git --no-pager commit -m x", on("feat/x")))  # Codex round 9, Low
+
     def test_a_hash_hides_nothing_after_it(self):
         """Found reviewing the heredoc fix (2026-10-13), also on master: shlex read `#` as a comment
         to the end of the whole command, after newlines were joined, and mid-word as well."""

@@ -160,10 +160,11 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - **Round 7** found that `cat <<$'EOF'` took `$EOF` for the delimiter and hid every later line, a `git push` included. The agent then built a line on which `$'\''` shifted the scanner's quote parity, so that a real `git push` was set aside as a heredoc body while `shlex` still tokenized the rest. The earlier removal of `$'…'` tracking had rested on the belief that `shlex` always fails there. Fixed: `$'…'` outside quotes makes the command unreadable, and the coarse scan applies. Its Low finding was answered, not fixed: `git fetch origin --filter blob:none` asks, because an option's value after the repository word reads as a refspec. The same options before the repository are silent, the ordering is rare, and the ask errs safe; modelling every value-taking option of `fetch` would add parsing for little gain.
     - **The plugin's review of round 7's fix** called it a parser downgrade, which was real. `$'…'` sent a command to the coarse scan, and that scan judged `git -C ../main merge` against the session's branch, and did not see `$G push`, `GIT_DIR=`, `pushd` or Apple's git. Adding a `$'…'` anywhere downgraded a command into those blind spots, as did nested quotes inside `$(…)`, which `shlex` cannot split. Fixed: the coarse scan asks whenever something could point a write elsewhere, and is otherwise judged like the full parse. Comparing the two paths afterwards, the agent found one more gap: the full parse asks on a `hooksPath` or `hook.*` setting, which can switch off the reference-transaction hook, but the coarse scan did not, so `git config core.hooksPath /dev/null` slipped through it. It now asks on hooks and include settings and on `git config`.
     - **Round 8** found that an unquoted heredoc's `$(…)` and backticks run as the shell reads the body, whatever program reads it then: `python3 - <<EOF` with `$(git push origin develop)` in it passed. Fixed: each body keeps whether its delimiter was quoted, and an unquoted body with a substitution and git-write text asks. Quoted bodies, the form used for Python edits and commit messages, stay unscanned.
+    - **Round 9** confirmed round 8's fix and the coarse-scan hardening. It found one more High, also on master: zsh's `chdir`, and `builtin`/`command` in front of `pushd` or `popd`, were not taken for directory changes, so `chdir ../main && git merge topic` merged into `develop` silently, and the git hook allows merges. Fixed, and the agent added the moves whose target the command does not name: directory-stack entries (`cd -2`, `pushd +1`), `pushd` alone, and zsh's `cd old new`, which substitutes inside the current path. zsh's `AUTO_CD` is a named gap; it is off in this machine's startup files. Round 9's two Lows were fixed: the coarse scan asked on any `git -…` option, `--no-pager` included, and now asks only on those that pick the repository or settings; and the test counts in this plan were stale.
     - **Two bugs of the agent's own were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
   - **A fetch into a remote-tracking ref asked (the user's report, 2026-10-13).** `/codex-review`'s snapshot step runs `git -C <snapshot> fetch -q <repository> "<base>:refs/remotes/origin/<base>"`, and the hook asked every round: `fetch` was silent only with no refspec at all. A fetch is now silent when each refspec after the repository word stores into `refs/remotes/…` or `refs/tags/…`, or has no destination; such a fetch writes no branch. Every word must still be literal, since a variable may expand to `x:develop`. The skill's step now fetches from `origin`, which a clone points at the repository it was cloned from, instead of naming the repository, which an agent tends to fill in with a variable.
   - **Stray objects during round 4, not an incident.** The post-review check found two unreachable commits in this clone's object store, written about a minute into the run: a `git stash create` pair ("WIP on …", "index on …") whose blobs matched the uncommitted working files. No ref moved. They came from the security-guidance plugin, which snapshots the working tree with `git stash create` and leaves `.git/sg-*` marker files. Codex ran in its snapshot clone, which has its own object store.
-  - **Verification:** 66 test methods pass. Thirty-two deliberate breakages each failed tests:
+  - **Verification:** 69 test methods pass. Thirty-eight deliberate breakages each failed tests:
     - no look-through;
     - a look-through that never accepts a `git` after an option;
     - one that always demands a known subcommand;
@@ -195,14 +196,20 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - every body taken as quoted;
     - every body taken as unquoted;
     - no target check in the coarse scan;
-    - no hooks-setting check in the coarse scan.
+    - no hooks-setting check in the coarse scan;
+    - no `chdir`;
+    - no `builtin`/`command` stripping;
+    - directory-stack entries read as paths;
+    - `cd old new` read as a path;
+    - `pushd` alone read as home;
+    - any `git -…` option asking in the coarse scan.
 
     Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (believed redundant because `shlex` fails on such commands; round 7 proved that wrong, see the review history), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check, twice (no delimiter word follows its `<<`). Several heredoc misreads were at first caught only by the coarse fallback, because the misread left an unbalanced quote; their tests now close the quote in a line the shell takes for a comment (`# '`), so each breakage shows.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification
 
-- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (66 after the 2026-10-13 change below). Each review shape is a subtest:
+- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (69 after the 2026-10-13 change below). Each review shape is a subtest:
   - 24 from round 1 in `BypassRegressions.SHAPES`;
   - 13 from round 2 and the security review;
   - 3 for creating a protected branch.
