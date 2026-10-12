@@ -1,11 +1,11 @@
 ---
 name: codex-review
-description: Get a second opinion on a local diff from Codex (OpenAI) before it becomes a PR. Runs `codex exec` over the working-tree or branch diff with no write access, under a forced-verdict contract, then evaluates every finding rather than applying it. Use when the user asks for a "second opinion", "codex review", "have Codex look at this", or before committing anything whose failure mode is expensive — permissions, secrets handling, destructive operations, or any claim that behaviour is unchanged.
+description: Get a second opinion on a local diff from Codex (OpenAI) before it becomes a PR. Runs `codex exec` over a snapshot of the working-tree or branch diff, under a forced-verdict contract, checks the real repository was not touched, then evaluates every finding rather than applying it. Use when the user asks for a "second opinion", "codex review", "have Codex look at this", or before committing anything whose failure mode is expensive — permissions, secrets handling, destructive operations, or any claim that behaviour is unchanged.
 ---
 
 # Codex Review
 
-A pre-commit second opinion from a model that does not share this one's priors. Codex reads the diff read-only; you evaluate what it says. Nothing is committed, pushed, or posted.
+A pre-commit second opinion from a model that does not share this one's priors. Codex is told to read without changing anything, but nothing enforces that: it runs with the write access the sandbox gives this session, which includes the repository, and on 2026-10-12 a review made an empty commit on the branch it was reviewing. So Codex works in a snapshot (step 2), which keeps its ordinary commands out of the repository but does not confine it, and the repository is checked for writes afterwards (step 4). You evaluate what it says. Nothing is committed, pushed, or posted.
 
 The point is **disagreement, not coverage**. Another pass by the same reviewer finds the same things — the value here is that Codex was trained differently and will object to things this agent considers settled. Treat a finding you immediately want to dismiss as the most interesting one on the list.
 
@@ -78,11 +78,44 @@ It needs two entries in `~/.claude/settings.json` (untracked per ADR 0002 — th
 
 **The diff must contain only the intended change.** A stray formatter run or an unrelated edit buries the real change, and Codex will spend its whole review on the noise. Clean it up first, or narrow the paths.
 
-### 2. Run Codex
+### 2. Snapshot the repository, and record its state
+
+Codex works in a copy, so its ordinary relative-path commands land there. It is **not confined** to the copy: it runs under this session's sandbox, which can also write the real repository by its absolute path. Step 4 is what tells you whether it did. Each command below writes to a file rather than a pipe, so that every step's own exit status counts, and stops at the first failure:
 
 ```bash
-codex exec --sandbox danger-full-access -c 'approval_policy="never"' "Review ONLY the change described below in this repository.
-Run \`git diff <paths>\` to see it and read surrounding files for context. Do NOT modify anything.
+snapshot=$(mktemp -d "$TMPDIR/codex-review.XXXXXX") || exit 1
+sha=$(git -C <repository> rev-parse --verify HEAD) ||
+  { echo "no commit to snapshot: if git -C <repository> rev-list -n 1 --all prints nothing, review in place (below)"; exit 1; }
+git -c advice.detachedHead=false clone -q --revision="$sha" <repository> "$snapshot/repo" || exit 1
+git -C "$snapshot/repo" fetch -q <repository> "<base>:refs/remotes/origin/<base>" || exit 1
+```
+
+For uncommitted work, carry it over, binary changes and untracked files included. `git apply` is all-or-nothing, so a failure leaves the snapshot as it was:
+
+```bash
+git -C <repository> diff --binary HEAD > "$snapshot/uncommitted.patch" || exit 1
+git -C "$snapshot/repo" apply --allow-empty "$snapshot/uncommitted.patch" || exit 1
+git -C <repository> ls-files -z --others --exclude-standard > "$snapshot/untracked.list" || exit 1
+tar -C <repository> --null -T "$snapshot/untracked.list" -cf "$snapshot/untracked.tar" || exit 1
+tar -C "$snapshot/repo" -xf "$snapshot/untracked.tar" || exit 1
+```
+
+`--revision` (git 2.49 or later) clones straight to that commit, detached, and creates no remote-tracking branches, hence the `fetch` of the base. Do not reach it with `git -C <snapshot> checkout` instead: this setup's permission rules deny every mutating `git -C` form, so that step would be refused. The snapshot is detached at `HEAD`, so its base branch is `origin/<base>`: the diff to review is `git diff origin/<base>...HEAD`, plus the uncommitted changes shown by `git diff HEAD` and `git status`. Give `mktemp -d` the `$TMPDIR` template: without one, macOS uses the per-user system temp directory, which the sandbox refuses, and a script that then changes into an empty path runs in the repository instead (measured on 2026-10-12: four stray commits). In the steps below, run Codex from `"$snapshot/repo"` and name that path in the prompt.
+
+Then, with the snapshot complete and just before Codex runs, record the repository's refs and a start marker. They come last on purpose: cloning a local repository hard-links its object files, which updates their change time, so a marker taken earlier would list the clone's own work in step 4.
+
+```bash
+git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapshot/refs-before.txt" || exit 1
+touch "$snapshot/started" || exit 1
+```
+
+**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, keep step 4 exactly as written, and say in the report that no snapshot was used.
+
+### 3. Run Codex
+
+```bash
+cd "$snapshot/repo" && codex exec --sandbox danger-full-access -c 'approval_policy="never"' "Review ONLY the change described below in this repository (<snapshot path>).
+Run \`git diff <paths>\` to see it and read surrounding files for context. Do NOT modify anything, and do not commit.
 
 INTENT: <what this change is for, and what must stay true after it>
 
@@ -98,7 +131,7 @@ exactly one final line and nothing after it:
 **In a worktree-isolated session (EnterWorktree), feed the prompt through a file on stdin.** The harness there refuses any shell command whose quoted text mentions `git` — and this prompt does, in `git diff` — and the `-c 'approval_policy="never"'` flag trips the same check. Write the prompt to `$TMPDIR/codex-prompt.txt` with the Write tool and run
 
 ```bash
-codex exec --sandbox danger-full-access - < "$TMPDIR/codex-prompt.txt" > "$TMPDIR/codex-review.txt" 2>&1
+cd "$snapshot/repo" && codex exec --sandbox danger-full-access - < "$TMPDIR/codex-prompt.txt" > "$TMPDIR/codex-review.txt" 2>&1
 ```
 
 `-` makes `codex exec` read the prompt from stdin, so the `< /dev/null` rule above is satisfied by the file itself; `codex exec` is non-interactive, so dropping the approval flag changes nothing. Measured 2026-09-27 (gakumas-supportcards): the inline form was refused three times with "names git in a form too complex to verify", the stdin form ran to a verdict twice.
@@ -109,9 +142,23 @@ Three things decide whether this call is worth anything:
 - **Ask what you actually fear**, not "review this". Generic prompts return generic prose. Name the thing: does the happy path still produce identical output, does a retry double-apply, does removing this guard swallow an error that should surface.
 - **Force the verdict line, and put it last.** Without the contract you get an essay you cannot act on, and no way to tell a clean review from an inconclusive one. Asking for a line that both "ends" the response and is "followed by" the findings is not a contract — asked that way, Codex emitted the whole verdict block twice.
 
-Codex output is long — read the tail for the findings and the verdict. That is the other reason the verdict goes last: it makes `tail` a contract rather than a guess. When waiting for the run in the background, wait for the process to exit or for a line that is *only* the verdict — never for the bare phrase, because Codex echoes the prompt into its log, and the prompt contains the phrase. A wait keyed on the phrase ends before Codex has read the diff. Anchor the match, but tolerate what a model adds around a line it was told to emit verbatim: the prompt displays the verdict in quotes, and quotes, leading or trailing space, `**bold**` or a CR each defeat a strictly bare pattern. `grep -qE "^[[:space:]]*['\"*]*CODEX VERDICT: (LGTM|CHANGES REQUESTED)['\"*.]*[[:space:]]*$"` accepts all of those and still rejects the echoed `'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'.` line, which is the one that must never match. Missing a real verdict is the safe direction — the wait falls through to process exit — but **a run that exits with no matching verdict is inconclusive**, and step 5 reports it as inconclusive, never as LGTM. If the call outlives the harness's per-call ceiling, run it in the background rather than shortening the prompt.
+Codex output is long — read the tail for the findings and the verdict. That is the other reason the verdict goes last: it makes `tail` a contract rather than a guess. When waiting for the run in the background, wait for the process to exit or for a line that is *only* the verdict — never for the bare phrase, because Codex echoes the prompt into its log, and the prompt contains the phrase. A wait keyed on the phrase ends before Codex has read the diff. Anchor the match, but tolerate what a model adds around a line it was told to emit verbatim: the prompt displays the verdict in quotes, and quotes, leading or trailing space, `**bold**` or a CR each defeat a strictly bare pattern. `grep -qE "^[[:space:]]*['\"*]*CODEX VERDICT: (LGTM|CHANGES REQUESTED)['\"*.]*[[:space:]]*$"` accepts all of those and still rejects the echoed `'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'.` line, which is the one that must never match. Missing a real verdict is the safe direction — the wait falls through to process exit — but **a run that exits with no matching verdict is inconclusive**, and step 7 reports it as inconclusive, never as LGTM. If the call outlives the harness's per-call ceiling, run it in the background rather than shortening the prompt.
 
-### 3. Evaluate every finding — this is the step that is not optional
+### 4. Check the repository was not touched
+
+List every file in the repository whose content or metadata changed since the snapshot was taken, `.git` included, and compare its refs:
+
+```bash
+find <repository> -cnewer "$snapshot/started" -print > "$snapshot/written.txt" || exit 1
+git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapshot/refs-after.txt" || exit 1
+cat "$snapshot/written.txt"; diff "$snapshot/refs-before.txt" "$snapshot/refs-after.txt"
+```
+
+`-cnewer` compares the inode change time, which every write and every permission change updates: a commit, a ref, an edited, new or `chmod`ed file, tracked, untracked or ignored. A deleted file shows as its directory. The file system here (APFS) keeps nanosecond times, so a write just after the marker is not lost to rounding. What it cannot catch is a process that sets times back deliberately; nothing short of a separate sandbox for Codex stops that.
+
+Some entries can be your own. A `git status` or `git diff` run in the repository during the review may refresh `.git/index`, and anything you edited there yourself shows up too. Anything listed that you did not write is Codex's. Stop and report it to the user as an incident, before any finding. Name what changed (a ref, a commit and its author, a file), and do not undo it on your own, because the global Git rules forbid rewriting history and deleting untracked files without the user's permission. A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
+
+### 5. Evaluate every finding — this is the step that is not optional
 
 For each one, in this order:
 
@@ -120,13 +167,13 @@ For each one, in this order:
 3. **What does the fix break?** A suggestion that satisfies the finding and regresses a caller is not an improvement.
 4. **What did it miss?** Read the diff yourself as well. Codex is a floor, not a ceiling.
 
-Sort into MUST-FIX / VALID-NIT / FALSE-POSITIVE / DEFER. Apply the MUST-FIX items and the cheap nits. **Where you disagree, write down why — and where.** In the report of step 5 always; additionally in the plan file's Decision Log when the change has one, since that is the copy that outlives the session. A rejection recorded nowhere comes back next time and gets rejected again with no more evidence than the first.
+Sort into MUST-FIX / VALID-NIT / FALSE-POSITIVE / DEFER. Apply the MUST-FIX items and the cheap nits. **Where you disagree, write down why — and where.** In the report of step 7 always; additionally in the plan file's Decision Log when the change has one, since that is the copy that outlives the session. A rejection recorded nowhere comes back next time and gets rejected again with no more evidence than the first.
 
-### 4. Re-run only if the logic moved
+### 6. Re-run only if the logic moved
 
-Material change to what the diff does → run step 2 again, so the verdict covers what will actually ship. Comment and naming changes → don't.
+Material change to what the diff does → take a fresh snapshot and run steps 2 to 4 again, so the verdict covers what will actually ship. Comment and naming changes → don't.
 
-### 5. Run the repo's own gates, then report
+### 7. Run the repo's own gates, then report
 
 Whatever the project's `CLAUDE.md` names — build, lint, typecheck, tests. Do not run a repo-wide formatter unless the repo is already format-clean; it rewrites unrelated files and turns a reviewable diff into an unreviewable one.
 
@@ -144,7 +191,7 @@ Then ask whether to commit. **Never commit, push, merge, or open a PR from this 
 
 - Findings you made are yours. Do not launder your own review through Codex's name — in the report or in a commit message.
 - A Codex LGTM is a data point, not a permit. If your own reading found a MUST-FIX, say so and fix it; two reviewers agreeing on a bug still leaves the bug.
-- Report an inconclusive run as inconclusive. A `codex exec` that produced no verdict line did not return LGTM, and the difference is the whole reason for the contract in step 2.
+- Report an inconclusive run as inconclusive. A `codex exec` that produced no verdict line did not return LGTM, and the difference is the whole reason for the contract in step 3.
 - Distinguish "this change adds no new risk" from "this code is now safe". Pre-existing problems the diff does not touch get named, not implied away.
 
 ## When this repository is the subject
