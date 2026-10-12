@@ -2,7 +2,8 @@
 # Protect main, master and develop in every repository on this machine: copy the reference-transaction
 # hook to ~/.config/git/protect-branches and define it in ~/.gitconfig as a config-defined hook.
 #
-#   git-hooks/install-global.sh
+#   git-hooks/install-global.sh            install or update, then prove it runs
+#   git-hooks/install-global.sh --check    only prove it runs; exit 1 if it does not
 #
 # Config-defined hooks run alongside each repository's own .git/hooks (Git LFS keeps working) and need
 # no per-repository step. They need a git that supports them: Homebrew's 2.56 does, Apple's /usr/bin/git
@@ -14,22 +15,25 @@ set -eu
 
 source_hook="$(cd "$(dirname "$0")" && pwd)/reference-transaction"
 target="${XDG_CONFIG_HOME:-$HOME/.config}/git/protect-branches"
-mkdir -p "$(dirname "$target")"
-cp "$source_hook" "$target.tmp"
-chmod +x "$target.tmp"
-mv "$target.tmp" "$target"
-git config --global --replace-all hook.protect-branches.event reference-transaction
-git config --global hook.protect-branches.command "$target"
+if [ "${1:-}" != --check ]; then
+    mkdir -p "$(dirname "$target")"
+    cp "$source_hook" "$target.tmp"
+    chmod +x "$target.tmp"
+    mv "$target.tmp" "$target"
+    git config --global --replace-all hook.protect-branches.event reference-transaction
+    git config --global hook.protect-branches.command "$target"
+fi
 
-# Prove it runs with the git on PATH: a direct commit on develop in a scratch repository must be refused.
+# Prove it runs with the git on PATH: a direct commit on develop in a scratch repository must be refused,
+# by this hook (its own message), not by some other hook that happens to refuse too.
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/protect-branches.XXXXXX")
 (
     cd "$scratch" || exit 1
     git init -q -b develop probe && cd probe || exit 1
     git -c user.name=p -c user.email=p@p commit -q --allow-empty -m root
     before=$(git rev-parse develop)
-    git -c user.name=p -c user.email=p@p commit -q --allow-empty -m direct 2> /dev/null || true
-    [ "$(git rev-parse develop)" = "$before" ]
+    git -c user.name=p -c user.email=p@p commit -q --allow-empty -m direct 2> refused.txt || true
+    [ "$(git rev-parse develop)" = "$before" ] && grep -q "protect-branches: refusing" refused.txt
 ) && active=yes || active=no
 rm -rf "$scratch"
 if [ "$active" = yes ]; then
