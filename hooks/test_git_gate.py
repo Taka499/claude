@@ -42,8 +42,21 @@ class FeatureBranchWork(unittest.TestCase):
     def test_read_only_git_on_develop(self):
         self.assertIsNone(decide("git status && git log --oneline -3 && git diff develop", on("develop")))
 
-    def test_pull_on_master_is_not_a_history_write_here(self):
-        self.assertIsNone(decide("git pull --ff-only origin master", on("master")))
+    def test_pull_on_a_feature_branch(self):
+        self.assertIsNone(decide("git pull origin feat/x", on("feat/x")))
+
+    def test_fetching_develop_only_updates_remote_tracking_refs(self):
+        self.assertIsNone(decide("git fetch origin develop", on("feat/x")))
+
+    def test_heredoc_commit_message_that_mentions_git_commands(self):
+        self.assertIsNone(decide("git commit -F - <<'EOF'\nfix: git merge handling\nEOF", on("feat/x")))
+
+    def test_interpreter_heredoc_with_harmless_git_prose(self):
+        command = "python3 - <<'EOF'\nprint('update the git repo; git add later')\nEOF"
+        self.assertIsNone(decide(command, on("feat/x")))
+
+    def test_message_from_a_command_substitution(self):
+        self.assertIsNone(decide('git commit -m "$(cat msg.txt)"', on("feat/x")))
 
 
 class ProtectedBranches(unittest.TestCase):
@@ -129,6 +142,56 @@ class UnknownTargetsAsk(unittest.TestCase):
         self.assertTrue(asks(decide("cd ../wt && git commit -m \"unterminated", on("feat/x"))))
 
 
+class BypassRegressions(unittest.TestCase):
+    """Shapes that wrote history to a protected branch with no ask in the first version
+    (Codex review and the background security review, 2026-10-12). All run from a feature branch."""
+
+    SHAPES = (
+        "git switch develop && git commit -m x",          # branch switch earlier in the command
+        "git checkout develop && git merge feat/x",
+        "git switch -C develop",                            # force-create resets a protected branch
+        "bash -c \"git commit -m x\"",                      # git inside another program
+        "sh -c \"cd ../main && git merge feat\"",
+        "eval \"git commit -m x\"",
+        "echo \"$(git commit -m x)\"",
+        "echo `git commit -m x`",
+        "env git commit -m x",
+        "command git commit -m x",
+        "time git commit -m x",
+        "exec git commit -m x",
+        "xargs git commit -m x < /dev/null",
+        "bash <<'EOF'\ngit commit -m x\nEOF",               # interpreter heredoc
+        "git -c alias.ci=commit ci -m x",                   # inline alias
+        "git branch -f develop HEAD",                       # direct ref moves
+        "git update-ref refs/heads/develop HEAD",
+        "git fetch origin feat:develop",
+        "git push origin HEAD:develop",                     # any push
+        "GIT_DIR=../main/.git git commit -m x",             # environment redirects
+        "export GIT_DIR=../main/.git; git commit -m x",
+        "GIT_WORK_TREE=../main; git commit -m x",
+        "env GIT_DIR=../main/.git git commit -m x",
+        "gh pr merge 1 --merge && true",
+    )
+
+    def test_every_shape_asks(self):
+        for command in self.SHAPES:
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+
+    def test_switch_to_a_branch_the_text_does_not_name(self):
+        for command in ("git switch - && git commit -m x",
+                        'git switch "$TARGET" && git commit -m x',
+                        "git checkout @{-1} && git merge feat/x"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+
+    def test_pull_on_a_protected_branch_asks(self):
+        self.assertTrue(asks(decide("git pull --ff-only origin master", on("master"))))
+
+    def test_config_alias_on_a_protected_branch_asks(self):
+        self.assertTrue(asks(decide("git ci -m x", on("develop"))))
+
+
 class Negative(unittest.TestCase):
     """Things that must NOT trigger a prompt."""
 
@@ -167,6 +230,11 @@ class HookEndToEnd(unittest.TestCase):
             self.assertEqual(output["permissionDecision"], "ask")
             subprocess.run(git + ["switch", "-q", "-c", "feat/x"], check=True)
             self.assertEqual(self.run_hook(payload), "")
+
+    def test_unreadable_input_asks(self):
+        result = subprocess.run([sys.executable, HOOK], input="not json", capture_output=True,
+                                text=True, timeout=30, check=True)
+        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "ask")
 
     def test_other_tools_are_ignored(self):
         payload = {"tool_name": "Read", "cwd": "/", "tool_input": {"file_path": "/x"}}
