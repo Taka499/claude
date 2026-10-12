@@ -62,6 +62,20 @@ class FeatureBranchWork(unittest.TestCase):
     def test_fetching_develop_only_updates_remote_tracking_refs(self):
         self.assertIsNone(decide("git fetch origin develop", on("feat/x")))
 
+    def test_fetch_refspecs_into_remote_tracking_refs_or_tags(self):
+        """The user's report (2026-10-13): the /codex-review snapshot's fetch of its base asked."""
+        for command in ('git -C "$S/repo" fetch -q origin "master:refs/remotes/origin/master"',
+                        "git fetch origin '+refs/heads/*:refs/remotes/origin/*'", "git fetch origin v1:refs/tags/v1",
+                        "git fetch origin develop:", "git fetch git@github.com:Taka499/claude.git",
+                        "git fetch https://github.com/x/y.git main:refs/remotes/y/main"):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("develop")))
+        for command in ("git fetch origin x:refs/heads/develop", "git fetch origin feat:feat2",
+                        "git fetch origin 'refs/heads/*:refs/heads/*'", "git fetch origin develop:refs/heads/main",
+                        'git fetch "$R" master:refs/remotes/origin/master', "git fetch origin $SPEC"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+
     def test_heredoc_commit_message_that_mentions_git_commands(self):
         self.assertIsNone(decide("git commit -F - <<'EOF'\nfix: git merge handling\nEOF", on("feat/x")))
 

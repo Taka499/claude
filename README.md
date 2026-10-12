@@ -49,7 +49,7 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
   - read-only and index-only subcommands (`status`, `diff`, `add`, `stash`, …);
   - listing a branch, or plainly creating one (`git branch NEW [START]`);
   - `switch NAME` or `switch -c NAME [START]` with a literal, unprotected name, which it remembers for the rest of the command;
-  - `fetch` with no refspec and no `--stdin` or `--refmap`;
+  - `fetch` whose refspecs, if any, store only into `refs/remotes/…` or `refs/tags/…` (or nowhere but `FETCH_HEAD`), with every word literal and no `--stdin` or `--refmap`;
   - `commit`, `merge`, `pull`, `cherry-pick`, `revert` or `am` on a branch it can name and that is not `main`, `master` or `develop`.
 
   Everything else asks:

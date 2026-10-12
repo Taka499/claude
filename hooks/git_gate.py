@@ -8,7 +8,7 @@ user's permission for that operation. A permission rule matches command text onl
 
 It works from an allowlist. It stays silent only for git runs whose effect it can state exactly:
 read-only and index-only subcommands, listing or plainly creating a branch, switching to a named
-unprotected branch, fetching without a refspec, and writes to the current branch when that branch
+unprotected branch, fetching into remote-tracking refs or tags only, and writes to the current branch when that branch
 can be named and is unprotected. Everything else asks — every other subcommand (aliases,
 `update-ref`, `filter-branch`, `checkout`, …), a branch name that is a variable or an attached
 option, a refspec destination, git found inside another program's text, a program that is itself
@@ -388,6 +388,22 @@ def _decide_run(run: Invocation, upstream: tuple[Invocation, ...], branch_of: Br
     return ("ask", NESTED_REASON) if substituted and writes_in_text(" ".join(substituted)) else None
 
 
+def _fetch_stores_no_branch(args: tuple[str, ...]) -> bool:
+    """Whether a fetch's refspecs store only into remote-tracking refs, tags, or nowhere but FETCH_HEAD.
+
+    The first word that is not an option is the repository, which may be a URL with a colon. Every word
+    must be literal: a variable may expand to a refspec such as `x:develop`.
+    """
+    words = [arg for arg in args if not arg.startswith("-")]
+    if not all(_literal(arg) for arg in args):
+        return False
+    for refspec in words[1:]:
+        destination = refspec.partition(":")[2]
+        if destination and not destination.startswith(("refs/remotes/", "refs/tags/")):
+            return False
+    return True
+
+
 def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decision | None:
     parsed = git_subcommand(run.words)
     if parsed is None:
@@ -428,7 +444,7 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
         return None
     if subcommand == "branch" and (_is_listing(args) or _is_plain_create(args)):
         return None
-    if subcommand == "fetch" and all(":" not in arg and _literal(arg) for arg in args):
+    if subcommand == "fetch" and _fetch_stores_no_branch(args):
         return None
     if subcommand == "worktree" and args[:1] in (("list",), ("prune",)):
         return None
