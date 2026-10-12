@@ -335,9 +335,9 @@ class BypassRegressions(unittest.TestCase):
         """Codex review round 3 (2026-10-13): `echo git commit` on develop asked."""
         self.assertIsNone(decide("echo git commit -m x", on("develop")))
         self.assertIsNone(decide("printf '%s\\n' git merge feat/x", on("develop")))
-        for command in ("env echo git commit -m x", "command echo git commit -m x", "time printf %s git push"):
-            with self.subTest(command=command):  # Codex round 4: a printer behind a launcher
-                self.assertIsNone(decide(command, on("develop")))
+        for command in ("env echo git commit -m x", "find echo -exec git commit -m x \\;"):
+            with self.subTest(command=command):  # behind a launcher `echo` may be an argument: asking is safe
+                self.assertTrue(asks(decide(command, on("develop"))))
         self.assertTrue(asks(decide("env echo <(git commit -m x)", on("develop"))))
         self.assertTrue(asks(decide("echo git commit -m x | sh", on("feat/x"))))
         for command in ("echo <(git commit -m x)", "echo x > >(git commit -F -)", "printf %s <(git merge feat/x)"):
@@ -349,6 +349,28 @@ class BypassRegressions(unittest.TestCase):
         for command in ("printf 'git com%s' mit | sh", "bash -c \"$(printf %s git) commit -m x\""):
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("develop")))
+
+    def test_heredoc_markers_bash_does_not_read(self):
+        """Security review (2026-10-13): `<<EOF` in quotes or a comment hid the next lines as a body."""
+        for command in ("echo '<<EOF'\ngit commit -m x\nEOF", "echo hi # <<EOF\ngit commit -m x\nEOF",
+                        'echo "a <<EOF b"\ngit push origin develop\nEOF', "echo \\<<EOF\ngit commit -m x\nEOF",
+                        "echo $'\\'' '<<EOF'\ngit commit -m x\nEOF", 'echo "$(echo "<<EOF")"\ngit commit -m x\nEOF',
+                        "echo `echo '<<EOF'`\ngit commit -m x\nEOF", "cat <<< x\ngit commit -m x\nx"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("develop"))))
+        real = "python3 - <<'EOF'\nprint(\"it's a 'git commit' # here\")\nEOF\ngit status"
+        self.assertIsNone(decide(real, on("develop")))  # a real body's quotes and # do not leak out
+        nested = "x=$(python3 - <<'EOF'\nprint('git push origin develop')\nEOF\n)\ngit status"
+        self.assertIsNone(decide(nested, on("develop")))  # a heredoc inside $( ) is still a heredoc
+
+    def test_a_hash_hides_nothing_after_it(self):
+        """Found reviewing the heredoc fix (2026-10-13), also on master: shlex read `#` as a comment
+        to the end of the whole command, after newlines were joined, and mid-word as well."""
+        for command in ("echo a#b; git commit -m x", "echo hi # note\ngit commit -m x",
+                        "curl -s https://x/y#frag && git push origin develop"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("develop"))))
+        self.assertIsNone(decide("git status # git push origin develop", on("develop")))  # a real comment
 
     def test_a_script_file_is_the_program_file_case(self):
         """Not seen here, by design: a shell running a script file. The global git hook covers it."""

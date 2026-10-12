@@ -126,23 +126,33 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
 - **`/codex-review`'s "read-only" is a request, not a guarantee.** Recorded here, and fixed separately in the skill: review a snapshot, and check `git status` and the reflog after every run. Shipping this plan does not wait on that fix.
 - **`__pycache__/` is ignored.** `hooks/` brings Python into the repository, and running its tests leaves bytecode. The directory the review left behind is not deleted, per the user's rule on untracked files; ignored, it stops showing.
 - **After merge (2026-10-13): git text is judged per program, not per command.** In the coordination worker of gkms-contest-ai, a `python3 - <<'EOF'` script rewriting its ExecPlan made the hook ask on 2026-10-12. The script's replacement strings were git commands written as prose, and the hook scanned the heredoc of any command containing a non-git program. That cost the user an approval for a markdown edit, the very kind of prompt this plan removes.
-  - **A first narrowing scanned text only when the command contained a listed shell-like program.** Codex rejected it on two counts. It was command-wide, so `env python3 - <<EOF …` still asked, as did a Python edit followed by `time true`. And a fixed list missed launchers: `busybox sh -c`, `find … -exec`, `git -c core.pager=…`.
-  - **The rule now works per program.**
-    - Any program is looked through to the first `git` or shell it starts, with no list of launchers (`env`, `time`, `xargs`, `find -exec`, `busybox`, `arch`, `setsid`, `cat <(…)`, …). A `git` right after an option may be that option's value (`find -name git`, `sudo -u git`), so there it counts only when a known git subcommand follows. Git found that way is judged as a git run, so `env git commit` on a feature branch is silent and on `develop` asks.
-    - A shell's own arguments, its own heredoc and everything piped into it, however many stages back, are scanned.
-    - Every other program has only `$(…)` and backticks scanned, which the shell itself runs. A process substitution needs no scan: its `git` is found by the look-through.
-    - `-c` values and `GIT_*` variables given for a git command are scanned for git it would run.
+  - **The rule now:**
+    - **Any program is looked through** to the first `git` or shell it starts, with no list of launchers (`env`, `time`, `xargs`, `find -exec`, `busybox`, `arch`, `setsid`, `cat <(…)`, …). Git found that way is judged as the git run it is: `env git commit` is silent on a feature branch and asks on `develop`. A `git` right after an option may be that option's value (`find -name git`, `sudo -u git`), so there it counts only when a known git subcommand follows.
+    - **`echo` and `printf`, as the run's own program, print text:** `echo git commit` does not ask. A process substitution among their words still runs (`echo <(git commit)`) and is judged. Behind a launcher a printer is not exempt, because there `echo` may be an argument (`find echo -exec git commit`); `env echo git commit` therefore asks, which errs safe.
+    - **A shell's own arguments, its own heredoc and everything piped into it,** however many stages back, are scanned for git.
+    - **Every other program** has only `$(…)` and backticks scanned, which the shell itself runs.
+    - **`-c` values and `GIT_*` variables** given for a git command are scanned for git they would run (`core.pager`, `GIT_PAGER`).
+    - **A heredoc counts only where bash reads one:** outside `'…'` and `"…"` quotes, with a fresh quoting level inside each `$(…)`, and outside comments. A `<<EOF` inside quotes or a comment had hidden the following lines as a body, though bash runs them.
+    - **A `#` hides only its own comment.** Comments are removed where bash sees them, at a word start, and Python's `shlex` no longer reads `#` at all. On master it did. With the command's newlines already joined, `shlex` took everything after a `#` as one comment, and it also started a comment mid-word, so `curl …/y#frag && git push origin develop` and a `git commit` on the line after a comment passed with no ask. The global git hook still refused a non-merge update of a protected branch, but a push or a merge passed with no ask.
+  - **Accepted gaps, named in the README:**
+    - code an interpreter runs (`python3 -c`, `node`, `awk`'s `system()`);
+    - a script file a shell runs (`printf … > s.sh; sh s.sh`), which this change stops scanning;
+    - git spelled out only at run time (`printf 'git com%s' mit | sh`, `g\it`, `$(printf %s git)`, `{git,commit}`), which master missed too;
+    - shell names behind symlinks, and interactive escapes (`less` `!`);
+    - an alias right after a launcher's option (`xargs -0 git co`).
 
-  - **Two of the agent's own bugs were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
-  - **The program-file case grows by one:** a shell running a script file, as in `printf … > s.sh; sh s.sh`, is no longer scanned. The global reference-transaction hook (plan 0020) holds there.
-  - **Round 4 of Codex** found one more false ask: a printer behind a launcher (`env echo git commit`). Fixed: a launched `echo` or `printf` is treated like a direct one.
-  - **The commit security review of round 3's change found a real regression.** Excluding printers had silenced `echo <(git commit -m x)` and `echo x > >(git commit -F -)` on `develop`: a process substitution runs its command whatever program it is attached to. Fixed: a printer is still looked through from its first `<(` or `>(`.
+    The global reference-transaction hook (plan 0020) refuses any non-merge update of a protected branch in all of these. `$'…'` quoting is not a gap: `shlex` cannot tokenize it, so such a command takes the coarse whole-text scan, which asks.
+  - **Review history.** Codex ran five rounds, and the security-guidance plugin reviewed each commit.
+    - **Round 1** rejected a first narrowing, which scanned text only when the command contained a listed shell-like program. It was command-wide, so `env python3 - <<EOF …` still asked, as did a Python edit followed by `time true`, and its fixed list missed `busybox sh -c`, `find … -exec` and `git -c core.pager=…`.
+    - **Round 2** found that multi-stage pipes into a shell were missed, that unlisted launchers (`arch`, `setsid`) were not looked through, and that `find -name git` was taken for a git run.
+    - **Round 3** found `printf 'git com%s' mit | sh` (accepted, above) and a false ask for `echo git commit` (fixed by the printer rule).
+    - **The plugin's review of round 3** found that the printer rule had silenced `echo <(git commit)`. Fixed: a printer is looked through from its first `<(` or `>(`.
+    - **Round 4** found a false ask for `env echo git commit`. A launched-printer rule fixed it.
+    - **The plugin's review of round 4** found that the launched-printer rule hid `find echo -exec git commit`. It also found that a `<<EOF` in quotes or a comment hid the following lines; master had asked there, because it scanned every body. The launched-printer rule was removed, so round 4's false ask stays, and heredocs became quote- and comment-aware. Checking that fix found the `#` bug, which dates from before this branch.
+    - **Round 5** found the launched-printer rule incomplete (`env -i echo …`), which was moot once the rule was removed.
+    - **Two bugs of the agent's own were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
   - **Stray objects during round 4, not an incident.** The post-review check found two unreachable commits in this clone's object store, written about a minute into the run: a `git stash create` pair ("WIP on …", "index on …") whose blobs matched the uncommitted working files. No ref moved. They came from the security-guidance plugin, which snapshots the working tree with `git stash create` and leaves `.git/sg-*` marker files. Codex ran in its snapshot clone, which has its own object store.
-  - **Round 3 of Codex** confirmed round 2's fixes and found two things.
-    - `printf 'git com%s' mit | sh` builds `git commit` while it runs. Accepted, not fixed: master missed it too, as it misses `g\it` and `$(printf %s git)`. No reading of command text can follow every spelling, and the global hook refuses the write on a protected branch. It is now a named gap in the README, with a test that records it.
-    - `echo git commit` on `develop` asked, because the look-through took the printed words for a git run. Fixed: `echo` and `printf` are not looked through. That list fails safe, since a missing printer costs a false ask, never a missed one. A `git <subcommand>` written unquoted among any other program's arguments still asks on a protected branch, as `python3 run.py git commit` did on master.
-  - **Round 2 of Codex** found three things, all fixed: multi-stage pipes into a shell were missed (only the stage before the shell was read), launchers missing from a fixed list (`arch`, `setsid`) were not looked through, and `find -name git` was taken for a git run.
-  - **Verification:** 61 test methods pass. Twelve deliberate breakages each failed tests:
+  - **Verification:** 63 test methods pass. Eighteen deliberate breakages each failed tests:
     - no look-through;
     - a look-through that never accepts a `git` after an option;
     - one that always demands a known subcommand;
@@ -154,14 +164,20 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - `gh pr merge` seen only first in a run;
     - `echo` and `printf` looked through;
     - a printer's process substitution ignored;
-    - a launched printer looked through.
+    - a launched printer exempt;
+    - no quote tracking;
+    - no `$(…)` level;
+    - no comment removal;
+    - `shlex` comments back;
+    - no backslash escape;
+    - no here-string guard.
 
-    Two of the twelve had at first survived: an alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test. Both now do.
+    Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (`shlex` fails there anyway), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification
 
-- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (61 after the 2026-10-13 change below). Each review shape is a subtest:
+- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (63 after the 2026-10-13 change below). Each review shape is a subtest:
   - 24 from round 1 in `BypassRegressions.SHAPES`;
   - 13 from round 2 and the security review;
   - 3 for creating a protected branch.

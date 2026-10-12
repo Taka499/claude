@@ -99,7 +99,8 @@ SEPARATORS = frozenset({"&&", "||", ";", "|", "|&", "&", ";;"})
 SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "eval", "source", "."})
 BUILTIN_SHELLS = frozenset({"eval", "source", "."})
 # Programs that only print their arguments, so a `git` among them is text, not a run (`echo git commit`).
-# Missing a printer here costs a false ask, never a missed one. Piped into a shell, their words are still read,
+# Only as the run's own program: behind a launcher, `echo` may be an argument (`find echo -exec git commit`),
+# so `env echo git commit` asks. Missing a printer here costs a false ask, never a missed one. Piped into a shell, their words are still read,
 # and a process substitution among them (`echo <(git commit)`) is still looked through.
 PRINTERS = frozenset({"echo", "printf"})
 
@@ -152,15 +153,13 @@ def split_commands(command: str) -> list[Invocation] | None:
     Returns None when the text cannot be tokenized (unbalanced quotes), so the caller falls back
     to a coarser scan instead of trusting a partial parse.
     """
-    bodies: list[str] = []
-
-    def set_aside(match: re.Match[str]) -> str:
-        bodies.append(match.group(4))
-        return f" __heredoc_{len(bodies) - 1}__ {match.group(3)}\n"
-
-    text = HEREDOC.sub(set_aside, command).replace("\n", " ; ")
+    text, bodies = _set_aside_heredocs(command)
+    text = text.replace("\n", " ; ")
     lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    # Comments are gone already. Left to shlex, `#` would start one mid-word (`url#frag`), where bash does not,
+    # and with newlines joined above, the comment would swallow the rest of the command.
+    lexer.commenters = ""
     try:
         tokens = list(lexer)
     except ValueError:
@@ -190,6 +189,53 @@ def split_commands(command: str) -> list[Invocation] | None:
         elif token == ")" and saved:
             directory = saved.pop()
     return runs
+
+
+def _set_aside_heredocs(command: str) -> tuple[str, list[str]]:
+    """The command with each heredoc body replaced by a marker word and its comments removed, and the bodies.
+
+    A `<<WORD` counts only where bash reads one: outside quotes and comments. Inside them it is text, and
+    the lines after it are commands (`echo '<<EOF'` then `git commit`): taking them for a body would hide
+    them. Quotes are tracked as bash nests them: `'…'`, `"…"`, and a fresh level inside each `$(…)`, whose
+    own quotes do not close the outer ones. `$'…'` is not tracked: the lexer below has no such quoting, so a
+    command whose meaning depends on it fails to tokenize and takes the coarse scan.
+    """
+    out: list[str] = []
+    bodies: list[str] = []
+    quotes = [""]  # the open quote at each `$(` nesting level: "", "'" or '"'
+    levels = 0
+    index = 0
+    while index < len(command):
+        char, quote = command[index], quotes[-1]
+        step = 1
+        if quote == "'":
+            quotes[-1] = "" if char == "'" else quote
+        elif char == "\\":
+            step = 2
+        elif command.startswith("$(", index):
+            quotes.append("")
+            levels += 1
+            step = 2
+        elif char == ")" and quote == "" and levels:
+            quotes.pop()
+            levels -= 1
+        elif quote == '"':
+            quotes[-1] = "" if char == '"' else quote
+        elif char in "'\"":
+            quotes[-1] = char
+        elif char == "#" and (index == 0 or command[index - 1] in " \t\n;&|()"):
+            end = command.find("\n", index)
+            index = len(command) if end < 0 else end  # a comment: dropped, since the lexer must not read `#`
+            continue
+        elif command.startswith("<<", index) and (index == 0 or command[index - 1] != "<") and \
+                (match := HEREDOC.match(command, index)):  # not the tail of a `<<<` here-string
+            bodies.append(match.group(4))
+            out.append(f" __heredoc_{len(bodies) - 1}__ {match.group(3)}\n")
+            index = match.end()
+            continue
+        out.append(command[index:index + step])
+        index += step
+    return "".join(out), bodies
 
 
 def _directory_change(words: tuple[str, ...]) -> str | object | None:
@@ -308,8 +354,6 @@ def _unwrap(words: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
         start = substitutions[0] + 1
     for index, word in enumerate(words[start:], start=start):
         launched = words[index:]
-        if os.path.basename(word) in PRINTERS and not words[index - 1].startswith("-"):
-            return _unwrap(launched)  # `env echo git commit`: a launched printer's words are text too
         if is_git(word):
             parsed = git_subcommand(launched)
             if words[index - 1].startswith("-") and (parsed is None or parsed[1] not in KNOWN_SUBCOMMANDS):
