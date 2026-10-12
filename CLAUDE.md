@@ -22,7 +22,11 @@ This is the user-level `~/.claude/CLAUDE.md`, applied to every project on this m
 - NEVER delete untracked files.
 - NEVER push directly to a default branch; NEVER force-push.
 - Every repository has a GitHub remote, under `Taka499` or the `tia-tools` organization, public or private as the user decides when it is created (`scaffold-project` asks). Its `main`, `master` and `develop` change only by merges, enforced twice:
-  - **Locally:** git's own reference-transaction hook from the `Taka499/claude` repo, installed once per repository with `git-hooks/protect-branches.sh`, run outside the sandbox because it writes `.git/hooks`. It refuses every other update of those branches made through git, whatever command or program runs git. Two things pass it: the user's own `core.hooksPath` bypass, and a process writing ref files directly.
+  - **Locally:** git's own reference-transaction hook from the `Taka499/claude` repo, installed once per repository with `git-hooks/protect-branches.sh`, run outside the sandbox because it writes `.git/hooks`. It refuses every other update of those branches made through git, whatever command or program runs git. Two things pass it:
+  - `core.hooksPath` set for the command: the user's bypass. `git_gate.py` asks when it sees it, but a program or script can set it out of sight.
+  - A process writing ref files directly.
+
+  The bypass is for the user alone.
   - **On GitHub:** a ruleset blocking deletion and force pushes, applied with `git-hooks/protect-github.sh`. The free plans enforce it on public repositories only.
 
   Install both when a repository gets its remote. A revert of a protected branch therefore goes through a branch and a merge, like any change. Ask to push the integration branch together with each merge request, so the remote stays the record. Only the user bypasses the hook (`git -c core.hooksPath=/dev/null …`); `git_gate.py` asks whenever a command carries `core.hooksPath`.
