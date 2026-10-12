@@ -35,17 +35,24 @@ refuse() {
 # the branch past a comparison of names. So the filesystem decides: in the prepared state git holds a
 # lock file for every ref in the transaction, and a ref is protected when its lock is the same file as
 # a protected branch's lock. The name comparison stays for a ref git updates without a loose lock.
-protected() {
+# Prints the protected branch the ref is, so its current value can be read under the canonical name: a
+# packed `master` has no loose file, and reading the alias `maſter` would find nothing and look like a
+# new branch.
+protected_branch() {
+    lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     for branch in main master develop; do
-        [ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "refs/heads/$branch" ] && return 0
-        [ -e "$common/$1.lock" ] && [ "$common/$1.lock" -ef "$common/refs/heads/$branch.lock" ] && return 0
+        if [ "$lower" = "refs/heads/$branch" ] ||
+            { [ -e "$common/$1.lock" ] && [ "$common/$1.lock" -ef "$common/refs/heads/$branch.lock" ]; }; then
+            echo "$branch"
+            return 0
+        fi
     done
     return 1
 }
 
 while read -r old new ref; do
     case "$ref" in
-        refs/heads/*) protected "$ref" || continue ;;
+        refs/heads/*) branch=$(protected_branch "$ref") || continue ;;
         *) continue ;;
     esac
     case "$new" in
@@ -55,12 +62,20 @@ while read -r old new ref; do
         *[!0]*) ;;
         *)
             # All zeroes: a new branch, or a forced update that did not state the old value.
-            old=$(git rev-parse -q --verify "$ref^{commit}") || continue
+            old=$(git rev-parse -q --verify "refs/heads/$branch^{commit}") || continue
             ;;
     esac
     case "$new" in
         *[!0]*) ;;
-        *) refuse "$ref" "delete"; continue ;;
+        *)
+            # `git pack-refs` (and so `git gc`) writes the refs into packed-refs, then deletes each loose copy
+            # with no packed-refs.lock held; the branch keeps its value. A real deletion holds that lock.
+            if [ ! -e "$common/packed-refs.lock" ] && grep -qx "$old $ref" "$common/packed-refs" 2>/dev/null; then
+                continue
+            fi
+            refuse "$ref" "delete"
+            continue
+            ;;
     esac
     [ "$old" = "$new" ] && continue
     if ! git merge-base --is-ancestor "$old" "$new"; then

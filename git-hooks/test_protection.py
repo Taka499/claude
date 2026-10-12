@@ -154,6 +154,22 @@ class RefusedUpdates(ProtectedRepoTest):
         self.repo.git("merge", "-q", "--no-ff", "-m", "merge develop", "develop")
         self.assertRefused(self.repo.git("update-ref", "refs/heads/develop", "other", check=False), "develop", before)
 
+    @unittest.skipUnless(os.path.exists(os.path.dirname(os.path.abspath(__file__)).upper()),
+                         "only a case-insensitive filesystem folds refs/heads/maſter onto master")
+    def test_a_folded_alias_of_a_packed_branch(self):
+        """Codex review of PR B, round 2 (2026-10-12): with master packed, the alias looked like a new branch."""
+        self.repo.git("branch", "master", "develop")
+        self.repo.git("pack-refs", "--all", "--prune")
+        before = self.repo.tip("master")
+        self.feature_with_commit()
+        self.assertRefused(self.repo.git("update-ref", "refs/heads/ma\u017fter", "feat", check=False), "master", before)
+
+    def test_deleting_a_packed_branch(self):
+        before = self.repo.tip("develop")
+        self.repo.git("pack-refs", "--all", "--prune")
+        self.feature_with_commit()
+        self.assertRefused(self.repo.git("branch", "-D", "develop", check=False), "develop", before)
+
     def test_from_a_linked_worktree(self):
         """The hook lives in the shared hooks directory, so a worktree is covered too."""
         before = self.repo.tip("develop")
@@ -208,6 +224,15 @@ class AllowedUpdates(ProtectedRepoTest):
         self.repo.commit("more")
         result = self.repo.git("reset", "--hard", "HEAD~2", check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_packing_refs(self):
+        """Codex review of PR B, round 2: pack-refs deletes each loose copy after packing it; gc runs it."""
+        self.repo.git("branch", "master", "develop")
+        before = (self.repo.tip("develop"), self.repo.tip("master"))
+        result = self.repo.git("pack-refs", "--all", "--prune", check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.repo.tip("develop"), self.repo.tip("master")), before)
+        self.assertEqual(self.repo.git("gc", "--quiet", check=False).returncode, 0)
 
     def test_switching_branches(self):
         self.repo.git("switch", "-q", "-c", "feat")
