@@ -114,6 +114,14 @@ class RefusedUpdates(ProtectedRepoTest):
                 self.assertRefused(self.repo.git("commit", "--allow-empty", "-m", "x", check=False), name, before)
                 self.repo.git("switch", "-q", "develop")
 
+    @unittest.skipUnless(os.path.exists(os.path.dirname(os.path.abspath(__file__)).upper()),
+                         "only a case-insensitive filesystem maps refs/heads/DEVELOP onto develop")
+    def test_a_differently_cased_name_on_a_case_insensitive_filesystem(self):
+        """Security review of PR B (2026-10-12): `update-ref refs/heads/DEVELOP` moved develop on APFS."""
+        before = self.repo.tip("develop")
+        self.feature_with_commit()
+        self.assertRefused(self.repo.git("update-ref", "refs/heads/DEVELOP", "feat", check=False), "develop", before)
+
     def test_from_a_linked_worktree(self):
         """The hook lives in the shared hooks directory, so a worktree is covered too."""
         before = self.repo.tip("develop")
