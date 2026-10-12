@@ -335,7 +335,14 @@ class BypassRegressions(unittest.TestCase):
         """Codex review round 3 (2026-10-13): `echo git commit` on develop asked."""
         self.assertIsNone(decide("echo git commit -m x", on("develop")))
         self.assertIsNone(decide("printf '%s\\n' git merge feat/x", on("develop")))
+        for command in ("env echo git commit -m x", "command echo git commit -m x", "time printf %s git push"):
+            with self.subTest(command=command):  # Codex round 4: a printer behind a launcher
+                self.assertIsNone(decide(command, on("develop")))
+        self.assertTrue(asks(decide("env echo <(git commit -m x)", on("develop"))))
         self.assertTrue(asks(decide("echo git commit -m x | sh", on("feat/x"))))
+        for command in ("echo <(git commit -m x)", "echo x > >(git commit -F -)", "printf %s <(git merge feat/x)"):
+            with self.subTest(command=command):  # security review of round 3: a process substitution runs
+                self.assertTrue(asks(decide(command, on("develop"))))
 
     def test_git_spelled_out_only_at_run_time_is_not_seen(self):
         """Accepted gap (Codex round 3): text built while it runs. The global git hook refuses the write."""

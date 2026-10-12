@@ -99,7 +99,8 @@ SEPARATORS = frozenset({"&&", "||", ";", "|", "|&", "&", ";;"})
 SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish", "ash", "eval", "source", "."})
 BUILTIN_SHELLS = frozenset({"eval", "source", "."})
 # Programs that only print their arguments, so a `git` among them is text, not a run (`echo git commit`).
-# Missing a printer here costs a false ask, never a missed one. Piped into a shell, their words are still read.
+# Missing a printer here costs a false ask, never a missed one. Piped into a shell, their words are still read,
+# and a process substitution among them (`echo <(git commit)`) is still looked through.
 PRINTERS = frozenset({"echo", "printf"})
 
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -299,10 +300,16 @@ def _unwrap(words: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """
     if not words or is_git(words[0]) or _is_shell(words[:1]):
         return words, ()
-    if os.path.basename(words[0]) in PRINTERS:
-        return (), ()
-    for index, word in enumerate(words[1:], start=1):
+    start = 1
+    if os.path.basename(words[0]) in PRINTERS:  # its words are text, but a process substitution still runs
+        substitutions = [i for i, word in enumerate(words) if word.startswith(("<(", ">("))]
+        if not substitutions:
+            return (), ()
+        start = substitutions[0] + 1
+    for index, word in enumerate(words[start:], start=start):
         launched = words[index:]
+        if os.path.basename(word) in PRINTERS and not words[index - 1].startswith("-"):
+            return _unwrap(launched)  # `env echo git commit`: a launched printer's words are text too
         if is_git(word):
             parsed = git_subcommand(launched)
             if words[index - 1].startswith("-") and (parsed is None or parsed[1] not in KNOWN_SUBCOMMANDS):

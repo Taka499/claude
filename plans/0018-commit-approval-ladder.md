@@ -135,11 +135,14 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
 
   - **Two of the agent's own bugs were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
   - **The program-file case grows by one:** a shell running a script file, as in `printf … > s.sh; sh s.sh`, is no longer scanned. The global reference-transaction hook (plan 0020) holds there.
+  - **Round 4 of Codex** found one more false ask: a printer behind a launcher (`env echo git commit`). Fixed: a launched `echo` or `printf` is treated like a direct one.
+  - **The commit security review of round 3's change found a real regression.** Excluding printers had silenced `echo <(git commit -m x)` and `echo x > >(git commit -F -)` on `develop`: a process substitution runs its command whatever program it is attached to. Fixed: a printer is still looked through from its first `<(` or `>(`.
+  - **Stray objects during round 4, not an incident.** The post-review check found two unreachable commits in this clone's object store, written about a minute into the run: a `git stash create` pair ("WIP on …", "index on …") whose blobs matched the uncommitted working files. No ref moved. They came from the security-guidance plugin, which snapshots the working tree with `git stash create` and leaves `.git/sg-*` marker files. Codex ran in its snapshot clone, which has its own object store.
   - **Round 3 of Codex** confirmed round 2's fixes and found two things.
     - `printf 'git com%s' mit | sh` builds `git commit` while it runs. Accepted, not fixed: master missed it too, as it misses `g\it` and `$(printf %s git)`. No reading of command text can follow every spelling, and the global hook refuses the write on a protected branch. It is now a named gap in the README, with a test that records it.
     - `echo git commit` on `develop` asked, because the look-through took the printed words for a git run. Fixed: `echo` and `printf` are not looked through. That list fails safe, since a missing printer costs a false ask, never a missed one. A `git <subcommand>` written unquoted among any other program's arguments still asks on a protected branch, as `python3 run.py git commit` did on master.
   - **Round 2 of Codex** found three things, all fixed: multi-stage pipes into a shell were missed (only the stage before the shell was read), launchers missing from a fixed list (`arch`, `setsid`) were not looked through, and `find -name git` was taken for a git run.
-  - **Verification:** 61 test methods pass. Ten deliberate breakages each failed tests:
+  - **Verification:** 61 test methods pass. Twelve deliberate breakages each failed tests:
     - no look-through;
     - a look-through that never accepts a `git` after an option;
     - one that always demands a known subcommand;
@@ -149,9 +152,11 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - no `-c` scan;
     - builtins matching;
     - `gh pr merge` seen only first in a run;
-    - `echo` and `printf` looked through.
+    - `echo` and `printf` looked through;
+    - a printer's process substitution ignored;
+    - a launched printer looked through.
 
-    Two of the ten had at first survived: an alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test. Both now do.
+    Two of the twelve had at first survived: an alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test. Both now do.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification
