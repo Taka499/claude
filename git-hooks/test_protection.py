@@ -21,8 +21,8 @@ class Repo:
     def __init__(self, path: str):
         self.path = path
 
-    def git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", "-C", self.path, *args], env=ENV, capture_output=True,
+    def git(self, *args: str, check: bool = True, env: dict | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", self.path, *args], env=dict(ENV, **(env or {})), capture_output=True,
                               text=True, timeout=30, check=check)
 
     def tip(self, branch: str) -> str:
@@ -140,6 +140,23 @@ class RefusedUpdates(ProtectedRepoTest):
         self.repo.git("replace", "--graft", "feat", "develop", "side")
         self.assertRefused(self.repo.git("update-ref", "refs/heads/develop", "feat", check=False), "develop", before)
 
+    def test_a_plain_commit_dressed_as_a_merge_by_grafts(self):
+        """Security review after merge (2026-10-12): the legacy graft file rewrites parents as replacements do."""
+        before = self.repo.tip("develop")
+        self.repo.git("switch", "-q", "-c", "side")
+        self.repo.commit("side work")
+        self.feature_with_commit()
+        graft = f"{self.repo.tip('feat')} {before} {self.repo.tip('side')}\n"
+        with open(os.path.join(self.repo.path, ".git", "info", "grafts"), "w") as handle:
+            handle.write(graft)
+        self.assertRefused(self.repo.git("update-ref", "refs/heads/develop", "feat", check=False), "develop", before)
+        os.remove(os.path.join(self.repo.path, ".git", "info", "grafts"))
+        elsewhere = os.path.join(self.temp.name, "grafts")
+        with open(elsewhere, "w") as handle:
+            handle.write(graft)
+        self.assertRefused(self.repo.git("update-ref", "refs/heads/develop", "feat", check=False,
+                                         env={"GIT_GRAFT_FILE": elsewhere}), "develop", before)
+
     def test_a_merge_that_takes_the_old_tip_only_as_second_parent(self):
         """Codex review of PR B (2026-10-12): all-merge first parents, but the old tip off the first-parent line."""
         self.feature_with_commit()
@@ -187,6 +204,7 @@ class AllowedUpdates(ProtectedRepoTest):
         self.repo.git("switch", "-q", "develop")
         result = self.repo.git("merge", "--no-ff", "-m", "merge feat", "feat", check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("hint:", result.stderr)  # the hook's GIT_GRAFT_FILE must not trigger git's deprecation advice
 
     def test_a_fast_forward_over_merge_commits(self):
         """What pulling a branch that took pull-request merges on GitHub looks like."""
