@@ -77,6 +77,9 @@ class FeatureBranchWork(unittest.TestCase):
         self.assertIsNone(decide(command, on("feat/x")))
         self.assertIsNone(decide(command, on("develop")))
         self.assertIsNone(decide('python3 -c "print(\'git commit -m x\')"', on("develop")))
+        # Codex: the old command-wide rule asked for these two
+        self.assertIsNone(decide("env " + command, on("feat/x")))
+        self.assertIsNone(decide(command + "\ntime true", on("feat/x")))
 
     def test_message_from_a_command_substitution(self):
         self.assertIsNone(decide('git commit -m "$(cat msg.txt)"', on("feat/x")))
@@ -178,11 +181,6 @@ class BypassRegressions(unittest.TestCase):
         "eval \"git commit -m x\"",
         "echo \"$(git commit -m x)\"",
         "echo `git commit -m x`",
-        "env git commit -m x",
-        "command git commit -m x",
-        "time git commit -m x",
-        "exec git commit -m x",
-        "xargs git commit -m x < /dev/null",
         "bash <<'EOF'\ngit commit -m x\nEOF",               # interpreter heredoc
         "git -c alias.ci=commit ci -m x",                   # inline alias
         "git branch -f develop HEAD",                       # direct ref moves
@@ -250,7 +248,7 @@ class BypassRegressions(unittest.TestCase):
 
     def test_printed_git_that_something_else_executes(self):
         for command in ('echo "git commit -m x" | bash', "bash <(echo git commit -m x)",
-                        "printf 'git commit -m x' > s.sh; sh s.sh"):
+                        "cat <<'EOF' | bash\ngit commit -m x\nEOF"):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
         self.assertIsNone(decide("git log --oneline | grep commit", on("develop")))
@@ -285,6 +283,39 @@ class BypassRegressions(unittest.TestCase):
                         "/usr/bin/git commit -m x"):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
+
+    def test_git_behind_a_wrapper_is_judged_as_git(self):
+        """Per-program review (2026-10-13): a wrapper is looked through, not treated as a shell."""
+        for command in ("env git commit -m x", "command git commit -m x", "time git commit -m x",
+                        "exec git commit -m x", "xargs git commit -m x < /dev/null", "nohup git merge feat/x",
+                        "xargs -I {} git commit -m {}", "find . -maxdepth 0 -exec git commit -m x \\;"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("develop"))))
+                self.assertIsNone(decide(command, on("feat/x")))
+
+    def test_launchers_codex_found_unscanned(self):
+        """Codex review of the narrowing (2026-10-13): runners missing from a fixed list."""
+        for command in ("busybox sh -c 'git commit -m x'",
+                        "git -c core.pager='sh -c \"git commit -m x\"' log",
+                        "GIT_PAGER='git commit -m x' git log",
+                        "/bin/bash -c 'git merge feat'"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+
+    def test_rest_of_a_heredoc_line_is_still_seen(self):
+        """The heredoc pattern used to swallow what followed `<<EOF` on its line."""
+        command = "python3 - <<'EOF' && git commit -m x\nprint('plan edit')\nEOF"
+        self.assertTrue(asks(decide(command, on("develop"))))
+        self.assertIsNone(decide(command, on("feat/x")))
+
+    def test_process_substitution_runs_its_contents(self):
+        """Security review of the narrowing (2026-10-13): `cat <(git commit)` runs the commit."""
+        self.assertTrue(asks(decide("cat <(git commit -m x)", on("feat/x"))))
+        self.assertIsNone(decide("diff <(git log -1) <(git log -2)", on("develop")))
+
+    def test_a_script_file_is_the_program_file_case(self):
+        """Not seen here, by design: a shell running a script file. The global git hook covers it."""
+        self.assertIsNone(decide("printf 'git commit -m x' > s.sh; sh s.sh", on("develop")))
 
     def test_creating_a_protected_branch_asks(self):
         """In a repository without one yet, this would seed main or develop with unreviewed work."""
