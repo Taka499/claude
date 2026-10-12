@@ -66,6 +66,10 @@ It also makes a GitHub remote mandatory for every repository, so the protected r
   - the installer treated any file containing the marker as its own; the marker must now be the hook's second line.
 
   The documentation's "however git is run" was narrowed to "made through git", naming the two things that pass it. A breakage test that only emptied `GIT_NO_REPLACE_OBJECTS` passed every test, because git treats the variable as set even when empty; removing the variable failed the replacement test, as it should.
+- **Codex review of PR B, round 2 (CHANGES REQUESTED).** It confirmed all four round-1 findings resolved, and found no bypass in the ordinary operations it tried: forced and multi-ref `update-ref`, symbolic refs, renames, fetch, local push and receive-pack, worktrees, octopus merges. Its new findings, fixed:
+  - **An alias of a packed branch looked new.** Once `master` was packed (after `git gc`), `update-ref refs/heads/maſter` found no loose `master` and read as creating a new branch. The hook now reads the old value under the protected branch's canonical name.
+  - **The hook refused `git pack-refs --prune`, and so `git gc`.** A logging hook showed what packing passes: it writes `packed-refs`, then deletes each loose copy in its own transaction with no `packed-refs.lock` held. A real `git branch -D` holds that lock, with new content lacking the branch. So a "deletion" passes only when no lock is held and `packed-refs` already has the same ref at the same commit.
+  - **"Enforced twice" overstated GitHub's part.** The ruleset stops rewriting and deletion; it does not make the remote merge-only. `CLAUDE.md` now says which guard does what.
 - **`git_gate.py` asks when `git config` includes or writes another file** (`include.path`, `includeIf`, `--file`, `--blob`). That follows the security review's point that `core.hooksPath` can be set indirectly. A sandboxed session cannot write `.git/config` or `~/.gitconfig` anyway, so this only covers the forms that still reach config.
 - **What the hook cannot stop: `core.hooksPath` set by a program.** Hooks are found through configuration, so a command run with `-c core.hooksPath=/dev/null`, or the `GIT_CONFIG_*` variables, runs without them. That is the user's documented bypass, but any program the agent runs can use it too: a script it wrote, for example, which `git_gate.py` cannot read into. A later security review of this PR flagged it, and it is the same class as the direct ref-file write below.
 - **What the hook cannot see: writes that bypass git.** A process writing `.git/refs/heads/develop`, or editing `.git/packed-refs`, changes the branch without a reference transaction. The sandbox allows writes under `.git/refs`, so it does not stop this either. That is deliberate tampering rather than a mistake. The auto-mode classifier and the GitHub ruleset on public repositories are the remaining guards. Closing it locally would take `sandbox.filesystem.denyWrite` entries for those files. Those entries would also make every sandboxed git command that updates the three branches fail, and they need testing against partial failures like the ones `.git/config` causes (plan 0006). They are left to the user's decision. The same entries would also close the `core.hooksPath`-from-a-program bypass above. With the protected ref files unwritable inside the sandbox, no sandboxed process could move those branches, hooks or no hooks; only an unsandboxed command, which needs the user's approval, could. That is exactly the policy. The question is the cost:
@@ -75,13 +79,16 @@ It also makes a GitHub remote mandatory for every repository, so the protected r
 
 ## Verification
 
-- `python3 -m unittest discover -s git-hooks`: 29 tests pass on this macOS machine. The two filesystem-folding tests (`DEVELOP`, `maſter`) run only on a case-insensitive filesystem. Further breakages, each failing tests:
+- `python3 -m unittest discover -s git-hooks`: 32 tests pass on this macOS machine. The three filesystem-folding tests (`DEVELOP`, `maſter`, `maſter` of a packed branch) run only on a case-insensitive filesystem. Further breakages, each failing tests:
   - the case-sensitive match restored;
   - the lock-identity check removed;
   - replacement objects honoured;
   - the first-parent lineage check removed;
   - an empty `core.hooksPath` ignored;
-  - the marker accepted anywhere in the file.
+  - the marker accepted anywhere in the file;
+  - the old value read under the alias name;
+  - the packing exemption removed;
+  - the packing exemption ignoring `packed-refs.lock`.
   - **Refused:** a direct commit, a fast-forward over plain commits, a reset, a force move, an amend, a revert on the branch, deletion, `main` and `master` alike, and a force move from a linked worktree.
   - **Allowed:** a merge, a fast-forward over merges, a revert brought in by a merge, creating a protected branch, a repository's first commit, anything on other branches, switching branches, and the user's bypass.
   - **Installer:** it updates its own copy, refuses a foreign hook, refuses under `core.hooksPath`, and refuses outside a repository.
