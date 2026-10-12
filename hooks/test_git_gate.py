@@ -456,6 +456,16 @@ class BypassRegressions(unittest.TestCase):
                         "alias g='git push origin develop'"):
             with self.subTest(command=command):  # text the current shell runs moves it, or runs git
                 self.assertTrue(asks(decide(command, elsewhere)))
+        for command in ("{ cd ../protected; git merge topic; }", "if cd ../protected; then git merge topic; fi",
+                        "while true; do cd ../protected; git merge topic; break; done", "! cd ../protected || git merge topic"):
+            with self.subTest(command=command):  # Codex review round 10: a reserved word hid the move
+                self.assertTrue(asks(decide(command, elsewhere)))
+        named = on("feat/x", {"~n": "feat/z", "~": "feat/z", "~/x": "feat/z"})
+        self.assertTrue(asks(decide("hash -d n=../protected; cd ~n && git merge topic", named)))  # only zsh resolves ~n
+        for command in ("cd ~ && git merge topic", "cd ~/x && git merge topic"):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, named))
+        self.assertIsNone(decide("deploy() { echo git push origin develop; }", on("feat/x")))  # round 10, Low
         for command in ('eval "$(ssh-agent -s)" && git commit -m x', "source .venv/bin/activate && git commit -m x"):
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("feat/x")))

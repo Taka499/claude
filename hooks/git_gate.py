@@ -108,6 +108,9 @@ PRINTERS = frozenset({"echo", "printf"})
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Point git at another repository or configuration: the target can no longer be named.
 GIT_REDIRECT_ENV = re.compile(r"^GIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)=")
+# Shell words that open a group or a clause: the command after them is an ordinary run in the same shell.
+RESERVED_WORDS = frozenset({"{", "!", "if", "then", "else", "elif", "do", "while", "until"})
+
 # Builtins that change the shell's directory to an operand (zsh's `chdir` is `cd`).
 DIRECTORY_CHANGERS = frozenset({"cd", "chdir", "pushd"})
 DIRECTORY_CHANGE_IN_TEXT = re.compile(r"(?:^|[\s;&|(=`'\"])(?:cd|chdir|pushd|popd)(?=$|[\s;&|)`'\"])")
@@ -178,9 +181,11 @@ def split_commands(command: str) -> list[Invocation] | None:
     current: list[str] = []
     piped = False
     for token in tokens + [";"]:
-        if token not in SEPARATORS and token not in ("(", ")"):
+        if token not in SEPARATORS and token not in ("(", ")", "()"):  # `()`: a function header, `f() { …; }`
             current.append(token)
             continue
+        while current and current[0] in RESERVED_WORDS:
+            current = current[1:]  # `{ cd x; …}`, `if cd x; then git merge …`: the command follows the word
         split = _env_prefix_length(current)
         env, words = tuple(current[:split]), tuple(current[split:])
         read = [bodies[int(mark.group(1))] for word in words if (mark := HEREDOC_MARK.match(word))]
@@ -411,7 +416,10 @@ def _env_prefix_length(words: list[str]) -> int:
 
 
 def _join(base: str | None | object, target: str) -> str | None | object:
-    if base is UNKNOWN or target == "-" or not _literal(target):
+    """`base` moved to `target`, or UNKNOWN where the target is not a plain path: `-`, a variable, or a `~name`
+    (a zsh named directory from `hash -d`, another user's home, `~+`), which only the shell resolves."""
+    if base is UNKNOWN or target == "-" or not _literal(target) or (
+            target.startswith("~") and target != "~" and not target.startswith("~/")):
         return UNKNOWN
     if target.startswith(("/", "~")) or base is None:
         return target
