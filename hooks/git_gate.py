@@ -51,6 +51,16 @@ INDEX_ONLY = frozenset({
     "gc", "prune", "clean", "config", "sparse-checkout",
 })
 
+# Options that make git run a program or take refs from somewhere the command text does not show.
+# Any run carrying one asks, whatever its subcommand.
+HIDDEN_EFFECT_OPTIONS = ("--upload-pack", "--receive-pack", "--exec", "--stdin", "--refmap")
+# Options with that effect only for some subcommands: `clone -u PROG`, and hooks or configuration
+# installed into a new repository (`clone -c core.hooksPath=…`, `--template`). `commit --template` is harmless.
+HIDDEN_EFFECT_BY_SUBCOMMAND = {
+    "clone": ("-u", "-c", "--template", "--config"), "init": ("--template",),
+    "fetch": ("-u",), "pull": ("-u",), "ls-remote": ("-u",),
+}
+
 # Write to the branch that is checked out: silent only when that branch is named and unprotected.
 CURRENT_BRANCH_WRITES = frozenset({"commit", "merge", "cherry-pick", "revert", "am", "pull", "rebase", "reset"})
 
@@ -139,8 +149,9 @@ def split_commands(command: str) -> tuple[list[Invocation], list[str]] | None:
             continue
         split = _env_prefix_length(current)
         env, words = tuple(current[:split]), tuple(current[split:])
-        if words[:1] == ("cd",):
-            directory = _join(directory, words[1] if len(words) > 1 else "~")
+        changes_to = _directory_change(words)
+        if changes_to is not None:
+            directory = UNKNOWN if changes_to is UNKNOWN else _join(directory, str(changes_to))
         elif words or env:
             runs.append(Invocation(directory, env, words))
         current = []
@@ -149,6 +160,18 @@ def split_commands(command: str) -> tuple[list[Invocation], list[str]] | None:
         elif token == ")" and saved:
             directory = saved.pop()
     return runs, bodies
+
+
+def _directory_change(words: tuple[str, ...]) -> str | object | None:
+    """Where a `cd`-like run moves the shell: a path, UNKNOWN (`popd`, `cd -`), or None if it is not one."""
+    if words[:2] in (("builtin", "cd"), ("command", "cd")):
+        words = words[1:]
+    if words[:1] in (("cd",), ("pushd",)):
+        operands = [word for word in words[1:] if not word.startswith("-") or word == "-"]
+        return operands[0] if operands else "~"
+    if words[:1] == ("popd",):
+        return UNKNOWN
+    return None
 
 
 def _env_prefix_length(words: list[str]) -> int:
@@ -223,6 +246,9 @@ def decide(command: str, branch_of: BranchOf) -> Decision | None:
     runs, bodies = parsed
     if any(writes_in_text(body) for body in bodies) and any(run.words and not is_git(run.words[0]) for run in runs):
         return "ask", NESTED_REASON
+    # The print-only exemption holds only when nothing in the command can execute text:
+    # `echo "git commit" | bash` and `bash <(echo git commit)` run what echo prints.
+    inert = all(not run.words or is_git(run.words[0]) or run.words[0] in NON_EXECUTING for run in runs)
     state = State()
     for run in runs:
         exported = run.words[1:] if run.words[:1] == ("export",) else ()
@@ -231,20 +257,22 @@ def decide(command: str, branch_of: BranchOf) -> Decision | None:
             state.redirected = True  # GIT_DIR and the like now apply to every later git run
         if not run.words:
             continue
-        verdict = _decide_run(run, branch_of, state)
+        verdict = _decide_run(run, branch_of, state, inert)
         if verdict:
             return verdict
     return None
 
 
-def _decide_run(run: Invocation, branch_of: BranchOf, state: State) -> Decision | None:
+def _decide_run(run: Invocation, branch_of: BranchOf, state: State, inert: bool) -> Decision | None:
     if run.words[:3] == ("gh", "pr", "merge"):
         return "ask", GH_MERGE_REASON
     if is_git(run.words[0]):
         return _decide_git_run(run, branch_of, state)
-    if not _literal(run.words[0]) and any(word in TEXT_WRITES for word in run.words[1:]):
-        return "ask", NESTED_REASON  # `$G commit` where G=git
-    scanned = _substitutions(run.words) if run.words[0] in NON_EXECUTING else run.words
+    if not _literal(run.words[0]) and (
+            any(word in TEXT_WRITES or "alias." in word or word.startswith(HIDDEN_EFFECT_OPTIONS) for word in run.words[1:])
+            or any(GIT_REDIRECT_ENV.match(word) for word in run.env)):
+        return "ask", NESTED_REASON  # `$G commit`, `$G -c alias.x=push x`, where G=git
+    scanned = _substitutions(run.words) if inert and run.words[0] in NON_EXECUTING else run.words
     return ("ask", NESTED_REASON) if writes_in_text(" ".join(scanned)) else None
 
 
@@ -256,6 +284,8 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
     substituted = _substitutions(args)
     if substituted and writes_in_text(" ".join(substituted)):
         return "ask", NESTED_REASON
+    if _has_hidden_effect(subcommand, args):
+        return "ask", f"git {subcommand} with an option that runs a program or reads refs from elsewhere: asking"
     if subcommand == "stash" and args[:1] == ("branch",):
         return "ask", "git stash branch creates a branch and switches to it: asking"
     if subcommand in READ_ONLY or subcommand in INDEX_ONLY:
@@ -300,6 +330,16 @@ def _switch_target(args: tuple[str, ...]) -> str | None:
         if len(args) == 2 or (_literal(args[2]) and not args[2].startswith("-")):
             return args[1]
     return None
+
+
+def _has_hidden_effect(subcommand: str, args: tuple[str, ...]) -> bool:
+    """Whether any argument is an option that runs a program or reads refs the command does not show.
+
+    Long options match with or without `=value`; a short one also matches attached (`-ucmd`, `-ckey=value`).
+    """
+    extra = HIDDEN_EFFECT_BY_SUBCOMMAND.get(subcommand, ())
+    return any(arg.startswith(HIDDEN_EFFECT_OPTIONS) or any(arg.startswith(option) for option in extra)
+               for arg in args)
 
 
 def _is_symbolic_ref_read(args: tuple[str, ...]) -> bool:

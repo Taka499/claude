@@ -230,6 +230,43 @@ class BypassRegressions(unittest.TestCase):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
         self.assertIsNone(decide("git stash && git stash pop", on("feat/x")))
 
+    def test_directory_changes_other_than_cd(self):
+        """Security review of the escape fixes (2026-10-12): the shell can move without `cd`."""
+        branch_of = on("feat/x", {"../main": "develop"})
+        for command in ("pushd ../main && git commit -m x", "builtin cd ../main && git commit -m x",
+                        "command cd ../main && git merge feat/x", "popd && git commit -m x"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, branch_of)))
+        self.assertIsNone(decide("pushd ../wt && git commit -m x", on("develop", {"../wt": "feat/wt"})))
+
+    def test_printed_git_that_something_else_executes(self):
+        for command in ('echo "git commit -m x" | bash', "bash <(echo git commit -m x)",
+                        "printf 'git commit -m x' > s.sh; sh s.sh"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+        self.assertIsNone(decide("git log --oneline | grep commit", on("develop")))
+
+    def test_round_three_shapes_ask(self):
+        """Codex review round 3 (2026-10-12)."""
+        for command in ("G=git; $G -c alias.x=push x origin HEAD:main",   # alias through a variable
+                        "G=git; $G --stdin x",
+                        "GIT_CONFIG_COUNT=1 $G x",
+                        "printf 'HEAD:refs/heads/main\\n' | git fetch --stdin origin",  # refspecs from stdin
+                        "git fetch --refmap=x origin",
+                        "git clone --upload-pack='sh -c x' repo dir",       # runs a program
+                        "git clone -u 'sh -c x' repo dir",
+                        "git clone -c core.hooksPath=h repo dir",            # configuration into the new repo
+                        "git clone --template=t repo dir",
+                        "git clone -ccore.hooksPath=h repo dir",            # attached short option
+                        "git init --template=t dir",
+                        "git ls-remote --upload-pack=x origin"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+        for command in ("git clone https://github.com/isamu/claude.git repo", "git fetch origin --prune",
+                        '"$PY" -m unittest', "git commit --template=msg.txt"):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("feat/x")))
+
     def test_creating_a_protected_branch_asks(self):
         """In a repository without one yet, this would seed main or develop with unreviewed work."""
         for command in ("git branch develop feat/x", "git switch -c main", "git switch --create develop feat/x"):
