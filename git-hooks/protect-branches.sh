@@ -12,20 +12,20 @@ set -eu
 
 source_hook="$(cd "$(dirname "$0")" && pwd)/reference-transaction"
 repository=${1:-.}
-marker="protect-branches: Taka499/claude"
 
 common=$(git -C "$repository" rev-parse --path-format=absolute --git-common-dir) || {
     echo "protect-branches: not a git repository: $repository" >&2
     exit 1
 }
-hooks_path=$(git -C "$repository" config --get core.hooksPath || true)
-if [ -n "$hooks_path" ]; then
+# Set at all, even to the empty string, core.hooksPath makes git ignore the common hooks directory.
+if hooks_path=$(git -C "$repository" config --get core.hooksPath); then
     echo "protect-branches: core.hooksPath is set to $hooks_path, so git ignores $common/hooks here." >&2
     echo "Copy $source_hook into that directory, combining it with any reference-transaction hook there." >&2
     exit 1
 fi
 target="$common/hooks/reference-transaction"
-if [ -e "$target" ] && ! grep -q "$marker" "$target"; then
+# Ours only when the marker is the hook's second line, as this script writes it.
+if [ -e "$target" ] && [ "$(sed -n 2p "$target")" != "$(sed -n 2p "$source_hook")" ]; then
     echo "protect-branches: $target exists and was not installed by this script; not overwriting it." >&2
     exit 1
 fi

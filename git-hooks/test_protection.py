@@ -122,6 +122,38 @@ class RefusedUpdates(ProtectedRepoTest):
         self.feature_with_commit()
         self.assertRefused(self.repo.git("update-ref", "refs/heads/DEVELOP", "feat", check=False), "develop", before)
 
+    @unittest.skipUnless(os.path.exists(os.path.dirname(os.path.abspath(__file__)).upper()),
+                         "only a case-insensitive filesystem folds refs/heads/maſter onto master")
+    def test_a_unicode_folded_name_on_a_case_insensitive_filesystem(self):
+        """Security review of the case fix (2026-10-12): `update-ref refs/heads/maſter` (long s) moved master."""
+        self.repo.git("branch", "master", "develop")
+        before = self.repo.tip("master")
+        self.feature_with_commit()
+        self.assertRefused(self.repo.git("update-ref", "refs/heads/ma\u017fter", "feat", check=False), "master", before)
+
+    def test_a_plain_commit_dressed_as_a_merge_by_a_replacement(self):
+        """Codex review of PR B (2026-10-12): `git replace --graft` made a plain commit pass as a merge."""
+        before = self.repo.tip("develop")
+        self.repo.git("switch", "-q", "-c", "side")
+        self.repo.commit("side work")
+        self.feature_with_commit()
+        self.repo.git("replace", "--graft", "feat", "develop", "side")
+        self.assertRefused(self.repo.git("update-ref", "refs/heads/develop", "feat", check=False), "develop", before)
+
+    def test_a_merge_that_takes_the_old_tip_only_as_second_parent(self):
+        """Codex review of PR B (2026-10-12): all-merge first parents, but the old tip off the first-parent line."""
+        self.feature_with_commit()
+        self.repo.git("switch", "-q", "develop")
+        self.repo.git("merge", "-q", "--no-ff", "-m", "merge feat", "feat")
+        before = self.repo.tip("develop")
+        self.repo.git("switch", "-q", "-c", "other", "develop~1")
+        self.repo.git("switch", "-q", "-c", "z")
+        self.repo.commit("z work")
+        self.repo.git("switch", "-q", "other")
+        self.repo.git("merge", "-q", "--no-ff", "-m", "merge z", "z")
+        self.repo.git("merge", "-q", "--no-ff", "-m", "merge develop", "develop")
+        self.assertRefused(self.repo.git("update-ref", "refs/heads/develop", "other", check=False), "develop", before)
+
     def test_from_a_linked_worktree(self):
         """The hook lives in the shared hooks directory, so a worktree is covered too."""
         before = self.repo.tip("develop")
@@ -219,6 +251,22 @@ class Installer(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("core.hooksPath", result.stderr)
         self.assertFalse(os.path.exists(self.hook))
+
+    def test_refuses_when_core_hooks_path_is_set_empty(self):
+        """Codex review of PR B (2026-10-12): an empty core.hooksPath also makes git ignore the hooks directory."""
+        self.repo.git("config", "core.hooksPath", "")
+        result = self.repo.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(os.path.exists(self.hook))
+
+    def test_refuses_a_foreign_hook_that_merely_mentions_the_marker(self):
+        os.makedirs(os.path.dirname(self.hook), exist_ok=True)
+        foreign = "#!/bin/sh\n# composed hook; see protect-branches: Taka499/claude\nexit 0\n"
+        with open(self.hook, "w") as handle:
+            handle.write(foreign)
+        self.assertNotEqual(self.repo.install().returncode, 0)
+        with open(self.hook) as handle:
+            self.assertEqual(handle.read(), foreign)
 
     def test_refuses_outside_a_repository(self):
         result = subprocess.run(["sh", INSTALL, self.temp.name], env=ENV, capture_output=True, text=True, check=False)

@@ -9,7 +9,8 @@
 # Creating the branch is allowed: a repository's first commit, `git branch develop <start>`.
 #
 # Git runs this for every ref update, however the command was spelled or whatever program ran git,
-# so it holds where a check of command text cannot. It runs in the "prepared" state, after the refs
+# so it holds where a check of command text cannot. Two things pass it: the user's core.hooksPath bypass
+# below, and a process that writes ref files itself instead of running git. It runs in the "prepared" state, after the refs
 # are locked and before they change; a non-zero exit aborts the whole transaction.
 #
 # Installed per repository by git-hooks/protect-branches.sh in the Taka499/claude repository.
@@ -17,17 +18,34 @@
 
 [ "$1" = prepared ] || exit 0
 
+# Judge the real commits: replacement objects (`git replace --graft`) can make a plain commit look like a
+# merge while this hook looks, and be deleted afterwards.
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
+common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1
 status=0
 refuse() {
     echo "protect-branches: refusing to $2 ${1#refs/heads/}: main, master and develop change only by merges" >&2
     status=1
 }
 
+# Whether a ref is one of the protected branches, under whatever name the command used for it.
+# A case-insensitive filesystem (APFS, NTFS) stores refs/heads/DEVELOP and refs/heads/develop in one file,
+# and its Unicode folding does the same for refs/heads/maſter (long s) and refs/heads/master; both moved
+# the branch past a comparison of names. So the filesystem decides: in the prepared state git holds a
+# lock file for every ref in the transaction, and a ref is protected when its lock is the same file as
+# a protected branch's lock. The name comparison stays for a ref git updates without a loose lock.
+protected() {
+    for branch in main master develop; do
+        [ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "refs/heads/$branch" ] && return 0
+        [ -e "$common/$1.lock" ] && [ "$common/$1.lock" -ef "$common/refs/heads/$branch.lock" ] && return 0
+    done
+    return 1
+}
+
 while read -r old new ref; do
-    # Compared in lower case: on a case-insensitive filesystem (APFS, NTFS) refs/heads/DEVELOP is the
-    # same file as refs/heads/develop, and `git update-ref refs/heads/DEVELOP …` moved it unchecked.
-    case "$(printf '%s' "$ref" | tr '[:upper:]' '[:lower:]')" in
-        refs/heads/main | refs/heads/master | refs/heads/develop) ;;
+    case "$ref" in
+        refs/heads/*) protected "$ref" || continue ;;
         *) continue ;;
     esac
     case "$new" in
@@ -47,6 +65,13 @@ while read -r old new ref; do
     [ "$old" = "$new" ] && continue
     if ! git merge-base --is-ancestor "$old" "$new"; then
         refuse "$ref" "rewind or rewrite"
+        continue
+    fi
+    added=$(git rev-list --first-parent "$old..$new")
+    # The old tip must stay on the first-parent line: a merge that takes it in only as a second parent
+    # replaces the branch's history, and `git revert -m 1` then no longer undoes one merge of it.
+    if [ "$(git rev-parse "$(printf '%s\n' "$added" | tail -n 1)^1")" != "$old" ]; then
+        refuse "$ref" "replace the first-parent history of"
         continue
     fi
     if [ -n "$(git rev-list --first-parent --max-parents=1 "$old..$new")" ]; then
