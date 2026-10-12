@@ -18,10 +18,10 @@ Two rounds of review showed that listing dangerous shapes cannot be completed; l
 What it cannot see: git run by a program file (`python3 tool.py`), fetch refspecs configured to
 write local branches, and a hook process that fails to start, which Claude Code treats as no
 decision. The backstop for these is git's own reference-transaction hook
-(git-hooks/reference-transaction), installed per repository by git-hooks/protect-branches.sh: it
-refuses every non-merge update of a protected branch made through git, whatever program runs
-it. This hook asks
-whenever a command carries core.hooksPath or a hook.* setting, the ways to switch that off, and
+(git-hooks/reference-transaction), defined once per machine in ~/.gitconfig by
+git-hooks/install-global.sh: it refuses every non-merge update of a protected branch made through
+git, whatever program runs it. This hook asks whenever a command carries core.hooksPath or a
+hook.* setting, the ways to switch that off, and
 before Apple's /usr/bin/git, which ignores a hook defined in ~/.gitconfig.
 
 Needs Python 3.10 or later; the settings entry names the interpreter by absolute path, because

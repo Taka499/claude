@@ -407,6 +407,17 @@ class GlobalHook(unittest.TestCase):
         check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, check=False)
         self.assertNotEqual(check.returncode, 0)
 
+    def test_check_fails_when_the_installed_copy_is_not_executable(self):
+        """Codex review, round 3: a copy git cannot run, with another hook printing the message, passed."""
+        home = os.path.join(self.temp.name, "home5")
+        os.makedirs(home)
+        env = dict(ENV, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"),
+                   GIT_CONFIG_GLOBAL=os.path.join(home, ".gitconfig"))
+        self.assertEqual(subprocess.run(["sh", INSTALL_GLOBAL], env=env, capture_output=True, check=False).returncode, 0)
+        os.chmod(os.path.join(home, ".config", "git", "protect-branches"), 0o644)
+        check = subprocess.run(["sh", INSTALL_GLOBAL, "--check"], env=env, capture_output=True, text=True, check=False)
+        self.assertNotEqual(check.returncode, 0)
+
     def test_check_passes_on_a_machine_that_signs_commits(self):
         """Codex review, round 2: the probe's commits must not depend on the machine's commit setup."""
         home = os.path.join(self.temp.name, "home4")

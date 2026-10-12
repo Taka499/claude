@@ -47,6 +47,8 @@ Plan 0019 installs git's `reference-transaction` hook into each repository with 
   - **The probe's commits inherited the machine's commit signing and commit hooks,** which could fail it while protection was active. They now run with `commit.gpgSign=false` and `--no-verify`; `reference-transaction` is not a commit hook and still runs.
   - **A stale comment** in the installer.
 
+  **Round 3 (CHANGES REQUESTED)** confirmed the owner parser on every URL form tried (https, `ssh://` with a port, scp-like, `user@`, `www.`, uppercase, credentials, `.git`, trailing slashes, multiple URLs) and the signing fix. Its two findings are fixed: `--check` now also requires the installed copy to be executable, and two places that still described a per-repository install (README, `git_gate.py`'s docstring) were corrected.
+
   Before the review, the agent had already made the comparison case-insensitive and gone through `git remote get-url`, which applies `insteadOf` aliases. A breakage test of the stricter probe at first passed every test, because its competing hook refused `git init` too. It now refuses only updates of an existing `develop`, as a real hook might.
 - **Apple's git is the accepted gap.** A process that runs `/usr/bin/git`, or that runs with a `PATH` without Homebrew's, gets no protection. Sessions here put `/opt/homebrew/bin` first, and `git_gate.py` asks before an explicit `/usr/bin/git` that writes.
 - **The per-repository copy already installed in this clone stays.** It runs as well as the global hook, which does no harm.
@@ -54,7 +56,7 @@ Plan 0019 installs git's `reference-transaction` hook into each repository with 
 
 ## Verification
 
-- **`python3 -m unittest discover -s git-hooks`:** 48 tests pass with Homebrew git 2.56. The config-hook tests skip on a git that does not run config-defined hooks; none were skipped here. New:
+- **`python3 -m unittest discover -s git-hooks`:** 49 tests pass with Homebrew git 2.56. The config-hook tests skip on a git that does not run config-defined hooks; none were skipped here. New:
   - **Owner check:** someone else's repository is left alone; the user's account and organization are protected, as are another case of the owner, an `insteadOf` alias, a push URL to the user and the user's remote under another name.
   - **The global hook:** `init` and `clone` work, a direct commit is refused, and the repository's own hooks still run.
   - **`install-global.sh`:** it sets up the hook and proves it runs; `--check` passes after install, and fails when only another hook does the refusing.

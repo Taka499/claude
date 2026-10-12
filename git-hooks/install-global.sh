@@ -24,12 +24,12 @@ if [ "${1:-}" != --check ]; then
     git config --global hook.protect-branches.command "$target"
 fi
 
-# Prove it is set up and runs with the git on PATH. Configured: the command is this copy, unchanged, and not
-# disabled. Running: a direct commit on develop in a scratch repository is refused with this hook's own
+# Prove it is set up and runs with the git on PATH. Configured: the command is this copy, unchanged,
+# executable and not disabled. Running: a direct commit on develop in a scratch repository is refused with this hook's own
 # message. The probe's commits skip signing and --no-verify skips commit hooks, which a machine's global
 # setup may have, so neither can fail the probe; reference-transaction is not a commit hook and still runs.
 [ "$(git config --global --get hook.protect-branches.command || true)" = "$target" ] &&
-    cmp -s "$source_hook" "$target" &&
+    cmp -s "$source_hook" "$target" && [ -x "$target" ] &&
     [ "$(git config --global --type=bool --get hook.protect-branches.enabled || echo true)" = true ] ||
     { echo "protect-branches: not configured as installed; run $0 without --check" >&2; exit 1; }
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/protect-branches.XXXXXX")
