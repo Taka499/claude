@@ -219,6 +219,17 @@ class BypassRegressions(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
 
+    def test_allowlisted_subcommands_with_branch_moving_forms_ask(self):
+        """Security review of the allowlist commit (2026-10-12): options that turn a silent form into a branch move."""
+        for command in ("git stash branch develop && git commit -m x",
+                        "git symbolic-ref -d HEAD",
+                        "git symbolic-ref HEAD refs/heads/main",
+                        "git pull origin develop:develop",
+                        'git pull origin "$SPEC"'):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+        self.assertIsNone(decide("git stash && git stash pop", on("feat/x")))
+
     def test_creating_a_protected_branch_asks(self):
         """In a repository without one yet, this would seed main or develop with unreviewed work."""
         for command in ("git branch develop feat/x", "git switch -c main", "git switch --create develop feat/x"):

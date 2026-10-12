@@ -256,12 +256,16 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
     substituted = _substitutions(args)
     if substituted and writes_in_text(" ".join(substituted)):
         return "ask", NESTED_REASON
+    if subcommand == "stash" and args[:1] == ("branch",):
+        return "ask", "git stash branch creates a branch and switches to it: asking"
     if subcommand in READ_ONLY or subcommand in INDEX_ONLY:
         return None
     target = _target(run.directory, git_dir)
     if subcommand in CURRENT_BRANCH_WRITES:
         if LEAVES_BRANCH & set(args):
             return None
+        if subcommand == "pull" and any(":" in arg or not _literal(arg) for arg in args):
+            return "ask", "git pull with a refspec can write a local branch other than the current one: asking"
         return _decide_branch(subcommand, _branch_at(target, run, branch_of, state))
     if subcommand == "switch":
         new = _switch_target(args)
@@ -275,7 +279,7 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
         return None
     if subcommand == "worktree" and args[:1] in (("list",), ("prune",)):
         return None
-    if subcommand == "symbolic-ref" and len([arg for arg in args if not arg.startswith("-")]) <= 1:
+    if subcommand == "symbolic-ref" and _is_symbolic_ref_read(args):
         return None
     if subcommand == "push":
         return "ask", "git push publishes history: that needs your approval"
@@ -296,6 +300,13 @@ def _switch_target(args: tuple[str, ...]) -> str | None:
         if len(args) == 2 or (_literal(args[2]) and not args[2].startswith("-")):
             return args[1]
     return None
+
+
+def _is_symbolic_ref_read(args: tuple[str, ...]) -> bool:
+    """`git symbolic-ref [--short] [-q] NAME`: reads a symbolic ref (`-d` would delete it, a second name set it)."""
+    options = [arg for arg in args if arg.startswith("-")]
+    names = [arg for arg in args if not arg.startswith("-")]
+    return len(names) <= 1 and all(arg in ("--short", "-q", "--quiet", "--recurse", "--no-recurse") for arg in options)
 
 
 def _is_listing(args: tuple[str, ...]) -> bool:
