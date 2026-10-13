@@ -74,8 +74,16 @@ LEAVES_BRANCH = frozenset({"--abort", "--quit"})
 
 # `git branch` options that only list.
 LISTING_FLAGS = frozenset({"-a", "--all", "-r", "--remotes", "-l", "--list", "-v", "-vv", "--verbose",
-                           "--show-current", "--color", "--no-color", "-q", "--quiet"})
-LISTING_PREFIXES = ("--format=", "--sort=", "--column", "--no-column", "--abbrev")
+                           "--show-current", "--color", "--no-color", "-q", "--quiet", "--format", "--no-format", "--sort", "--no-sort",
+                           "--ignore-case", "--no-ignore-case", "--omit-empty", "--no-omit-empty", "--no-abbrev",
+                           "--no-show-current", "--no-verbose", "--no-quiet"})  # not `--no-list`: it cancels list mode
+LISTING_PREFIXES = ("--format=", "--sort=", "--column", "--no-column", "--abbrev", "--color=")
+# `git branch` options that put it in list mode, so its other words are patterns or filter values.
+BRANCH_LIST_MODE = frozenset({"--list", "-l", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at",
+                              "--forked"})
+# `git branch` options whose value is the next word (`--sort key`); `--contains` and `--merged` take theirs
+# only when it is not an option, so their next word is checked like any other.
+BRANCH_OPTIONS_WITH_VALUE = frozenset({"--sort", "--format", "--points-at", "--forked"})
 
 # What counts as a branch write when git is found inside another program's text (`bash -c`, a
 # heredoc, `$(…)`). Unknown words are not writes there, so prose such as "the git repo" stays silent.
@@ -802,7 +810,34 @@ def _is_symbolic_ref_read(args: tuple[str, ...]) -> bool:
 
 
 def _is_listing(args: tuple[str, ...]) -> bool:
-    return all(arg in LISTING_FLAGS or arg.startswith(LISTING_PREFIXES) for arg in args)
+    """`git branch` listing: listing flags only, or list mode, where the other words are patterns.
+
+    List mode is `--list`/`-l` or a filter that implies it (`--merged x`, `--contains c`, `--forked b`).
+    The value of an option that takes one (`--sort key`, `--format fmt`) is skipped, not read as a flag;
+    outside list mode any other word names a branch to create (`git branch --sort x new` creates `new`).
+    Every word must be literal, and short flags may combine only `a r v l q i` (`-rd` deletes).
+    """
+    if not all(_literal(arg) for arg in args):
+        return False
+    words: list[str] = []
+    for index, arg in enumerate(args):
+        if index and args[index - 1] in BRANCH_OPTIONS_WITH_VALUE:
+            continue
+        words.append(arg)
+    list_mode = any(word.split("=", 1)[0] in BRANCH_LIST_MODE for word in words)
+    for word in words:
+        if word == "--":
+            continue  # the end of options; a word after it is judged like any positional below
+        if word.startswith("--"):
+            if not (word.split("=", 1)[0] in BRANCH_LIST_MODE or word in LISTING_FLAGS
+                    or word.startswith(LISTING_PREFIXES)):
+                return False
+        elif word.startswith("-") and len(word) > 1:
+            if not set(word[1:]) <= set("arvlqi"):
+                return False
+        elif not list_mode:
+            return False
+    return True
 
 
 def _is_plain_create(args: tuple[str, ...]) -> bool:

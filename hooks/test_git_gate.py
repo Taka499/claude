@@ -527,6 +527,27 @@ class Negative(unittest.TestCase):
     def test_git_commit_inside_quoted_text(self):
         self.assertIsNone(decide('echo "next: git commit on develop"', on("develop")))
 
+    def test_branch_list_mode_with_patterns_and_filters(self):
+        """Regression (gkms coordination-loop worker, 2026-10-13): `git branch --list 'chore/reserve-*'` asked."""
+        for command in ("git branch --list 'chore/reserve-*' 'feature/lasting-effects'", "git branch --merged develop",
+                        "git branch -a --contains abc123", "git branch -r --list 'origin/*'", "git branch -l 'feature/*'",
+                        "git branch --no-merged main --format='%(refname:short)'", "git branch -av --points-at HEAD",
+                        # Codex review of the fix: more ordinary listings
+                        "git branch --list --color=always", "git branch --list -i 'Feat*'", "git branch --forked origin/main",
+                        "git branch --list --format '%(refname:short)'", "git branch --sort -committerdate --list",
+                        "git branch --format '%(refname:short)'", "git branch --sort=-committerdate",
+                        "git branch --list -- 'feat/*'", "git branch --no-format", "git branch --list --no-format",
+                        "git branch --merged -- develop",  # list mode: `develop` is a pattern
+                        "git branch --no-verbose", "git branch --list --no-quiet --no-show-current"):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("develop")))
+        for command in ("git branch --list -D develop", "git branch --merged main -d feat/x", "git branch -rd origin/x --list",
+                        "git branch --list $X", "git branch --list --force develop main",
+                        "git branch --sort x newbranch", "git branch --format -D develop", "git branch --format=$F",
+                        "git branch -- newbranch", "git branch --list --no-list newbranch"):  # --no-list creates
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+
     def test_merge_base_is_not_merge(self):
         self.assertIsNone(decide("git merge-base --is-ancestor a b", on("develop")))
 
