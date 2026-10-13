@@ -561,7 +561,13 @@ class Negative(unittest.TestCase):
                         "git config set merge.x.driver /tmp/prog", "git config --edit",
                         "git config --add diff.x.command /tmp/prog", "git config --global --replace-all core.sshCommand /tmp/prog",
                         "GIT_EDITOR=/tmp/prog git commit", "GIT_SSH_COMMAND='ssh -i key' git fetch origin",
-                        "env GIT_EXTERNAL_DIFF=/tmp/prog git diff", "printf $'x' && GIT_EDITOR=/tmp/prog git commit -m x"):
+                        "env GIT_EXTERNAL_DIFF=/tmp/prog git diff", "printf $'x' && GIT_EDITOR=/tmp/prog git commit -m x",
+                        "git -c protocol.ext.allow=always fetch 'ext::sh -c x'",  # the plugin's review: ext:: runs a command
+                        # Codex round 3: a program behind a wildcard, signing, and an earlier export
+                        "git -c gc.recentObjectsHook=/tmp/prog gc", "git config gc.recentObjectsHook /tmp/prog",
+                        "git -c log.showSignature=true log", "git -c commit.gpgSign=true commit -m x",
+                        "export GIT_EDITOR=/tmp/prog; git commit -m x", "export GIT_EXTERNAL_DIFF=/tmp/prog; git diff",
+                        "GIT_SSH_COMMAND=/tmp/prog; git fetch origin", "typeset -x GIT_EDITOR=/tmp/prog; git commit -m x"):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feature/sense"))))
         for command in ("git config user.name x", "git config --get remote.origin.url", "git config core.quotepath off",
@@ -570,7 +576,9 @@ class Negative(unittest.TestCase):
                         "git config set user.name x", "git config --type bool commit.gpgsign false",
                         "GIT_PAGER=cat git log", "GIT_EDITOR=true git commit --amend --no-edit",
                         "git -c color.ui=never -c user.name=x -c user.email=y commit -m x",
-                        "git -c advice.detachedHead=false -c core.editor=true merge --continue"):
+                        "git -c advice.detachedHead=false -c core.editor=true merge --continue",
+                        "git -c commit.gpgSign=false commit -m x", "git -c gc.auto=0 gc", "git -c log.date=iso log",
+                        "export GIT_PAGER=cat; git log", "git -c status.short=true status"):
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("feature/sense")))
 

@@ -239,6 +239,13 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
       - Program-naming environment variables follow the same rule, so `GIT_EDITOR=true git commit` stays silent.
       - `git config` reads, `--list` and `--unset` pass; `--edit` and `--rename-section` ask.
       - The coarse scan asks on those environment variables too.
+    - **The plugin's review of the allowlist** found `protocol.*.allow`: `protocol.ext.allow=always` enables the `ext::` transport, which runs a command. It was removed.
+    - **Codex round 3** found three more things, all fixed:
+      - The wildcard `gc.*` admitted `gc.recentObjectsHook`, a command. Every family is now named key by key, except the display-only ones (`color`, `advice`, `i18n`, `column`, `pretty`).
+      - `log.showSignature`, `commit.gpgSign` and `tag.gpgSign` run the signing program, so they now pass only when set to false.
+      - `export GIT_EDITOR=/tmp/prog; git commit` passed, because only prefix assignments were checked. An exported (`export`, `typeset`, `declare`) or bare assignment of a program variable earlier in the command now makes every later git run ask, the way `GIT_DIR` already did.
+
+      Its Low was answered: `P=cat git --config-env=core.pager=P log` asks, because the value lives in the environment. The form is rare and the ask errs safe.
     - **Programs configured in the repository** are the program-file case. The README now names them, and the global reference-transaction hook still refuses non-merge writes to protected branches. Deliberate breakages of the allowlist each failed tests:
       - every setting harmless;
       - a pager taking any value;
@@ -251,7 +258,14 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
       - option values read as keys;
       - no environment check in the coarse scan.
 
-      The last two had passed every test at first; tests now cover them.
+      The last two had passed every test at first; tests now cover them. After round 3, seven more breakages each failed tests:
+      - `gc.*` as a wildcard again;
+      - signing with any value;
+      - no signing exception;
+      - no tracking of exported program variables;
+      - only `export` read;
+      - no bare assignment read;
+      - `protocol.*.allow` back.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification

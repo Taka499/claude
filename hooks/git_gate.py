@@ -92,16 +92,25 @@ KNOWN_SUBCOMMANDS = READ_ONLY | INDEX_ONLY | CURRENT_BRANCH_WRITES | TEXT_WRITES
 # drivers even under `merge-tree`, diff commands and textconv under `diff` and `log`, filters under `status`,
 # `interactive.diffFilter`, ssh commands, credential helpers…), and a list of those can never be complete.
 HARMLESS_SETTING = re.compile(
-    r"^(?:color\..+|advice\..+|user\.(?:name|email|signingkey)|init\.defaultbranch|i18n\..+|column\..+"
+    r"^(?:color\..+|advice\..+|i18n\..+|column\..+|pretty\..+"  # display only: wildcards are safe here
+    r"|user\.(?:name|email|signingkey)|init\.defaultbranch|safe\.directory|maintenance\.auto"
     r"|core\.(?:quotepath|autocrlf|filemode|safecrlf|ignorecase|precomposeunicode|abbrev|longpaths|commitgraph"
-    r"|whitespace|eol|symlinks)|log\..+|pretty\..+|status\..+|gc\..+|maintenance\.auto|index\..+|feature\..+"
-    r"|rerere\.(?:enabled|autoupdate)|safe\.directory|protocol\.(?:.+\.)?allow|branch\.(?:sort|autosetupmerge|autosetuprebase)"
+    r"|whitespace|eol|symlinks)"
+    r"|log\.(?:date|decorate|abbrevcommit|follow|showroot|mailmap|graphcolors|excludedecoration"
+    r"|initialdecorationset|diffmerges)"
+    r"|status\.(?:short|branch|showuntrackedfiles|relativepaths|aheadbehind|showstash|renames|renamelimit"
+    r"|displaycommentprefix|submodulesummary)"
+    r"|gc\.(?:auto|autodetach|autopacklimit)|index\.(?:version|skiphash|threads|sparse)|feature\.(?:manyfiles|experimental)"
+    r"|rerere\.(?:enabled|autoupdate)|branch\.(?:sort|autosetupmerge|autosetuprebase)"
     r"|merge\.(?:conflictstyle|ff|log|renames|stat|directoryrenames|autostash)|pull\.(?:rebase|ff)"
-    r"|fetch\.(?:prune|prunetags|parallel|writecommitgraph)|commit\.(?:gpgsign|verbose|cleanup|status)"
-    r"|tag\.(?:gpgsign|sort)|diff\.(?:noprefix|mnemonicprefix|renames|renamelimit|algorithm|context|interhunkcontext"
+    r"|fetch\.(?:prune|prunetags|parallel|writecommitgraph)|commit\.(?:verbose|cleanup|status)|tag\.sort"
+    r"|diff\.(?:noprefix|mnemonicprefix|renames|renamelimit|algorithm|context|interhunkcontext"
     r"|relative|colormoved|colormovedws|indentheuristic|statgraphwidth|submodule|ignoresubmodules|suppressblankempty"
     r"|wserrorhighlight|dirstat))$"
 )
+# Settings that make git run the signing program: silent only when they turn it off.
+SIGNING_SETTING = re.compile(r"^(?:commit\.gpgsign|tag\.gpgsign|log\.showsignature)$")
+FALSE_VALUE = re.compile(r"^(?:false|no|off|0)$", re.I)
 # Settings and environment variables whose value is a pager or an editor: silent only for a no-op program.
 PAGER_OR_EDITOR_SETTING = re.compile(r"^(?:core\.(?:pager|editor)|sequence\.editor|pager\..+)$")
 PROGRAM_ENVIRONMENT = frozenset({
@@ -183,6 +192,7 @@ class State:
     """What earlier runs in the same command changed: a redirect seen, branches switched to per directory."""
 
     redirected: bool = False
+    program_environment: bool = False  # `export GIT_EDITOR=/path/prog` earlier: every later git run may run it
     switched: dict[str, str] = field(default_factory=dict)
 
 
@@ -530,10 +540,12 @@ def decide(command: str, branch_of: BranchOf) -> Decision | None:
     state = State()
     pipeline: list[Invocation] = []  # the runs before this one in its pipeline (`a | b | c`)
     for run in runs:
-        exported = run.words[1:] if run.words[:1] == ("export",) else ()
-        if any(GIT_REDIRECT_ENV.match(word) for word in exported) or (
-                not run.words and any(GIT_REDIRECT_ENV.match(word) for word in run.env)):
+        exported = run.words[1:] if run.words[:1] in (("export",), ("typeset",), ("declare",)) else ()
+        assigned = exported or (() if run.words else run.env)  # `export X=…`, or a bare `X=…;`
+        if any(GIT_REDIRECT_ENV.match(word) for word in assigned):
             state.redirected = True  # GIT_DIR and the like now apply to every later git run
+        if any(_names_a_program(word) for word in assigned):
+            state.program_environment = True
         if not run.piped:
             pipeline = []
         if run.words:
@@ -630,10 +642,17 @@ def _global_settings(words: tuple[str, ...]) -> list[str]:
     return settings
 
 
+def _names_a_program(assignment: str) -> bool:
+    """Whether `NAME=value` sets a program-naming environment variable to something other than a no-op."""
+    name, equals, value = assignment.partition("=")
+    return bool(equals) and name in PROGRAM_ENVIRONMENT and not NO_OP_PROGRAM.match(value)
+
+
 def _harmless_setting(setting: str) -> bool:
     key, _, value = setting.partition("=")
     key = key.lower()
-    return bool(HARMLESS_SETTING.match(key) or (PAGER_OR_EDITOR_SETTING.match(key) and NO_OP_PROGRAM.match(value)))
+    return bool(HARMLESS_SETTING.match(key) or (PAGER_OR_EDITOR_SETTING.match(key) and NO_OP_PROGRAM.match(value))
+                or (SIGNING_SETTING.match(key) and FALSE_VALUE.match(value)))
 
 
 CONFIG_OPTIONS_WITH_VALUE = frozenset({"--type", "--default", "--comment", "--value", "--file", "-f", "--blob"})
@@ -684,8 +703,7 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
         return "ask", "a setting given for this git command runs git itself (core.pager, an editor, …): asking"
     if not all(_harmless_setting(setting) for setting in _global_settings(run.words)):
         return "ask", SETTING_REASON
-    if any(name in PROGRAM_ENVIRONMENT and not NO_OP_PROGRAM.match(value)
-           for name, _, value in (assignment.partition("=") for assignment in run.env)):
+    if state.program_environment or any(_names_a_program(assignment) for assignment in run.env):
         return "ask", ENVIRONMENT_REASON
     if subcommand == "config" and not _config_is_harmless(args):
         return "ask", CONFIG_REASON
