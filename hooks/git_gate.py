@@ -74,7 +74,7 @@ LEAVES_BRANCH = frozenset({"--abort", "--quit"})
 
 # `git branch` options that only list.
 LISTING_FLAGS = frozenset({"-a", "--all", "-r", "--remotes", "-l", "--list", "-v", "-vv", "--verbose",
-                           "--show-current", "--color", "--no-color", "-q", "--quiet", "--format", "--sort", "--no-sort",
+                           "--show-current", "--color", "--no-color", "-q", "--quiet", "--format", "--no-format", "--sort", "--no-sort",
                            "--ignore-case", "--no-ignore-case", "--omit-empty", "--no-omit-empty", "--no-abbrev"})
 LISTING_PREFIXES = ("--format=", "--sort=", "--column", "--no-column", "--abbrev", "--color=")
 # `git branch` options that put it in list mode, so its other words are patterns or filter values.
@@ -825,6 +825,8 @@ def _is_listing(args: tuple[str, ...]) -> bool:
         words.append(arg)
     list_mode = any(word.split("=", 1)[0] in BRANCH_LIST_MODE for word in words)
     for word in words:
+        if word == "--" and list_mode:
+            continue  # the end of options: what follows are patterns
         if word.startswith("--"):
             if not (word.split("=", 1)[0] in BRANCH_LIST_MODE or word in LISTING_FLAGS
                     or word.startswith(LISTING_PREFIXES)):

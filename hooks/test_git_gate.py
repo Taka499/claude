@@ -535,12 +535,15 @@ class Negative(unittest.TestCase):
                         # Codex review of the fix: more ordinary listings
                         "git branch --list --color=always", "git branch --list -i 'Feat*'", "git branch --forked origin/main",
                         "git branch --list --format '%(refname:short)'", "git branch --sort -committerdate --list",
-                        "git branch --format '%(refname:short)'", "git branch --sort=-committerdate"):
+                        "git branch --format '%(refname:short)'", "git branch --sort=-committerdate",
+                        "git branch --list -- 'feat/*'", "git branch --no-format", "git branch --list --no-format",
+                        "git branch --merged -- develop"):  # list mode: `develop` is a pattern
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("develop")))
         for command in ("git branch --list -D develop", "git branch --merged main -d feat/x", "git branch -rd origin/x --list",
-                        "git branch --list $X", "git branch --list --force develop main", "git branch --merged -- develop",
-                        "git branch --sort x newbranch", "git branch --format -D develop", "git branch --format=$F"):
+                        "git branch --list $X", "git branch --list --force develop main",
+                        "git branch --sort x newbranch", "git branch --format -D develop", "git branch --format=$F",
+                        "git branch -- newbranch"):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
 
