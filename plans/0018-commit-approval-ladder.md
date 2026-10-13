@@ -258,6 +258,8 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
       - earlier `GIT_CONFIG_*` untracked;
       - no `GIT_EXEC_PATH`;
       - no `PATH` prefix check.
+    - **The plugin's review of round 4's fix** found that a `KEY_<n>`/`VALUE_<n>` pair split across two statements defeated the pairing: `export GIT_CONFIG_KEY_0=core.pager` was judged with an empty value, a no-op, and a later `GIT_CONFIG_VALUE_0=/tmp/prog git log` was never paired. Fixed: either half without the other in the same assignments asks. The first two tests were each caught by the other half's check, so breaking either check showed nothing; tests for a lone `VALUE_0` and a lone `KEY_0` now make each breakage fail.
+    - **Codex round 5** found nothing missed outside the documented gaps and no false ask for ordinary work. Its one Low, a stale test count in this plan, is fixed.
     - **Programs configured in the repository** are the program-file case. The README now names them, and the global reference-transaction hook still refuses non-merge writes to protected branches. Deliberate breakages of the allowlist each failed tests:
       - every setting harmless;
       - a pager taking any value;
@@ -282,7 +284,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
 
 ## Verification
 
-- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (70 after the 2026-10-13 change below). Each review shape is a subtest:
+- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (73 after the 2026-10-13 changes below). Each review shape is a subtest:
   - 24 from round 1 in `BypassRegressions.SHAPES`;
   - 13 from round 2 and the security review;
   - 3 for creating a protected branch.

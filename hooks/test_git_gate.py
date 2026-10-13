@@ -572,7 +572,11 @@ class Negative(unittest.TestCase):
                         "GIT_CONFIG_GLOBAL=/tmp/config git diff", "GIT_CONFIG_SYSTEM=/tmp/config git log",
                         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=/tmp/prog git diff",
                         "export GIT_CONFIG_GLOBAL=/tmp/config; git diff", "GIT_EXEC_PATH=/tmp/helpers git fetch demo::x",
-                        "PATH=/tmp/bin:$PATH git status", "env PATH=/tmp/bin git status"):
+                        "PATH=/tmp/bin:$PATH git status", "env PATH=/tmp/bin git status",
+                        # the plugin's review: a KEY/VALUE pair split across two statements
+                        "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager; GIT_CONFIG_VALUE_0=/tmp/prog git log",
+                        "export GIT_CONFIG_COUNT=1 GIT_CONFIG_VALUE_0=/tmp/prog; GIT_CONFIG_KEY_0=core.pager git log",
+                        "GIT_CONFIG_VALUE_0=/tmp/prog git log", "export GIT_CONFIG_KEY_0=core.pager; git log"):  # one half
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feature/sense"))))
         for command in ("git config user.name x", "git config --get remote.origin.url", "git config core.quotepath off",

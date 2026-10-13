@@ -651,19 +651,25 @@ def _names_a_program(assignment: str) -> bool:
 def _config_environment_is_harmless(assignments: tuple[str, ...]) -> bool:
     """Whether the GIT_CONFIG* variables among `NAME=value` assignments set only harmless settings.
 
-    `GIT_CONFIG_KEY_<n>` with its `GIT_CONFIG_VALUE_<n>` goes through the same allowlist as `-c`. A config
+    `GIT_CONFIG_KEY_<n>` with its `GIT_CONFIG_VALUE_<n>` goes through the same allowlist as `-c`; either one
+    without the other in the same assignments asks, since a pair split across two statements cannot be judged
+    (`export GIT_CONFIG_KEY_0=core.pager; GIT_CONFIG_VALUE_0=/tmp/prog git log`). A config
     file named in `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` passes only as `/dev/null`, the hermetic form;
     `GIT_CONFIG_NOSYSTEM` and `GIT_CONFIG_COUNT` add nothing. Any other GIT_CONFIG* variable asks.
     """
     values = dict(assignment.split("=", 1) for assignment in assignments if "=" in assignment)
     for name, value in values.items():
-        if not name.startswith("GIT_CONFIG") or name in ("GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT") or \
-                re.fullmatch(r"GIT_CONFIG_VALUE_\d+", name):
+        if not name.startswith("GIT_CONFIG") or name in ("GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT"):
+            continue
+        if (paired := re.fullmatch(r"GIT_CONFIG_VALUE_(\d+)", name)):
+            if f"GIT_CONFIG_KEY_{paired.group(1)}" not in values:
+                return False
             continue
         if name in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM") and value == "/dev/null":
             continue
         key = re.fullmatch(r"GIT_CONFIG_KEY_(\d+)", name)
-        if not (key and _harmless_setting(f"{value}={values.get(f'GIT_CONFIG_VALUE_{key.group(1)}', '')}")):
+        if not (key and f"GIT_CONFIG_VALUE_{key.group(1)}" in values
+                and _harmless_setting(f"{value}={values[f'GIT_CONFIG_VALUE_{key.group(1)}']}")):
             return False
     return True
 
