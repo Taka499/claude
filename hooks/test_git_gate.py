@@ -531,11 +531,16 @@ class Negative(unittest.TestCase):
         """Regression (gkms coordination-loop worker, 2026-10-13): `git branch --list 'chore/reserve-*'` asked."""
         for command in ("git branch --list 'chore/reserve-*' 'feature/lasting-effects'", "git branch --merged develop",
                         "git branch -a --contains abc123", "git branch -r --list 'origin/*'", "git branch -l 'feature/*'",
-                        "git branch --no-merged main --format='%(refname:short)'", "git branch -av --points-at HEAD"):
+                        "git branch --no-merged main --format='%(refname:short)'", "git branch -av --points-at HEAD",
+                        # Codex review of the fix: more ordinary listings
+                        "git branch --list --color=always", "git branch --list -i 'Feat*'", "git branch --forked origin/main",
+                        "git branch --list --format '%(refname:short)'", "git branch --sort -committerdate --list",
+                        "git branch --format '%(refname:short)'", "git branch --sort=-committerdate"):
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("develop")))
         for command in ("git branch --list -D develop", "git branch --merged main -d feat/x", "git branch -rd origin/x --list",
-                        "git branch --list $X", "git branch --list --force develop main", "git branch --merged -- develop"):
+                        "git branch --list $X", "git branch --list --force develop main", "git branch --merged -- develop",
+                        "git branch --sort x newbranch", "git branch --format -D develop", "git branch --format=$F"):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
 
