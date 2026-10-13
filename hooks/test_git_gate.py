@@ -530,6 +530,15 @@ class Negative(unittest.TestCase):
     def test_merge_base_is_not_merge(self):
         self.assertIsNone(decide("git merge-base --is-ancestor a b", on("develop")))
 
+    def test_merge_tree_is_a_dry_run(self):
+        """Regression (a gkms worker, 2026-10-13): a dry run of merging develop asked, costing an approval."""
+        command = ('git log --oneline HEAD..develop | head -20; '
+                   'git merge-tree --write-tree --name-only HEAD develop > "$TMPDIR/m6/mergetree2.txt" 2>&1; '
+                   'echo "merge-tree exit=$?"')
+        self.assertIsNone(decide(command, on("feature/sense")))
+        self.assertIsNone(decide("git merge-tree --write-tree HEAD develop", on("develop")))
+        self.assertTrue(asks(decide("git merge-tree --stdin < pairs.txt", on("feature/sense"))))  # batch input
+
     def test_non_git_command(self):
         self.assertIsNone(decide("python3 -m unittest", on("main")))
 

@@ -230,6 +230,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - `>|` split into a pipe.
 
     Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (believed redundant because `shlex` fails on such commands; round 7 proved that wrong, see the review history), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check, twice (no delimiter word follows its `<<`). Several heredoc misreads were at first caught only by the coarse fallback, because the misread left an unbalanced quote; their tests now close the quote in a line the shell takes for a comment (`# '`), so each breakage shows.
+- **After merge (2026-10-13): `git merge-tree` is read-only.** In gkms-contest-ai's Sense worker, a dry run of merging `develop` asked: `git merge-tree --write-tree --name-only HEAD develop`, the way to see a merge's conflicts without touching anything. `merge-tree` was not in the read-only list, so it asked as an unknown subcommand. It computes the merge in memory and at most writes tree objects; no ref, index or working tree changes. It is now read-only. Its `--stdin` batch mode still asks, through the hidden-effect option rule. A regression test uses the worker's command, and removing `merge-tree` from the list fails it.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification

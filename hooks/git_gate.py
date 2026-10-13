@@ -47,6 +47,7 @@ READ_ONLY = frozenset({
     "describe", "blame", "grep", "shortlog", "cat-file", "for-each-ref", "merge-base", "name-rev",
     "show-ref", "var", "help", "version", "whatchanged", "count-objects", "check-ignore",
     "check-attr", "diff-tree", "diff-index", "diff-files", "cherry", "range-diff", "format-patch",
+    "merge-tree",  # a merge computed in memory: at most tree objects written, no ref, index or work tree
 })
 
 # Change the index, the working tree, tags, the stash or configuration, but never a branch.
