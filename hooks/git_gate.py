@@ -75,7 +75,8 @@ LEAVES_BRANCH = frozenset({"--abort", "--quit"})
 # `git branch` options that only list.
 LISTING_FLAGS = frozenset({"-a", "--all", "-r", "--remotes", "-l", "--list", "-v", "-vv", "--verbose",
                            "--show-current", "--color", "--no-color", "-q", "--quiet", "--format", "--no-format", "--sort", "--no-sort",
-                           "--ignore-case", "--no-ignore-case", "--omit-empty", "--no-omit-empty", "--no-abbrev"})
+                           "--ignore-case", "--no-ignore-case", "--omit-empty", "--no-omit-empty", "--no-abbrev",
+                           "--no-show-current", "--no-verbose", "--no-quiet"})  # not `--no-list`: it cancels list mode
 LISTING_PREFIXES = ("--format=", "--sort=", "--column", "--no-column", "--abbrev", "--color=")
 # `git branch` options that put it in list mode, so its other words are patterns or filter values.
 BRANCH_LIST_MODE = frozenset({"--list", "-l", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at",

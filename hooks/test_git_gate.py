@@ -537,13 +537,14 @@ class Negative(unittest.TestCase):
                         "git branch --list --format '%(refname:short)'", "git branch --sort -committerdate --list",
                         "git branch --format '%(refname:short)'", "git branch --sort=-committerdate",
                         "git branch --list -- 'feat/*'", "git branch --no-format", "git branch --list --no-format",
-                        "git branch --merged -- develop"):  # list mode: `develop` is a pattern
+                        "git branch --merged -- develop",  # list mode: `develop` is a pattern
+                        "git branch --no-verbose", "git branch --list --no-quiet --no-show-current"):
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("develop")))
         for command in ("git branch --list -D develop", "git branch --merged main -d feat/x", "git branch -rd origin/x --list",
                         "git branch --list $X", "git branch --list --force develop main",
                         "git branch --sort x newbranch", "git branch --format -D develop", "git branch --format=$F",
-                        "git branch -- newbranch"):
+                        "git branch -- newbranch", "git branch --list --no-list newbranch"):  # --no-list creates
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feat/x"))))
 
