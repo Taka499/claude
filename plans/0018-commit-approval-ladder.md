@@ -232,8 +232,26 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (believed redundant because `shlex` fails on such commands; round 7 proved that wrong, see the review history), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check, twice (no delimiter word follows its `<<`). Several heredoc misreads were at first caught only by the coarse fallback, because the misread left an unbalanced quote; their tests now close the quote in a line the shell takes for a comment (`# '`), so each breakage shows.
 - **After merge (2026-10-13): `git merge-tree` is read-only.** In gkms-contest-ai's Sense worker, a dry run of merging `develop` asked: `git merge-tree --write-tree --name-only HEAD develop`, the way to see a merge's conflicts without touching anything. `merge-tree` was not in the read-only list, so it asked as an unknown subcommand. Git's own merge-tree logic computes the merge in memory and at most writes tree objects; no ref, index or working tree changes. It is now read-only. Its `--stdin` batch mode still asks, through the hidden-effect option rule. A regression test uses the worker's command, and removing `merge-tree` from the list fails it.
   - **Codex review (CHANGES REQUESTED, High):** a custom merge driver selected by `.gitattributes` runs even under `merge-tree`, and `git -c merge.evil.driver=/path/prog merge-tree --write-tree …` ran a program that created a ref. This is not special to `merge-tree`. `diff` and `log` run configured diff commands and textconv, and `status` and `add` run filters, all already on the read-only list.
-    - **Settings given in the command:** a setting that names a program (merge driver, diff command or textconv, `diff.external`, filters, `core.fsmonitor`, `core.sshCommand`, editors, `gpg` program, credential helper), whether given with `-c` or `--config-env`, now asks. `core.pager` is left out, because agents write `-c core.pager=cat`, and its value is already scanned for git.
-    - **Programs configured in the repository** are the program-file case. The README now names them, and the global reference-transaction hook still refuses non-merge writes to protected branches. Three deliberate breakages each failed tests: no program-setting check, no `--config-env` reading, and case-sensitive keys.
+    - **Settings given in the command,** first fix: a list of program-naming settings asked, given with `-c` or `--config-env`. Codex's round 2 found one missing (`interactive.diffFilter`, run by `git add -p`), and the plugin's review called the list incomplete by nature. It also found a sibling path: `git config merge.x.driver /tmp/prog` passed silently, as on master, because `config` is index-only, and a later `merge-tree` then runs the driver. `git config --edit` passed too, and so did a program-naming environment variable such as `GIT_EDITOR=/tmp/prog`.
+    - **Second fix: an allowlist, the hook's own principle** ("listing dangerous shapes cannot be completed; listing safe ones can").
+      - A setting given with `-c` or `--config-env`, or written by `git config`, passes only if its key is known to name no program.
+      - A pager or editor setting passes only with a no-op value (`cat`, `less`, `true`, `:`), so `-c core.pager=cat` and `-c core.editor=true` stay silent.
+      - Program-naming environment variables follow the same rule, so `GIT_EDITOR=true git commit` stays silent.
+      - `git config` reads, `--list` and `--unset` pass; `--edit` and `--rename-section` ask.
+      - The coarse scan asks on those environment variables too.
+    - **Programs configured in the repository** are the program-file case. The README now names them, and the global reference-transaction hook still refuses non-merge writes to protected branches. Deliberate breakages of the allowlist each failed tests:
+      - every setting harmless;
+      - a pager taking any value;
+      - no pager exception;
+      - no environment check;
+      - `git config` always harmless;
+      - `--edit` allowed;
+      - `git config` reads asking;
+      - the `set` word read as a key;
+      - option values read as keys;
+      - no environment check in the coarse scan.
+
+      The last two had passed every test at first; tests now cover them.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification

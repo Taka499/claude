@@ -87,15 +87,31 @@ TEXT_WRITES = CURRENT_BRANCH_WRITES | frozenset({
 # Git subcommands, for telling `env git commit` (a git run) from `sudo -u git true` (an option's value).
 KNOWN_SUBCOMMANDS = READ_ONLY | INDEX_ONLY | CURRENT_BRANCH_WRITES | TEXT_WRITES
 
-# Settings that name a program git runs while it works: a merge driver runs even under `merge-tree`, a diff
-# command or textconv under `diff` and `log`, a filter under `status` and `add`. Given in the command, the
-# program is out of the hook's sight, so it asks; set in the repository's own configuration, it is the
-# program-file case the README names. `core.pager` is left out: its value is scanned for git like any `-c`.
-PROGRAM_SETTING = re.compile(
-    r"^(?:merge\..+\.driver|diff\.external|diff\..+\.(?:command|textconv)|filter\..+\.(?:clean|smudge|process)"
-    r"|core\.(?:fsmonitor|sshcommand|editor|askpass|gitproxy)|sequence\.editor|gpg\.(?:.+\.)?program"
-    r"|credential\.(?:.+\.)?helper)$"
+# Settings known to name no program, so a command may give them (`-c`, `--config-env`) or `git config` may
+# write them silently. Anything else asks: git has dozens of settings whose value is a program it runs (merge
+# drivers even under `merge-tree`, diff commands and textconv under `diff` and `log`, filters under `status`,
+# `interactive.diffFilter`, ssh commands, credential helpers…), and a list of those can never be complete.
+HARMLESS_SETTING = re.compile(
+    r"^(?:color\..+|advice\..+|user\.(?:name|email|signingkey)|init\.defaultbranch|i18n\..+|column\..+"
+    r"|core\.(?:quotepath|autocrlf|filemode|safecrlf|ignorecase|precomposeunicode|abbrev|longpaths|commitgraph"
+    r"|whitespace|eol|symlinks)|log\..+|pretty\..+|status\..+|gc\..+|maintenance\.auto|index\..+|feature\..+"
+    r"|rerere\.(?:enabled|autoupdate)|safe\.directory|protocol\.(?:.+\.)?allow|branch\.(?:sort|autosetupmerge|autosetuprebase)"
+    r"|merge\.(?:conflictstyle|ff|log|renames|stat|directoryrenames|autostash)|pull\.(?:rebase|ff)"
+    r"|fetch\.(?:prune|prunetags|parallel|writecommitgraph)|commit\.(?:gpgsign|verbose|cleanup|status)"
+    r"|tag\.(?:gpgsign|sort)|diff\.(?:noprefix|mnemonicprefix|renames|renamelimit|algorithm|context|interhunkcontext"
+    r"|relative|colormoved|colormovedws|indentheuristic|statgraphwidth|submodule|ignoresubmodules|suppressblankempty"
+    r"|wserrorhighlight|dirstat))$"
 )
+# Settings and environment variables whose value is a pager or an editor: silent only for a no-op program.
+PAGER_OR_EDITOR_SETTING = re.compile(r"^(?:core\.(?:pager|editor)|sequence\.editor|pager\..+)$")
+PROGRAM_ENVIRONMENT = frozenset({
+    "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "PAGER", "EDITOR", "VISUAL", "GIT_EXTERNAL_DIFF",
+    "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_PROXY_COMMAND",
+})
+NO_OP_PROGRAM = re.compile(r"^(?:|true|:|cat|more|less(?:\s+-[A-Za-z]+)*)$")
+SETTING_REASON = "a setting given for this git command is not one known to name no program (git may run it): asking"
+ENVIRONMENT_REASON = "an environment variable given for this git command names a program git will run: asking"
+CONFIG_REASON = "git config writes a setting not known to name no program (git may later run it): asking"
 
 # git's global options that take a separate value (`git -C dir`, `git -c key=value`).
 GIT_OPTS_WITH_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"})
@@ -598,10 +614,53 @@ def _fetch_stores_no_branch(args: tuple[str, ...]) -> bool:
     return True
 
 
-def _config_env_values(words: tuple[str, ...]) -> list[str]:
-    """The `key=ENVVAR` values of `--config-env`, given as `--config-env=…` or `--config-env …`."""
-    values = [word.split("=", 1)[1] for word in words if word.startswith("--config-env=")]
-    return values + [words[i + 1] for i, word in enumerate(words[:-1]) if word == "--config-env"]
+def _global_settings(words: tuple[str, ...]) -> list[str]:
+    """The `key=value` settings given before the subcommand: `-c k=v`, `-ck=v`, `--config-env[=]k=ENVVAR`."""
+    settings: list[str] = []
+    index = 1
+    while index < len(words) and words[index].startswith("-"):
+        option = words[index]
+        if option in ("-c", "--config-env"):
+            settings += words[index + 1:index + 2]
+        elif option.startswith("--config-env="):
+            settings.append(option.split("=", 1)[1])
+        elif option.startswith("-c") and len(option) > 2:
+            settings.append(option[2:])
+        index += 2 if option in GIT_OPTS_WITH_VALUE else 1
+    return settings
+
+
+def _harmless_setting(setting: str) -> bool:
+    key, _, value = setting.partition("=")
+    key = key.lower()
+    return bool(HARMLESS_SETTING.match(key) or (PAGER_OR_EDITOR_SETTING.match(key) and NO_OP_PROGRAM.match(value)))
+
+
+CONFIG_OPTIONS_WITH_VALUE = frozenset({"--type", "--default", "--comment", "--value", "--file", "-f", "--blob"})
+
+
+def _config_is_harmless(args: tuple[str, ...]) -> bool:
+    """Whether a `git config` run only reads or removes settings, or writes one known to name no program."""
+    if any(arg in ("--edit", "-e", "edit", "--rename-section", "rename-section") for arg in args):
+        return False
+    positional: list[str] = []
+    index = 0
+    while index < len(args):
+        if args[index] in CONFIG_OPTIONS_WITH_VALUE:
+            index += 2
+            continue
+        if not args[index].startswith("-"):
+            positional.append(args[index])
+        index += 1
+    if positional[:1] in (["get"], ["list"], ["unset"], ["remove-section"]):
+        return True
+    if positional[:1] == ["set"]:
+        positional = positional[1:]
+    elif any(arg.startswith(("--get", "--list", "--unset", "--remove-section")) or arg == "-l" for arg in args):
+        return True
+    if len(positional) < 2:
+        return True  # `git config key`: a read
+    return _harmless_setting(f"{positional[0]}={positional[1]}")
 
 
 def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decision | None:
@@ -623,9 +682,13 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
     given += [assignment.split("=", 1)[1] for assignment in run.env if "=" in assignment]
     if writes_in_text(" ".join(given)):
         return "ask", "a setting given for this git command runs git itself (core.pager, an editor, …): asking"
-    keys = [value.split("=", 1)[0].lower() for value in given + _config_env_values(run.words)]
-    if any(PROGRAM_SETTING.match(key) for key in keys):
-        return "ask", "a setting given for this git command names a program it will run (a merge driver, a diff command, a filter, …): asking"
+    if not all(_harmless_setting(setting) for setting in _global_settings(run.words)):
+        return "ask", SETTING_REASON
+    if any(name in PROGRAM_ENVIRONMENT and not NO_OP_PROGRAM.match(value)
+           for name, _, value in (assignment.partition("=") for assignment in run.env)):
+        return "ask", ENVIRONMENT_REASON
+    if subcommand == "config" and not _config_is_harmless(args):
+        return "ask", CONFIG_REASON
     if _has_hidden_effect(subcommand, args):
         return "ask", f"git {subcommand} with an option that runs a program or reads refs from elsewhere: asking"
     if subcommand == "stash" and args[:1] == ("branch",):
@@ -736,6 +799,7 @@ def _decide_branch(subcommand: str, branch: str | None) -> Decision | None:
 UNPARSED_TARGET_CHANGE = re.compile(
     r"(?:^|[\s;&|(`])(?:cd|chdir|pushd|popd)\b|\bgit(?:\s+-\S*)*?\s+(?:-[Cc]|--(?:git-dir|work-tree|namespace|exec-path|config-env|bare))|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE|CONFIG\w*)="
     r"|(?i:hookspath|\bhook\.\w|\binclude(?:if)?\.)|\bgit\s+config\b"
+    r"|\bGIT_(?:EDITOR|SEQUENCE_EDITOR|PAGER|EXTERNAL_DIFF|SSH|SSH_COMMAND|ASKPASS|PROXY_COMMAND)="
     r"|/usr/bin/git\b|\$\{?\w+\}?\s+(?:" + "|".join(sorted(TEXT_WRITES)) + r")\b"
 )
 

@@ -553,6 +553,27 @@ class Negative(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("feature/sense")))
 
+    def test_settings_pass_only_when_known_to_name_no_program(self):
+        """Codex round 2 and the plugin's review (2026-10-13): a list of program settings is never complete
+        (`interactive.diffFilter` was missing), and `git config` or an environment variable can set one too."""
+        for command in ("git -c interactive.diffFilter=/tmp/prog add -p", "git -c core.pager=delta log",
+                        "git config merge.x.driver /tmp/prog && git merge-tree --write-tree HEAD develop",
+                        "git config set merge.x.driver /tmp/prog", "git config --edit",
+                        "git config --add diff.x.command /tmp/prog", "git config --global --replace-all core.sshCommand /tmp/prog",
+                        "GIT_EDITOR=/tmp/prog git commit", "GIT_SSH_COMMAND='ssh -i key' git fetch origin",
+                        "env GIT_EXTERNAL_DIFF=/tmp/prog git diff", "printf $'x' && GIT_EDITOR=/tmp/prog git commit -m x"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feature/sense"))))
+        for command in ("git config user.name x", "git config --get remote.origin.url", "git config core.quotepath off",
+                        "git config --list --show-origin", "git config get user.email", "git config --unset merge.x.driver",
+                        "git config --type bool --get core.bare", "git config remote.origin.url",
+                        "git config set user.name x", "git config --type bool commit.gpgsign false",
+                        "GIT_PAGER=cat git log", "GIT_EDITOR=true git commit --amend --no-edit",
+                        "git -c color.ui=never -c user.name=x -c user.email=y commit -m x",
+                        "git -c advice.detachedHead=false -c core.editor=true merge --continue"):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("feature/sense")))
+
     def test_non_git_command(self):
         self.assertIsNone(decide("python3 -m unittest", on("main")))
 
