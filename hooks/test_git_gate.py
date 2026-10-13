@@ -527,6 +527,18 @@ class Negative(unittest.TestCase):
     def test_git_commit_inside_quoted_text(self):
         self.assertIsNone(decide('echo "next: git commit on develop"', on("develop")))
 
+    def test_branch_list_mode_with_patterns_and_filters(self):
+        """Regression (gkms coordination-loop worker, 2026-10-13): `git branch --list 'chore/reserve-*'` asked."""
+        for command in ("git branch --list 'chore/reserve-*' 'feature/lasting-effects'", "git branch --merged develop",
+                        "git branch -a --contains abc123", "git branch -r --list 'origin/*'", "git branch -l 'feature/*'",
+                        "git branch --no-merged main --format='%(refname:short)'", "git branch -av --points-at HEAD"):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("develop")))
+        for command in ("git branch --list -D develop", "git branch --merged main -d feat/x", "git branch -rd origin/x --list",
+                        "git branch --list $X", "git branch --list --force develop main", "git branch --merged -- develop"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feat/x"))))
+
     def test_merge_base_is_not_merge(self):
         self.assertIsNone(decide("git merge-base --is-ancestor a b", on("develop")))
 

@@ -76,6 +76,8 @@ LEAVES_BRANCH = frozenset({"--abort", "--quit"})
 LISTING_FLAGS = frozenset({"-a", "--all", "-r", "--remotes", "-l", "--list", "-v", "-vv", "--verbose",
                            "--show-current", "--color", "--no-color", "-q", "--quiet"})
 LISTING_PREFIXES = ("--format=", "--sort=", "--column", "--no-column", "--abbrev")
+# `git branch` options that put it in list mode, so its other words are patterns or filter values.
+BRANCH_LIST_MODE = frozenset({"--list", "-l", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at"})
 
 # What counts as a branch write when git is found inside another program's text (`bash -c`, a
 # heredoc, `$(…)`). Unknown words are not writes there, so prose such as "the git repo" stays silent.
@@ -802,7 +804,23 @@ def _is_symbolic_ref_read(args: tuple[str, ...]) -> bool:
 
 
 def _is_listing(args: tuple[str, ...]) -> bool:
-    return all(arg in LISTING_FLAGS or arg.startswith(LISTING_PREFIXES) for arg in args)
+    """`git branch` in list mode: flags only, or `--list`/`-l` or a filter that implies it (`--merged x`,
+    `--contains c`), whose other words are then patterns and filter values, never branches to create.
+    Every word must be literal, and short flags may combine only `a r v l q` (`-rd` deletes)."""
+    if all(arg in LISTING_FLAGS or arg.startswith(LISTING_PREFIXES) for arg in args):
+        return True
+    if not any(arg.split("=", 1)[0] in BRANCH_LIST_MODE for arg in args):
+        return False
+    for arg in args:
+        if not _literal(arg):
+            return False
+        if arg.startswith("--"):
+            if not (arg.split("=", 1)[0] in BRANCH_LIST_MODE or arg in LISTING_FLAGS or arg.startswith(LISTING_PREFIXES)
+                    or arg in ("--ignore-case", "--omit-empty", "--no-abbrev")):
+                return False
+        elif arg.startswith("-") and not set(arg[1:]) <= set("arvlq"):
+            return False
+    return True
 
 
 def _is_plain_create(args: tuple[str, ...]) -> bool:

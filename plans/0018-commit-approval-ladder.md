@@ -280,6 +280,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
       - only `export` read;
       - no bare assignment read;
       - `protocol.*.allow` back.
+- **After merge (2026-10-13): `git branch` in list mode with patterns or filters is a listing.** In gkms-contest-ai's coordination-loop worker, a status check asked: `git branch --list 'chore/reserve-*' 'feature/lasting-effects'`. The hook counted `git branch` as a listing only when every word was a listing flag. `git branch --merged develop` and `--contains <commit>` asked for the same reason, though git documents them as implying `--list`. Now, once `--list`/`-l` or one of those filters is present, the other words are patterns and filter values. Every word must be literal, and short flags may combine only the read-only letters `a r v l q`, so `-rd` (delete) and `--force` still ask. Four deliberate breakages each failed tests: no list mode, any short flag, any long option, and variables allowed.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification
