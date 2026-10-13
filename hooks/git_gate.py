@@ -825,8 +825,8 @@ def _is_listing(args: tuple[str, ...]) -> bool:
         words.append(arg)
     list_mode = any(word.split("=", 1)[0] in BRANCH_LIST_MODE for word in words)
     for word in words:
-        if word == "--" and list_mode:
-            continue  # the end of options: what follows are patterns
+        if word == "--":
+            continue  # the end of options; a word after it is judged like any positional below
         if word.startswith("--"):
             if not (word.split("=", 1)[0] in BRANCH_LIST_MODE or word in LISTING_FLAGS
                     or word.startswith(LISTING_PREFIXES)):
