@@ -87,6 +87,16 @@ TEXT_WRITES = CURRENT_BRANCH_WRITES | frozenset({
 # Git subcommands, for telling `env git commit` (a git run) from `sudo -u git true` (an option's value).
 KNOWN_SUBCOMMANDS = READ_ONLY | INDEX_ONLY | CURRENT_BRANCH_WRITES | TEXT_WRITES
 
+# Settings that name a program git runs while it works: a merge driver runs even under `merge-tree`, a diff
+# command or textconv under `diff` and `log`, a filter under `status` and `add`. Given in the command, the
+# program is out of the hook's sight, so it asks; set in the repository's own configuration, it is the
+# program-file case the README names. `core.pager` is left out: its value is scanned for git like any `-c`.
+PROGRAM_SETTING = re.compile(
+    r"^(?:merge\..+\.driver|diff\.external|diff\..+\.(?:command|textconv)|filter\..+\.(?:clean|smudge|process)"
+    r"|core\.(?:fsmonitor|sshcommand|editor|askpass|gitproxy)|sequence\.editor|gpg\.(?:.+\.)?program"
+    r"|credential\.(?:.+\.)?helper)$"
+)
+
 # git's global options that take a separate value (`git -C dir`, `git -c key=value`).
 GIT_OPTS_WITH_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"})
 
@@ -588,6 +598,12 @@ def _fetch_stores_no_branch(args: tuple[str, ...]) -> bool:
     return True
 
 
+def _config_env_values(words: tuple[str, ...]) -> list[str]:
+    """The `key=ENVVAR` values of `--config-env`, given as `--config-env=…` or `--config-env …`."""
+    values = [word.split("=", 1)[1] for word in words if word.startswith("--config-env=")]
+    return values + [words[i + 1] for i, word in enumerate(words[:-1]) if word == "--config-env"]
+
+
 def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decision | None:
     parsed = git_subcommand(run.words)
     if parsed is None:
@@ -607,6 +623,9 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
     given += [assignment.split("=", 1)[1] for assignment in run.env if "=" in assignment]
     if writes_in_text(" ".join(given)):
         return "ask", "a setting given for this git command runs git itself (core.pager, an editor, …): asking"
+    keys = [value.split("=", 1)[0].lower() for value in given + _config_env_values(run.words)]
+    if any(PROGRAM_SETTING.match(key) for key in keys):
+        return "ask", "a setting given for this git command names a program it will run (a merge driver, a diff command, a filter, …): asking"
     if _has_hidden_effect(subcommand, args):
         return "ask", f"git {subcommand} with an option that runs a program or reads refs from elsewhere: asking"
     if subcommand == "stash" and args[:1] == ("branch",):

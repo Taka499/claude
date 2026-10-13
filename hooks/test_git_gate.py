@@ -539,6 +539,20 @@ class Negative(unittest.TestCase):
         self.assertIsNone(decide("git merge-tree --write-tree HEAD develop", on("develop")))
         self.assertTrue(asks(decide("git merge-tree --stdin < pairs.txt", on("feature/sense"))))  # batch input
 
+    def test_a_setting_that_names_a_program(self):
+        """Codex review of the merge-tree change (2026-10-13): a merge driver given in the command runs even
+        under `merge-tree`, out of the hook's sight."""
+        for command in ("git -c merge.evil.driver=/tmp/prog merge-tree --write-tree HEAD develop",
+                        "git -c diff.external=/tmp/prog diff", "git -cfilter.x.clean=/tmp/prog status",
+                        "git --config-env=merge.x.driver=PROG merge-tree --write-tree a b",
+                        "git --config-env merge.x.driver=PROG merge-tree --write-tree a b",
+                        "git -c core.sshCommand=/tmp/prog fetch origin"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feature/sense"))))
+        for command in ("git -c core.pager=cat log -3", "git -c color.ui=never diff", "git -c user.name=x commit -m x"):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("feature/sense")))
+
     def test_non_git_command(self):
         self.assertIsNone(decide("python3 -m unittest", on("main")))
 
