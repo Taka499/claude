@@ -530,6 +530,70 @@ class Negative(unittest.TestCase):
     def test_merge_base_is_not_merge(self):
         self.assertIsNone(decide("git merge-base --is-ancestor a b", on("develop")))
 
+    def test_merge_tree_is_a_dry_run(self):
+        """Regression (a gkms worker, 2026-10-13): a dry run of merging develop asked, costing an approval."""
+        command = ('git log --oneline HEAD..develop | head -20; '
+                   'git merge-tree --write-tree --name-only HEAD develop > "$TMPDIR/m6/mergetree2.txt" 2>&1; '
+                   'echo "merge-tree exit=$?"')
+        self.assertIsNone(decide(command, on("feature/sense")))
+        self.assertIsNone(decide("git merge-tree --write-tree HEAD develop", on("develop")))
+        self.assertTrue(asks(decide("git merge-tree --stdin < pairs.txt", on("feature/sense"))))  # batch input
+
+    def test_a_setting_that_names_a_program(self):
+        """Codex review of the merge-tree change (2026-10-13): a merge driver given in the command runs even
+        under `merge-tree`, out of the hook's sight."""
+        for command in ("git -c merge.evil.driver=/tmp/prog merge-tree --write-tree HEAD develop",
+                        "git -c diff.external=/tmp/prog diff", "git -cfilter.x.clean=/tmp/prog status",
+                        "git --config-env=merge.x.driver=PROG merge-tree --write-tree a b",
+                        "git --config-env merge.x.driver=PROG merge-tree --write-tree a b",
+                        "git -c core.sshCommand=/tmp/prog fetch origin"):
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feature/sense"))))
+        for command in ("git -c core.pager=cat log -3", "git -c color.ui=never diff", "git -c user.name=x commit -m x"):
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("feature/sense")))
+
+    def test_settings_pass_only_when_known_to_name_no_program(self):
+        """Codex round 2 and the plugin's review (2026-10-13): a list of program settings is never complete
+        (`interactive.diffFilter` was missing), and `git config` or an environment variable can set one too."""
+        for command in ("git -c interactive.diffFilter=/tmp/prog add -p", "git -c core.pager=delta log",
+                        "git config merge.x.driver /tmp/prog && git merge-tree --write-tree HEAD develop",
+                        "git config set merge.x.driver /tmp/prog", "git config --edit",
+                        "git config --add diff.x.command /tmp/prog", "git config --global --replace-all core.sshCommand /tmp/prog",
+                        "GIT_EDITOR=/tmp/prog git commit", "GIT_SSH_COMMAND='ssh -i key' git fetch origin",
+                        "env GIT_EXTERNAL_DIFF=/tmp/prog git diff", "printf $'x' && GIT_EDITOR=/tmp/prog git commit -m x",
+                        "git -c protocol.ext.allow=always fetch 'ext::sh -c x'",  # the plugin's review: ext:: runs a command
+                        # Codex round 3: a program behind a wildcard, signing, and an earlier export
+                        "git -c gc.recentObjectsHook=/tmp/prog gc", "git config gc.recentObjectsHook /tmp/prog",
+                        "git -c log.showSignature=true log", "git -c commit.gpgSign=true commit -m x",
+                        "export GIT_EDITOR=/tmp/prog; git commit -m x", "export GIT_EXTERNAL_DIFF=/tmp/prog; git diff",
+                        "GIT_SSH_COMMAND=/tmp/prog; git fetch origin", "typeset -x GIT_EDITOR=/tmp/prog; git commit -m x",
+                        # Codex round 4: settings through GIT_CONFIG* variables, helpers and another git
+                        "GIT_CONFIG_GLOBAL=/tmp/config git diff", "GIT_CONFIG_SYSTEM=/tmp/config git log",
+                        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=/tmp/prog git diff",
+                        "export GIT_CONFIG_GLOBAL=/tmp/config; git diff", "GIT_EXEC_PATH=/tmp/helpers git fetch demo::x",
+                        "PATH=/tmp/bin:$PATH git status", "env PATH=/tmp/bin git status",
+                        # the plugin's review: a KEY/VALUE pair split across two statements
+                        "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager; GIT_CONFIG_VALUE_0=/tmp/prog git log",
+                        "export GIT_CONFIG_COUNT=1 GIT_CONFIG_VALUE_0=/tmp/prog; GIT_CONFIG_KEY_0=core.pager git log",
+                        "GIT_CONFIG_VALUE_0=/tmp/prog git log", "export GIT_CONFIG_KEY_0=core.pager; git log"):  # one half
+            with self.subTest(command=command):
+                self.assertTrue(asks(decide(command, on("feature/sense"))))
+        for command in ("git config user.name x", "git config --get remote.origin.url", "git config core.quotepath off",
+                        "git config --list --show-origin", "git config get user.email", "git config --unset merge.x.driver",
+                        "git config --type bool --get core.bare", "git config remote.origin.url",
+                        "git config set user.name x", "git config --type bool commit.gpgsign false",
+                        "GIT_PAGER=cat git log", "GIT_EDITOR=true git commit --amend --no-edit",
+                        "git -c color.ui=never -c user.name=x -c user.email=y commit -m x",
+                        "git -c advice.detachedHead=false -c core.editor=true merge --continue",
+                        "git -c commit.gpgSign=false commit -m x", "git -c gc.auto=0 gc", "git -c log.date=iso log",
+                        "export GIT_PAGER=cat; git log", "git -c status.short=true status",
+                        "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git status",
+                        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git log",
+                        "export PATH=/opt/homebrew/bin:$PATH; git status"):  # an earlier PATH: a named gap
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command, on("feature/sense")))
+
     def test_non_git_command(self):
         self.assertIsNone(decide("python3 -m unittest", on("main")))
 

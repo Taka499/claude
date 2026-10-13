@@ -177,7 +177,7 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - **Two bugs of the agent's own were fixed along the way.** The heredoc pattern swallowed the rest of the `<<EOF` line, so `cat <<EOF | bash` lost its `| bash`. And `find .` matched the shell builtin `.`.
   - **A fetch into a remote-tracking ref asked (the user's report, 2026-10-13).** `/codex-review`'s snapshot step runs `git -C <snapshot> fetch -q <repository> "<base>:refs/remotes/origin/<base>"`, and the hook asked every round: `fetch` was silent only with no refspec at all. A fetch is now silent when each refspec after the repository word stores into `refs/remotes/…` or `refs/tags/…`, or has no destination; such a fetch writes no branch. Every word must still be literal, since a variable may expand to `x:develop`. The skill's step now fetches from `origin`, which a clone points at the repository it was cloned from, instead of naming the repository, which an agent tends to fill in with a variable.
   - **Stray objects during round 4, not an incident.** The post-review check found two unreachable commits in this clone's object store, written about a minute into the run: a `git stash create` pair ("WIP on …", "index on …") whose blobs matched the uncommitted working files. No ref moved. They came from the security-guidance plugin, which snapshots the working tree with `git stash create` and leaves `.git/sg-*` marker files. Codex ran in its snapshot clone, which has its own object store.
-  - **Verification:** 70 test methods pass. Fifty deliberate breakages each failed tests:
+  - **Verification, at the merge of PR #30:** 70 test methods passed. Fifty deliberate breakages each failed tests:
     - no look-through;
     - a look-through that never accepts a `git` after an option;
     - one that always demands a known subcommand;
@@ -230,11 +230,61 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
     - `>|` split into a pipe.
 
     Some breakages at first passed every test. An alias behind a launcher (`env git sync`) and a wrapped `gh pr merge` had no test; both now do. Three parser branches survived and were removed as redundant: `$'…'` tracking (believed redundant because `shlex` fails on such commands; round 7 proved that wrong, see the review history), backtick levels (inside double quotes bash opens no new level for them), and a separate `<<<` check, twice (no delimiter word follows its `<<`). Several heredoc misreads were at first caught only by the coarse fallback, because the misread left an unbalanced quote; their tests now close the quote in a line the shell takes for a comment (`# '`), so each breakage shows.
+- **After merge (2026-10-13): `git merge-tree` is read-only.** In gkms-contest-ai's Sense worker, a dry run of merging `develop` asked: `git merge-tree --write-tree --name-only HEAD develop`, the way to see a merge's conflicts without touching anything. `merge-tree` was not in the read-only list, so it asked as an unknown subcommand. Git's own merge-tree logic computes the merge in memory and at most writes tree objects; no ref, index or working tree changes. It is now read-only. Its `--stdin` batch mode still asks, through the hidden-effect option rule. A regression test uses the worker's command, and removing `merge-tree` from the list fails it.
+  - **Codex review (CHANGES REQUESTED, High):** a custom merge driver selected by `.gitattributes` runs even under `merge-tree`, and `git -c merge.evil.driver=/path/prog merge-tree --write-tree …` ran a program that created a ref. This is not special to `merge-tree`. `diff` and `log` run configured diff commands and textconv, and `status` and `add` run filters, all already on the read-only list.
+    - **Settings given in the command,** first fix: a list of program-naming settings asked, given with `-c` or `--config-env`. Codex's round 2 found one missing (`interactive.diffFilter`, run by `git add -p`), and the plugin's review called the list incomplete by nature. It also found a sibling path: `git config merge.x.driver /tmp/prog` passed silently, as on master, because `config` is index-only, and a later `merge-tree` then runs the driver. `git config --edit` passed too, and so did a program-naming environment variable such as `GIT_EDITOR=/tmp/prog`.
+    - **Second fix: an allowlist, the hook's own principle** ("listing dangerous shapes cannot be completed; listing safe ones can").
+      - A setting given with `-c` or `--config-env`, or written by `git config`, passes only if its key is known to name no program.
+      - A pager or editor setting passes only with a no-op value (`cat`, `less`, `true`, `:`), so `-c core.pager=cat` and `-c core.editor=true` stay silent.
+      - Program-naming environment variables follow the same rule, so `GIT_EDITOR=true git commit` stays silent.
+      - `git config` reads, `--list` and `--unset` pass; `--edit` and `--rename-section` ask.
+      - The coarse scan asks on those environment variables too.
+    - **The plugin's review of the allowlist** found `protocol.*.allow`: `protocol.ext.allow=always` enables the `ext::` transport, which runs a command. It was removed.
+    - **Codex round 3** found three more things, all fixed:
+      - The wildcard `gc.*` admitted `gc.recentObjectsHook`, a command. Every family is now named key by key, except the display-only ones (`color`, `advice`, `i18n`, `column`, `pretty`).
+      - `log.showSignature`, `commit.gpgSign` and `tag.gpgSign` run the signing program, so they now pass only when set to false.
+      - `export GIT_EDITOR=/tmp/prog; git commit` passed, because only prefix assignments were checked. An exported (`export`, `typeset`, `declare`) or bare assignment of a program variable earlier in the command now makes every later git run ask, the way `GIT_DIR` already did.
+
+      Its Low was answered: `P=cat git --config-env=core.pager=P log` asks, because the value lives in the environment. The form is rare and the ask errs safe.
+    - **Codex round 4** checked every allowlisted key one by one and found none that names a program. It found three ways around the allowlist through the environment, all fixed:
+      - **`GIT_CONFIG_*` variables.** `GIT_CONFIG_GLOBAL=/tmp/config`, `GIT_CONFIG_SYSTEM=…` and `GIT_CONFIG_COUNT`/`KEY_<n>`/`VALUE_<n>` supplied settings unchecked. The `KEY`/`VALUE` pairs now go through the allowlist. A config file passes only as `/dev/null`, the hermetic-test form, and `GIT_CONFIG_NOSYSTEM` passes. Anything else asks, as a prefix or set earlier.
+      - **`GIT_EXEC_PATH`**, which picks git's helper programs, joined the program variables.
+      - **A `PATH` prefix on a git run**, which may pick another program called `git`, now asks. A `PATH` changed earlier in the command is a named gap instead, since agents commonly do that before running tools.
+
+      Its two Lows were answered: `export GIT_EDITOR` with no value, which exports an unexported shell variable, is unlikely; and the program-variable flag is not cleared by a later `unset`, which only errs safe. Six deliberate breakages each failed tests:
+      - `GIT_CONFIG_*` always harmless;
+      - `/dev/null` not special;
+      - the `KEY` pairs not allowlisted;
+      - earlier `GIT_CONFIG_*` untracked;
+      - no `GIT_EXEC_PATH`;
+      - no `PATH` prefix check.
+    - **The plugin's review of round 4's fix** found that a `KEY_<n>`/`VALUE_<n>` pair split across two statements defeated the pairing: `export GIT_CONFIG_KEY_0=core.pager` was judged with an empty value, a no-op, and a later `GIT_CONFIG_VALUE_0=/tmp/prog git log` was never paired. Fixed: either half without the other in the same assignments asks. The first two tests were each caught by the other half's check, so breaking either check showed nothing; tests for a lone `VALUE_0` and a lone `KEY_0` now make each breakage fail.
+    - **Codex round 5** found nothing missed outside the documented gaps and no false ask for ordinary work. Its one Low, a stale test count in this plan, is fixed.
+    - **Programs configured in the repository** are the program-file case. The README now names them, and the global reference-transaction hook still refuses non-merge writes to protected branches. Deliberate breakages of the allowlist each failed tests:
+      - every setting harmless;
+      - a pager taking any value;
+      - no pager exception;
+      - no environment check;
+      - `git config` always harmless;
+      - `--edit` allowed;
+      - `git config` reads asking;
+      - the `set` word read as a key;
+      - option values read as keys;
+      - no environment check in the coarse scan.
+
+      The last two had passed every test at first; tests now cover them. After round 3, seven more breakages each failed tests:
+      - `gc.*` as a wildcard again;
+      - signing with any value;
+      - no signing exception;
+      - no tracking of exported program variables;
+      - only `export` read;
+      - no bare assignment read;
+      - `protocol.*.allow` back.
 - **No ADR.** The rule is text and settings, easy to reverse, so it fails the first gate.
 
 ## Verification
 
-- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (70 after the 2026-10-13 change below). Each review shape is a subtest:
+- `python3 -m unittest discover -s hooks`: 50 test methods passed under Python 3.14.3 at merge (73 after the 2026-10-13 changes below). Each review shape is a subtest:
   - 24 from round 1 in `BypassRegressions.SHAPES`;
   - 13 from round 2 and the security review;
   - 3 for creating a protected branch.
