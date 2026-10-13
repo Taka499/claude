@@ -115,7 +115,7 @@ FALSE_VALUE = re.compile(r"^(?:false|no|off|0)$", re.I)
 PAGER_OR_EDITOR_SETTING = re.compile(r"^(?:core\.(?:pager|editor)|sequence\.editor|pager\..+)$")
 PROGRAM_ENVIRONMENT = frozenset({
     "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "PAGER", "EDITOR", "VISUAL", "GIT_EXTERNAL_DIFF",
-    "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_PROXY_COMMAND",
+    "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_PROXY_COMMAND", "GIT_EXEC_PATH",
 })
 NO_OP_PROGRAM = re.compile(r"^(?:|true|:|cat|more|less(?:\s+-[A-Za-z]+)*)$")
 SETTING_REASON = "a setting given for this git command is not one known to name no program (git may run it): asking"
@@ -544,7 +544,7 @@ def decide(command: str, branch_of: BranchOf) -> Decision | None:
         assigned = exported or (() if run.words else run.env)  # `export X=…`, or a bare `X=…;`
         if any(GIT_REDIRECT_ENV.match(word) for word in assigned):
             state.redirected = True  # GIT_DIR and the like now apply to every later git run
-        if any(_names_a_program(word) for word in assigned):
+        if any(_names_a_program(word) for word in assigned) or not _config_environment_is_harmless(assigned):
             state.program_environment = True
         if not run.piped:
             pipeline = []
@@ -648,6 +648,26 @@ def _names_a_program(assignment: str) -> bool:
     return bool(equals) and name in PROGRAM_ENVIRONMENT and not NO_OP_PROGRAM.match(value)
 
 
+def _config_environment_is_harmless(assignments: tuple[str, ...]) -> bool:
+    """Whether the GIT_CONFIG* variables among `NAME=value` assignments set only harmless settings.
+
+    `GIT_CONFIG_KEY_<n>` with its `GIT_CONFIG_VALUE_<n>` goes through the same allowlist as `-c`. A config
+    file named in `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` passes only as `/dev/null`, the hermetic form;
+    `GIT_CONFIG_NOSYSTEM` and `GIT_CONFIG_COUNT` add nothing. Any other GIT_CONFIG* variable asks.
+    """
+    values = dict(assignment.split("=", 1) for assignment in assignments if "=" in assignment)
+    for name, value in values.items():
+        if not name.startswith("GIT_CONFIG") or name in ("GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT") or \
+                re.fullmatch(r"GIT_CONFIG_VALUE_\d+", name):
+            continue
+        if name in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM") and value == "/dev/null":
+            continue
+        key = re.fullmatch(r"GIT_CONFIG_KEY_(\d+)", name)
+        if not (key and _harmless_setting(f"{value}={values.get(f'GIT_CONFIG_VALUE_{key.group(1)}', '')}")):
+            return False
+    return True
+
+
 def _harmless_setting(setting: str) -> bool:
     key, _, value = setting.partition("=")
     key = key.lower()
@@ -703,8 +723,11 @@ def _decide_git_run(run: Invocation, branch_of: BranchOf, state: State) -> Decis
         return "ask", "a setting given for this git command runs git itself (core.pager, an editor, …): asking"
     if not all(_harmless_setting(setting) for setting in _global_settings(run.words)):
         return "ask", SETTING_REASON
-    if state.program_environment or any(_names_a_program(assignment) for assignment in run.env):
+    if state.program_environment or any(_names_a_program(assignment) for assignment in run.env) or \
+            not _config_environment_is_harmless(run.env):
         return "ask", ENVIRONMENT_REASON
+    if any(assignment.startswith("PATH=") for assignment in run.env):
+        return "ask", "a PATH given for this git command may select another program called git: asking"
     if subcommand == "config" and not _config_is_harmless(args):
         return "ask", CONFIG_REASON
     if _has_hidden_effect(subcommand, args):

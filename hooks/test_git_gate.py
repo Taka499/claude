@@ -567,7 +567,12 @@ class Negative(unittest.TestCase):
                         "git -c gc.recentObjectsHook=/tmp/prog gc", "git config gc.recentObjectsHook /tmp/prog",
                         "git -c log.showSignature=true log", "git -c commit.gpgSign=true commit -m x",
                         "export GIT_EDITOR=/tmp/prog; git commit -m x", "export GIT_EXTERNAL_DIFF=/tmp/prog; git diff",
-                        "GIT_SSH_COMMAND=/tmp/prog; git fetch origin", "typeset -x GIT_EDITOR=/tmp/prog; git commit -m x"):
+                        "GIT_SSH_COMMAND=/tmp/prog; git fetch origin", "typeset -x GIT_EDITOR=/tmp/prog; git commit -m x",
+                        # Codex round 4: settings through GIT_CONFIG* variables, helpers and another git
+                        "GIT_CONFIG_GLOBAL=/tmp/config git diff", "GIT_CONFIG_SYSTEM=/tmp/config git log",
+                        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=/tmp/prog git diff",
+                        "export GIT_CONFIG_GLOBAL=/tmp/config; git diff", "GIT_EXEC_PATH=/tmp/helpers git fetch demo::x",
+                        "PATH=/tmp/bin:$PATH git status", "env PATH=/tmp/bin git status"):
             with self.subTest(command=command):
                 self.assertTrue(asks(decide(command, on("feature/sense"))))
         for command in ("git config user.name x", "git config --get remote.origin.url", "git config core.quotepath off",
@@ -578,7 +583,10 @@ class Negative(unittest.TestCase):
                         "git -c color.ui=never -c user.name=x -c user.email=y commit -m x",
                         "git -c advice.detachedHead=false -c core.editor=true merge --continue",
                         "git -c commit.gpgSign=false commit -m x", "git -c gc.auto=0 gc", "git -c log.date=iso log",
-                        "export GIT_PAGER=cat; git log", "git -c status.short=true status"):
+                        "export GIT_PAGER=cat; git log", "git -c status.short=true status",
+                        "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git status",
+                        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git log",
+                        "export PATH=/opt/homebrew/bin:$PATH; git status"):  # an earlier PATH: a named gap
             with self.subTest(command=command):
                 self.assertIsNone(decide(command, on("feature/sense")))
 

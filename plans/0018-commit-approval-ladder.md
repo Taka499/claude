@@ -246,6 +246,18 @@ Between the two, machine checks and `/codex-review` stand in for per-commit sign
       - `export GIT_EDITOR=/tmp/prog; git commit` passed, because only prefix assignments were checked. An exported (`export`, `typeset`, `declare`) or bare assignment of a program variable earlier in the command now makes every later git run ask, the way `GIT_DIR` already did.
 
       Its Low was answered: `P=cat git --config-env=core.pager=P log` asks, because the value lives in the environment. The form is rare and the ask errs safe.
+    - **Codex round 4** checked every allowlisted key one by one and found none that names a program. It found three ways around the allowlist through the environment, all fixed:
+      - **`GIT_CONFIG_*` variables.** `GIT_CONFIG_GLOBAL=/tmp/config`, `GIT_CONFIG_SYSTEM=…` and `GIT_CONFIG_COUNT`/`KEY_<n>`/`VALUE_<n>` supplied settings unchecked. The `KEY`/`VALUE` pairs now go through the allowlist. A config file passes only as `/dev/null`, the hermetic-test form, and `GIT_CONFIG_NOSYSTEM` passes. Anything else asks, as a prefix or set earlier.
+      - **`GIT_EXEC_PATH`**, which picks git's helper programs, joined the program variables.
+      - **A `PATH` prefix on a git run**, which may pick another program called `git`, now asks. A `PATH` changed earlier in the command is a named gap instead, since agents commonly do that before running tools.
+
+      Its two Lows were answered: `export GIT_EDITOR` with no value, which exports an unexported shell variable, is unlikely; and the program-variable flag is not cleared by a later `unset`, which only errs safe. Six deliberate breakages each failed tests:
+      - `GIT_CONFIG_*` always harmless;
+      - `/dev/null` not special;
+      - the `KEY` pairs not allowlisted;
+      - earlier `GIT_CONFIG_*` untracked;
+      - no `GIT_EXEC_PATH`;
+      - no `PATH` prefix check.
     - **Programs configured in the repository** are the program-file case. The README now names them, and the global reference-transaction hook still refuses non-merge writes to protected branches. Deliberate breakages of the allowlist each failed tests:
       - every setting harmless;
       - a pager taking any value;
