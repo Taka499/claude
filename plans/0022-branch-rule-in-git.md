@@ -1,6 +1,6 @@
 # Plan: Move the protected-branch rule from command text into git
 
-Status: proposed, for the user's review. Nothing here is built yet.
+Status: proposed; nothing here is built yet. Revised after three Codex reviews of this plan; the user settled its five open questions on 2026-10-14 (§ Decisions; § Decision Log).
 
 ## Goal
 
@@ -9,9 +9,11 @@ Status: proposed, for the user's review. Nothing here is built yet.
 - git's commands: git 2.56 has 181 (`git --list-cmds=main`), and the gate classifies about 60;
 - the options of each command that can move a branch (`branch`, `fetch`, `switch`, `worktree`, …).
 
-Each gap is a false ask that costs the user an approval. Each fix is a PR with a long Codex review. The user asked on 2026-10-14 whether these fixes will keep coming. They will, so this plan proposes ending them structurally.
+Each gap is a false ask that costs the user an approval. Each fix is a PR with a long Codex review. The user asked on 2026-10-14 whether these fixes will keep coming. They will, so this plan proposes ending most of them structurally.
 
-Git's own `reference-transaction` hook (`git-hooks/reference-transaction`) already sees every branch update made through git, however the command is written. Today it refuses every update of a protected branch except a merge. If it refused merges too, unless the command carries an explicit marker, git itself would enforce the whole rule. `git_gate.py` would then only need to ask when it sees the marker or one of the few ways to switch the hook off. Those are rare words, whatever the rest of the command looks like.
+Git's own `reference-transaction` hook (`git-hooks/reference-transaction`) already sees every branch update made through git, however the command is written. Today it refuses every update of a protected branch except a merge. If it refused merges too, unless the command carries an explicit marker, git itself would decide which commands move a protected branch. `git_gate.py` would no longer need to know git's commands or their options.
+
+It would still read the command text, for a narrower question: does the command carry the marker, or anything that stops git from running the hook? Codex's first review showed that second list is longer than first written. It is § Proposed design, item 2.
 
 ## Evidence (2026-10-14)
 
@@ -30,23 +32,68 @@ Git's own `reference-transaction` hook (`git-hooks/reference-transaction`) alrea
   | Bypass settings | 2 | `core.hooksPath`; the only intended asks |
 
 - **gkms-contest-ai's engine-deviations worker, 2026-10-14 13:47 JST:** `git hash-object -w` asked as unclassified. The same command's `git update-index --cacheinfo` would have asked next.
-- **The docstring says listing dangerous shapes cannot be completed.** `git_gate.py` records that finding from review. It stays true. This plan keeps an allowlist, but moves it to where it is finite: the hook lets a protected branch move in one shape only, whatever command or program moved it.
+- **The docstring says listing dangerous shapes cannot be completed.** `git_gate.py` records that finding from review. It stays true for the shapes of commands that move a branch. This plan moves that question to the hook, which allows a protected branch to move in one shape only, whatever command or program moved it. The list that stays in `git_gate.py` is of a different kind: the ways to stop git from running the hook. That list is short, measured, and can be tested item by item.
 
 ## Proposed design
 
 1. **`git-hooks/reference-transaction`:**
-   - An update of `main`, `master` or `develop` needs the environment variable `PROTECT_BRANCHES_ALLOW` naming that branch. Without it, the update is refused, whatever its shape.
-   - With it, today's merge-only rules still apply.
-   - Creating the branch stays allowed: a first commit, `git branch develop <start>`.
-2. **`hooks/git_gate.py` asks only for:**
-   - the marker, anywhere in the command text;
-   - anything that stops git from running the hook:
-     - `core.hooksPath` and `hook.*` settings (as today);
-     - new: `include.*` and `includeIf.*` settings, `GIT_CONFIG_GLOBAL` (today `/dev/null` passes), `HOME` changed or cleared for git (`HOME=…`, `env -i`, `env -u HOME`);
-     - a `PATH` prefix (as today) and Apple's `/usr/bin/git` (as today);
-   - `push` and `gh pr merge` (as today).
+   - In a Claude Code session (`CLAUDECODE=1`; § Decisions, 1), an update of `main`, `master` or `develop` needs the environment variable `PROTECT_BRANCHES_ALLOW` naming that branch. Without it, the update is refused, whatever its shape. A terminal outside Claude Code keeps today's rules. The user's `!` commands run inside Claude Code, carry `CLAUDECODE=1`, and so need the marker too.
+   - **The marker is required in every repository.** The owner check decides only whether today's merge-only rules apply on top, which they do in the user's own repositories.
 
-   Everything else is silent. The shell parsing, the subcommand tables, the option rules and the allowlist of settings that name no program all go. A program that git runs is no more able to move a branch than one the agent runs directly.
+     The owner check cannot decide whether the marker is needed, because a command can steer it. Codex's second review showed this: `-c url.https://github.com/foreign/.insteadOf=https://github.com/Taka499/` made a `Taka499` repository look foreign, and the hook let `update-ref` move `master`.
+   - Creating the branch stays allowed: a first commit, `git branch develop <start>`.
+2. **`hooks/git_gate.py` asks for:**
+   - **the marker,** anywhere in the command text;
+   - **anything that stops git from running the hook.** Measured on git 2.56 in scratch repositories (§ Decision Log):
+     - **Settings:** `core.hooksPath`, `hook.*`, `include.*`, `includeIf.*` and `alias.*`. An alias can carry `-c hook.<name>.enabled=false`. Each counts however it is given:
+       - `-c` or `--config-env`;
+       - `GIT_CONFIG_PARAMETERS`;
+       - `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`;
+       - written with `git config`.
+     - **Another config file:**
+       - `GIT_CONFIG_GLOBAL` with any value;
+       - `GIT_CONFIG_SYSTEM` with any value but `/dev/null`;
+       - `HOME` changed or cleared: `HOME=…`, `env -u HOME` (or `genv -u HOME`), or the whole environment cleared. The spellings that clear it differ by program: macOS's BSD `env -i` and `env -`; GNU coreutils' `genv -i` and `genv --ignore-environment` (Homebrew installs GNU `env` as `genv` here; BSD `env` rejects `--ignore-environment`); zsh's `exec -c`.
+     - **A git that ignores hooks defined in config:**
+       - a program named `git`, or `git-<name>`, run by any path other than Homebrew's `/opt/homebrew/bin/git`. That covers Apple's `/usr/bin/git`, the copies in Xcode and in the Command Line Tools, and their `git-core` directories;
+       - a `PATH` set or exported anywhere in the command;
+       - `command -p`, `xcrun`, `--exec-path`, `GIT_EXEC_PATH`.
+     - **A subcommand that is not one of git's own commands** (`git --list-cmds=main`), because it is an alias or an external `git-<name>`:
+       - this catches an alias defined before the command, which no word in the command reveals;
+       - git ignores an alias that shares the name of one of its own commands (git-config(1), `alias.*`), so the names on the list need no further check, once a test confirms that.
+     - **A git setting, environment value or program path that is not literal,** such as `git -c "$x"` or `$G`, because it can spell any of the above. The same goes for anything that sets the environment from non-literal text: `export`, `env`, `declare` or `unset` with a non-literal word, or `eval`.
+     - **`CLAUDECODE` changed in any way,** because the marker binds only Claude Code sessions (§ Decisions, 1): an assignment, an export, an `unset`, or the environment cleared as above.
+     - **A command handed to a process started outside the session, or run in a fresh environment.** Either way git has no `CLAUDECODE=1`, so it gets today's rules, with no marker needed. The programs that do this:
+       - a tmux or screen server: `tmux send-keys`, `tmux new-window`, `screen -X stuff`. MulmoTerminal runs its cells in a tmux server (socket `/private/tmp/tmux-501/mulmoterminal`);
+       - `launchctl`, `at`, `batch`, `crontab`;
+       - `ssh`, `osascript`, `open`;
+       - `sudo` and `su`, which reset the environment and drop `CLAUDECODE`.
+
+       Inside the sandbox, most of these routes are refused. Measured on 2026-10-14:
+       - tmux could not connect to MulmoTerminal's socket ("Operation not permitted");
+       - `at` and `crontab` were not permitted to run;
+       - `launchctl list` failed, though Codex found `launchctl print` allowed; `launchctl submit` is untested;
+       - Codex found `ssh localhost`, `sudo` and `su` refused;
+       - Codex found `open -Ra Terminal` and an `osascript` expression that automates nothing allowed.
+
+       So mainly a command run outside the sandbox reaches them, and the user's `Bash(dangerouslyDisableSandbox:true)` rule already asks before each of those. `git_gate.py` asks on these programs too: that covers a route the sandbox may leave open (`launchctl submit`), and the prompt then says why.
+   - **`push` and `gh pr merge`,** as today.
+
+   **Everything else is silent.** The tables of what each subcommand does and the option rules go, and with them the false asks for:
+   - unclassified subcommands (`merge-tree`, `hash-object`), now silent as two of git's own commands;
+   - command options (`branch --list`, `fetch`).
+
+   **Some reading of the text stays.** Shell-syntax asks remain only where git's settings, environment or path cannot be read. Elsewhere, a scan of the whole text for the words above is enough, because those words are rare in ordinary commands.
+
+   **The allowlist of settings that name no program also goes.** A setting can make git run a program: a pager, a merge driver, a credential helper. Either way, no new gap opens:
+   - **Code written inline in such a setting is command text,** and the scan reads it like any other text. To move a protected branch it has to use the marker or a bypass from the list above, which ask, or write ref files itself, an accepted gap below.
+   - **A setting that names a file** is a script file, the accepted gap below.
+
+   **Not bypasses, measured on git 2.56:**
+   - `XDG_CONFIG_HOME` changed alone: `~/.gitconfig` is still read;
+   - the reftable ref backend: it runs the hook;
+   - `GIT_DIR` or `--git-dir`: they select a repository, and the global hook runs there too;
+   - `safe.directory`: it can stop an operation, not the hook.
 3. **Callers that update a protected branch locally add the marker:**
    - gkms-contest-ai's `tools/integrate.sh`, inside the script; its run is already approved each time;
    - the user's own merges;
@@ -61,26 +108,36 @@ Git's own `reference-transaction` hook (`git-hooks/reference-transaction`) alrea
 ## Rollout order
 
 The new hook refuses today's merge flows the moment it is installed. And a stripped `git_gate.py` would let them through silently until it is. So the order is:
-1. **PR A:** the hook, the marker ask in `git_gate.py`, and the documents. Then the user runs `install-global.sh`.
-2. **gkms-contest-ai:** `integrate.sh` adds the marker.
-3. **PR B:** strips `git_gate.py`'s parser, only after `install-global.sh --check` passes with the new hook.
+1. **gkms-contest-ai:** `integrate.sh` sets the marker. Today's hook ignores the marker, so this step is harmless alone.
+2. **PR A:** the hook, `git_gate.py`'s new asks (the marker and every bypass in design item 2) with today's parser kept, and the documents. Then the user runs `install-global.sh`.
+3. **PR B:** strips `git_gate.py`'s subcommand and option rules, only after `install-global.sh --check` passes with the new hook. The check must cover both a repository of the user's and a third-party one, since design item 1 requires the marker in every repository.
 
-## Open questions for the user
+## Decisions (the user, 2026-10-14)
 
-1. **Whom the marker binds.** Required everywhere, it also refuses the user's own `git merge` or `git pull` on a protected branch typed in a terminal. Claude Code sets `CLAUDECODE=1` in its Bash commands (seen 2026-10-14), so the hook could require the marker only there, and leave the user's terminal as today. Then `git_gate.py` must also ask when a command unsets `CLAUDECODE`. Recommended: Claude Code sessions only. Still to measure: whether `!` commands carry `CLAUDECODE`.
-2. **The marker's form.** An environment variable naming the branch shows what is approved in the prompt itself: `PROTECT_BRANCHES_ALLOW=develop git merge --no-ff feature/x`. A `-c` setting is the alternative. Recommended: the environment variable.
-3. **Repositories outside the owner check** (third-party clones such as mulmoterminal). There the hook does nothing, so a stripped `git_gate.py` would no longer guard their `main`. Two options:
-   - extend the marker rule, without the merge-only shape, to every repository;
-   - have `git_gate.py` ask on any git write in a repository with no remote under `Taka499` or `tia-tools`.
+These were the plan's five open questions. The user accepted the recommendation on each, after an explainer page set them out.
 
-   Recommended: extend the rule.
-4. **Push.** Keep `git_gate.py`'s push ask and the `Bash(git push *)` rule as they are. Pushes also run outside the sandbox, which prompts. Moving push into a `pre-push` hook is out of scope.
+1. **Whom the marker binds: Claude Code sessions only.** Required everywhere, it would also refuse the user's own `git merge` or `git pull` on a protected branch typed in a terminal. Claude Code sets `CLAUDECODE=1` in its Bash commands (seen 2026-10-14), so the hook requires the marker only there, and a terminal outside Claude Code keeps today's rules.
+   - So `git_gate.py` asks on any change to `CLAUDECODE`, not only its removal: `CLAUDECODE=0`, `env CLAUDECODE=x`, `export CLAUDECODE=`, `unset`, `env -i`, `env -`.
+   - Measured on 2026-10-14: the user's `!` commands carry `CLAUDECODE=1` (`! echo "CLAUDECODE=$CLAUDECODE"` printed `1`). So an update of a protected branch typed as a `!` command needs the marker too. Only a terminal outside Claude Code keeps today's rules.
+2. **The marker's form: an environment variable naming the branch.** It shows what is approved in the prompt itself, `PROTECT_BRANCHES_ALLOW=develop git merge --no-ff feature/x`, and it lives only for that command. A `-c` setting was the alternative. A setting can also be written into a config file, where it would approve every later update silently.
+3. **Repositories outside the owner check get the marker, not the merge-only rules.** These are third-party clones such as mulmoterminal.
+   - Design item 1 requires the marker there, since a command can steer the owner check.
+   - The first draft offered `git_gate.py` asking on any git write in a repository with no remote under `Taka499` or `tia-tools` instead. That relied on reading the remotes, so it was dropped.
+   - Without the merge-only rules, an approved `git pull` keeps following upstream's direct commits.
+4. **Apple's git: `git_gate.py` asks on the routes in design item 2, and nothing more for now.** A route it does not know, such as one inside a script, reaches a git that runs no hook defined in config.
+   - Plan 0020 kept a per-repository copy of the hook (`git-hooks/protect-branches.sh`) as a fallback, and Apple's git runs that copy too.
+   - Its cost is a one-time sweep of the user's repositories and a step for each new one. It is paid only if Apple's git turns up in use.
+5. **Push stays as it is:** `git_gate.py`'s push ask and the `Bash(git push *)` rule. Pushes also run outside the sandbox, which prompts anyway. Moving push into a `pre-push` hook is out of scope.
 
-## Accepted gaps (unchanged)
+## Accepted gaps
 
-- A process that writes ref files itself.
-- A script file that sets the marker. Today a script can merge into `develop` with no marker at all, so this gap narrows.
-- Apple's git where no Homebrew git is installed.
+- **Programs that change refs without git's hooks:** a process that writes ref files itself, or a tool built on a git library (libgit2) instead of the git program.
+- **A script or program file, or a file sourced into the shell (`source`, `.`).** It can do anything git can, including switching the hook off (`GIT_CONFIG_GLOBAL`, an alias, Apple's git) or setting the marker. `git_gate.py` does not read files, now or after this plan, so the gap is the same as today. One thing changes: a script that merges into `develop` without meaning to is refused, not let through.
+- **A local service that runs commands for its caller, with an environment older than the session.** Examples:
+  - MulmoTerminal's API at `127.0.0.1:34567`, which opens cells;
+  - a git credential helper that hands its work to a long-running daemon.
+
+  Git run by one of them has no `CLAUDECODE=1`, so it gets today's rules. `git_gate.py` cannot list every such service. The sandbox refuses connections to local ports (measured 2026-10-14: `connect` failed with "Operation not permitted"). So only a command run outside the sandbox reaches one, and the user's `Bash(dangerouslyDisableSandbox:true)` rule asks before it.
 
 ## Verification (when built)
 
@@ -90,13 +147,78 @@ The new hook refuses today's merge flows the moment it is installed. And a strip
   - `fetch` into `refs/heads/…`;
   - cherry-pick, reset.
 
-  With the marker, a merge passes and a non-merge is still refused. Other branches are untouched, and creating a branch is allowed. Each rule is broken deliberately and shown to fail tests.
-- **Measure, not assume, on git 2.56:** that `GIT_CONFIG_GLOBAL=/dev/null`, a changed or cleared `HOME`, `-c include.path=…` and `-c core.hooksPath=…` each stop the hook. Each must then be an ask in `git_gate.py`.
+  With the marker, what passes depends on the repository:
+  - in one of the user's repositories, a merge passes and a non-merge is still refused;
+  - in a third-party clone (§ Decisions, 3), any update passes.
+
+  Other branches are untouched, and creating a branch is allowed. Without `CLAUDECODE=1` (a terminal outside Claude Code, § Decisions, 1), today's rules apply unchanged: in the user's repositories a merge passes with no marker, and third-party clones are not checked. Each rule is broken deliberately and shown to fail tests.
+- **Bypass tests.** Each bypass in design item 2, in each of its spellings, run with a program that accepts that spelling (BSD `env`, GNU `genv`, zsh), is shown to move a protected branch in a scratch repository. That keeps the list as evidence, not belief. Each measured non-bypass is shown to leave the hook running.
+- **The alias rule.** In a scratch repository, an alias named like one of git's own commands is shown to be ignored.
 - **`git_gate.py` tests:**
   - a replay set of every false ask recorded so far (the loop worker's twelve, engine-deviations' `hash-object`) is silent;
-  - the marker and each bypass ask.
+  - the marker and each bypass, in each spelling, ask;
+  - an alias already defined, run by its bare name, asks;
+  - a git or `git-<name>` program run by a path other than Homebrew's asks;
+  - a non-literal setting, environment value or program path asks;
+  - a command handed to tmux, screen, `launchctl`, `at`, `batch`, `crontab`, `ssh`, `osascript`, `open`, `sudo` or `su` asks.
 - **`/codex-review`** of each PR, in a snapshot clone.
 
 ## Decision Log
 
-- 2026-10-14, the user: plan the redesign first. No more one-off fixes to `git_gate.py`'s text parser meanwhile; occasional false asks are approved by hand. The `hash-object` / `update-index` false ask from engine-deviations is left unfixed.
+- **2026-10-14, the user: plan the redesign first.** No more one-off fixes to `git_gate.py`'s text parser meanwhile; occasional false asks are approved by hand. The `hash-object` / `update-index` false ask from engine-deviations is left unfixed.
+- **2026-10-14, Codex's first review of this plan.** It ran in a snapshot clone; the real repository's refs were unchanged. Verdict: "CODEX VERDICT: CHANGES REQUESTED". Codex tested each bypass in a scratch repository with git 2.56. Eight findings, all accepted and now in the design:
+  - **(high) `GIT_CONFIG_SYSTEM`** pointing at a file with `hook.<name>.enabled=false` let `update-ref` move `master`.
+  - **(high) An alias** carrying `-c hook.<name>.enabled=false` moved `master` when run as `git bypass`. Today's gate asks on unknown subcommands, which covers this; a stripped gate must ask on `alias.*` in any spelling.
+  - **(high) Apple's git can be reached without its path:**
+    - `export PATH=/usr/bin` earlier in the command;
+    - `command -p git`, which resolves to `/usr/bin/git` (2.50.1) on this machine.
+
+    Today's gate still reads the branch in those commands; a stripped gate would not.
+  - **(high) `CLAUDECODE`** can be changed, not only unset.
+  - **(high) The script gap was understated.** A script can switch the hook off, not only set the marker.
+  - **(medium) Repository scope.** Without the owner check settled, PR B leaves third-party clones unguarded. It is now a prerequisite of PR B.
+  - **(medium) Other ways to give settings:** `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`/`KEY`/`VALUE` and `--config-env` each disabled the hook.
+  - **(low) Non-bypasses.** Those Codex measured are now recorded as such.
+
+  **Added by the agent:**
+  - `integrate.sh` sets the marker before the hook changes, so no step leaves the coordinator unable to merge;
+  - the first draft's claim that a plain text scan would be enough is withdrawn, because `git_gate.py` keeps reading git's settings, environment and path.
+- **2026-10-14, Codex's second review of this plan.** It ran in a snapshot clone; the real repository's refs were unchanged. Verdict: "CODEX VERDICT: CHANGES REQUESTED". Round 1's fixes and the rollout order were confirmed. Four findings, all accepted:
+  - **(high) Apple's git by full path.** Xcode's copy, `/Applications/Xcode.app/Contents/Developer/usr/bin/git` (2.50.1), moved `master`; Homebrew's git refused the same update. Design item 2 now asks on any git or `git-<name>` program run by a path other than Homebrew's.
+  - **(high) An alias defined earlier** moved `master` when run as `git bypass`, a command with none of the listed words. Design item 2 now asks on any subcommand that is not one of git's own commands.
+  - **(high) `-c url.<base>.insteadOf`** made the owner check read a `Taka499` repository as foreign, and the hook let `master` move. The marker is now required in every repository, and the owner check decides only the merge-only rules. That also settles the first half of open question 3: the owner check can no longer be relied on.
+  - **(medium) Settings that make git run a program** were dropped without saying how code written inline in one is covered. Design item 2 now says it: inline code is command text the scan reads; a setting that names a file is the script gap.
+
+  **Added by the agent:**
+  - environment set from non-literal text (`export`, `env`, `declare`, `unset`, `eval`) asks, because it could set the marker or change `CLAUDECODE` with no visible word;
+  - `git-<name>` programs from Apple's `git-core` are included with the git paths;
+  - a sourced file joins the script gap.
+- **2026-10-14, Codex's third review of this plan.** It ran in a snapshot clone; the real repository's refs were unchanged. Verdict: "CODEX VERDICT: CHANGES REQUESTED". All round-1 and round-2 findings were confirmed answered, and the rollout order closes both windows. Two findings, both accepted:
+  - **(high) BSD `env -`** clears the whole environment, `CLAUDECODE` included. Under `env - /opt/homebrew/bin/git`, `update-ref` moved `master`; the same update without it was refused. Design item 2 now names the class: any clearing of the environment (`env -i`, `env -`, `env --ignore-environment`, `exec -c`).
+  - **(low) The status line** still said one review.
+
+  No fourth round. The fix adds members to a class item 2 already had (`env -i`), and changes no rule.
+- **2026-10-14, the user: the five open questions settled as recommended.** This came after an explainer page on them: "I agree with the recommendation of five questions."
+  - § Decisions records each answer. Design item 1 and item 2's `CLAUDECODE` ask now state decision 1.
+  - PR #33 had merged the first draft (`a06ff80`). This revision and the decisions follow in a second PR.
+  - Still to measure before PR A: whether `!` commands carry `CLAUDECODE`.
+- **2026-10-14, the user: `!` commands carry `CLAUDECODE=1`.** The user ran `! echo "CLAUDECODE=$CLAUDECODE"` in a Claude Code cell, and it printed `1`.
+  - Under decision 1, a protected-branch update typed as a `!` command therefore needs the marker; only a terminal outside Claude Code keeps today's rules.
+  - The user had accepted decision 1 with this outcome stated in advance, so the decision stands. Design item 1 and decision 1 now say so.
+- **2026-10-14, Codex's fourth review of this plan (PR #34's whole diff).** It ran in a snapshot clone; the real repository's refs were unchanged. Verdict: "CODEX VERDICT: CHANGES REQUESTED". It found no rollout window. Three findings, all accepted:
+  - **(high) A command handed to a process started outside the session.** Examples: `tmux send-keys`, `screen -X stuff`, `launchctl submit`, a local service. Git there runs without `CLAUDECODE=1`, so decision 1 lets an unmarked merge through in the user's repositories, and any update in a third-party clone.
+    - Design item 2 now asks on the programs that hand a command over.
+    - § Accepted gaps names local services that run commands.
+    - Both record what the sandbox already refuses.
+  - **(medium) Verification contradicted decision 3.** With the marker, a non-merge passes in a third-party clone. The expectations are now split by repository.
+  - **(low) `env --ignore-environment` is GNU syntax,** and BSD `env` rejects it. Item 2 now names each spelling with the program that accepts it: BSD `env`, GNU `genv`, zsh's `exec -c`.
+
+  **Added by the agent:**
+  - the concrete broker on this machine: MulmoTerminal runs its cells in a tmux server, which the sandbox kept a session from reaching;
+  - the sandbox measurements in item 2.
+
+  **Weighed and not taken:** requiring the marker everywhere (decision 1's other option) would close this class outright. But every git outside Claude Code would then need the marker to update `main`, `master` or `develop`: the user's terminal, VS Code's Sync, GitHub Desktop. Decision 1 stands, with the class bounded as above; the user may reopen it.
+- **2026-10-14, Codex's fifth review of this plan (round 4's fixes).** It ran in a snapshot clone; the real repository's refs were unchanged. Verdict: "CODEX VERDICT: CHANGES REQUESTED".
+  - It confirmed the medium and low fixes, the sandbox statements it could reproduce, and the plan's consistency. It did not test `launchctl submit`, to avoid creating persistent state.
+  - One finding, accepted: **(high) the round-4 class missed programs that run a command in a fresh environment.** `sudo` and `su` drop `CLAUDECODE`. The sandbox refuses both. Design item 2 and the `git_gate.py` tests now name them, and item 2 records what Codex found allowed (`open -Ra Terminal`, an `osascript` expression that automates nothing).
+  - No sixth round. The fix adds members to the class round 4 introduced, and changes no rule.
