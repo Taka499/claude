@@ -37,7 +37,7 @@ It would still read the command text, for a narrower question: does the command 
 ## Proposed design
 
 1. **`git-hooks/reference-transaction`:**
-   - In a Claude Code session (`CLAUDECODE=1`; § Decisions, 1), an update of `main`, `master` or `develop` needs the environment variable `PROTECT_BRANCHES_ALLOW` naming that branch. Without it, the update is refused, whatever its shape. The user's own terminal keeps today's rules.
+   - In a Claude Code session (`CLAUDECODE=1`; § Decisions, 1), an update of `main`, `master` or `develop` needs the environment variable `PROTECT_BRANCHES_ALLOW` naming that branch. Without it, the update is refused, whatever its shape. A terminal outside Claude Code keeps today's rules. The user's `!` commands run inside Claude Code, carry `CLAUDECODE=1`, and so need the marker too.
    - **The marker is required in every repository.** The owner check decides only whether today's merge-only rules apply on top, which they do in the user's own repositories.
 
      The owner check cannot decide whether the marker is needed, because a command can steer it. Codex's second review showed this: `-c url.https://github.com/foreign/.insteadOf=https://github.com/Taka499/` made a `Taka499` repository look foreign, and the hook let `update-ref` move `master`.
@@ -102,9 +102,9 @@ The new hook refuses today's merge flows the moment it is installed. And a strip
 
 These were the plan's five open questions. The user accepted the recommendation on each, after an explainer page set them out.
 
-1. **Whom the marker binds: Claude Code sessions only.** Required everywhere, it would also refuse the user's own `git merge` or `git pull` on a protected branch typed in a terminal. Claude Code sets `CLAUDECODE=1` in its Bash commands (seen 2026-10-14), so the hook requires the marker only there, and the user's terminal keeps today's rules.
+1. **Whom the marker binds: Claude Code sessions only.** Required everywhere, it would also refuse the user's own `git merge` or `git pull` on a protected branch typed in a terminal. Claude Code sets `CLAUDECODE=1` in its Bash commands (seen 2026-10-14), so the hook requires the marker only there, and a terminal outside Claude Code keeps today's rules.
    - So `git_gate.py` asks on any change to `CLAUDECODE`, not only its removal: `CLAUDECODE=0`, `env CLAUDECODE=x`, `export CLAUDECODE=`, `unset`, `env -i`, `env -`.
-   - To measure before PR A: whether the user's `!` commands carry `CLAUDECODE`. If they do, a merge typed as a `!` command needs the marker too.
+   - Measured on 2026-10-14: the user's `!` commands carry `CLAUDECODE=1` (`! echo "CLAUDECODE=$CLAUDECODE"` printed `1`). So an update of a protected branch typed as a `!` command needs the marker too. Only a terminal outside Claude Code keeps today's rules.
 2. **The marker's form: an environment variable naming the branch.** It shows what is approved in the prompt itself, `PROTECT_BRANCHES_ALLOW=develop git merge --no-ff feature/x`, and it lives only for that command. A `-c` setting was the alternative. A setting can also be written into a config file, where it would approve every later update silently.
 3. **Repositories outside the owner check get the marker, not the merge-only rules.** These are third-party clones such as mulmoterminal.
    - Design item 1 requires the marker there, since a command can steer the owner check.
@@ -128,7 +128,7 @@ These were the plan's five open questions. The user accepted the recommendation 
   - `fetch` into `refs/heads/…`;
   - cherry-pick, reset.
 
-  With the marker, a merge passes and a non-merge is still refused. Other branches are untouched, and creating a branch is allowed. Without `CLAUDECODE=1` (the user's terminal, § Decisions, 1), today's rules apply unchanged: a merge passes with no marker. Each rule is broken deliberately and shown to fail tests.
+  With the marker, a merge passes and a non-merge is still refused. Other branches are untouched, and creating a branch is allowed. Without `CLAUDECODE=1` (a terminal outside Claude Code, § Decisions, 1), today's rules apply unchanged: a merge passes with no marker. Each rule is broken deliberately and shown to fail tests.
 - **Bypass tests.** Each bypass in design item 2, in each of its spellings, is shown to move a protected branch in a scratch repository. That keeps the list as evidence, not belief. Each measured non-bypass is shown to leave the hook running.
 - **The alias rule.** In a scratch repository, an alias named like one of git's own commands is shown to be ignored.
 - **`git_gate.py` tests:**
@@ -178,3 +178,6 @@ These were the plan's five open questions. The user accepted the recommendation 
   - § Decisions records each answer. Design item 1 and item 2's `CLAUDECODE` ask now state decision 1.
   - PR #33 had merged the first draft (`a06ff80`). This revision and the decisions follow in a second PR.
   - Still to measure before PR A: whether `!` commands carry `CLAUDECODE`.
+- **2026-10-14, the user: `!` commands carry `CLAUDECODE=1`.** The user ran `! echo "CLAUDECODE=$CLAUDECODE"` in a Claude Code cell, and it printed `1`.
+  - Under decision 1, a protected-branch update typed as a `!` command therefore needs the marker; only a terminal outside Claude Code keeps today's rules.
+  - The user had accepted decision 1 with this outcome stated in advance, so the decision stands. Design item 1 and decision 1 now say so.
