@@ -53,7 +53,7 @@ It would still read the command text, for a narrower question: does the command 
      - **Another config file:**
        - `GIT_CONFIG_GLOBAL` with any value;
        - `GIT_CONFIG_SYSTEM` with any value but `/dev/null`;
-       - `HOME` changed or cleared: `HOME=…`, `env -u HOME`, or the whole environment cleared (`env -i`, BSD `env -`, `env --ignore-environment`, `exec -c`).
+       - `HOME` changed or cleared: `HOME=…`, `env -u HOME` (or `genv -u HOME`), or the whole environment cleared. The spellings that clear it differ by program: macOS's BSD `env -i` and `env -`; GNU coreutils' `genv -i` and `genv --ignore-environment` (Homebrew installs GNU `env` as `genv` here; BSD `env` rejects `--ignore-environment`); zsh's `exec -c`.
      - **A git that ignores hooks defined in config:**
        - a program named `git`, or `git-<name>`, run by any path other than Homebrew's `/opt/homebrew/bin/git`. That covers Apple's `/usr/bin/git`, the copies in Xcode and in the Command Line Tools, and their `git-core` directories;
        - a `PATH` set or exported anywhere in the command;
@@ -63,6 +63,20 @@ It would still read the command text, for a narrower question: does the command 
        - git ignores an alias that shares the name of one of its own commands (git-config(1), `alias.*`), so the names on the list need no further check, once a test confirms that.
      - **A git setting, environment value or program path that is not literal,** such as `git -c "$x"` or `$G`, because it can spell any of the above. The same goes for anything that sets the environment from non-literal text: `export`, `env`, `declare` or `unset` with a non-literal word, or `eval`.
      - **`CLAUDECODE` changed in any way,** because the marker binds only Claude Code sessions (§ Decisions, 1): an assignment, an export, an `unset`, or the environment cleared as above.
+     - **A command handed to a process started outside the session, or run in a fresh environment.** Either way git has no `CLAUDECODE=1`, so it gets today's rules, with no marker needed. The programs that do this:
+       - a tmux or screen server: `tmux send-keys`, `tmux new-window`, `screen -X stuff`. MulmoTerminal runs its cells in a tmux server (socket `/private/tmp/tmux-501/mulmoterminal`);
+       - `launchctl`, `at`, `batch`, `crontab`;
+       - `ssh`, `osascript`, `open`;
+       - `sudo` and `su`, which reset the environment and drop `CLAUDECODE`.
+
+       Inside the sandbox, most of these routes are refused. Measured on 2026-10-14:
+       - tmux could not connect to MulmoTerminal's socket ("Operation not permitted");
+       - `at` and `crontab` were not permitted to run;
+       - `launchctl list` failed, though Codex found `launchctl print` allowed; `launchctl submit` is untested;
+       - Codex found `ssh localhost`, `sudo` and `su` refused;
+       - Codex found `open -Ra Terminal` and an `osascript` expression that automates nothing allowed.
+
+       So mainly a command run outside the sandbox reaches them, and the user's `Bash(dangerouslyDisableSandbox:true)` rule already asks before each of those. `git_gate.py` asks on these programs too: that covers a route the sandbox may leave open (`launchctl submit`), and the prompt then says why.
    - **`push` and `gh pr merge`,** as today.
 
    **Everything else is silent.** The tables of what each subcommand does and the option rules go, and with them the false asks for:
@@ -119,6 +133,11 @@ These were the plan's five open questions. The user accepted the recommendation 
 
 - **Programs that change refs without git's hooks:** a process that writes ref files itself, or a tool built on a git library (libgit2) instead of the git program.
 - **A script or program file, or a file sourced into the shell (`source`, `.`).** It can do anything git can, including switching the hook off (`GIT_CONFIG_GLOBAL`, an alias, Apple's git) or setting the marker. `git_gate.py` does not read files, now or after this plan, so the gap is the same as today. One thing changes: a script that merges into `develop` without meaning to is refused, not let through.
+- **A local service that runs commands for its caller, with an environment older than the session.** Examples:
+  - MulmoTerminal's API at `127.0.0.1:34567`, which opens cells;
+  - a git credential helper that hands its work to a long-running daemon.
+
+  Git run by one of them has no `CLAUDECODE=1`, so it gets today's rules. `git_gate.py` cannot list every such service. The sandbox refuses connections to local ports (measured 2026-10-14: `connect` failed with "Operation not permitted"). So only a command run outside the sandbox reaches one, and the user's `Bash(dangerouslyDisableSandbox:true)` rule asks before it.
 
 ## Verification (when built)
 
@@ -128,15 +147,20 @@ These were the plan's five open questions. The user accepted the recommendation 
   - `fetch` into `refs/heads/…`;
   - cherry-pick, reset.
 
-  With the marker, a merge passes and a non-merge is still refused. Other branches are untouched, and creating a branch is allowed. Without `CLAUDECODE=1` (a terminal outside Claude Code, § Decisions, 1), today's rules apply unchanged: a merge passes with no marker. Each rule is broken deliberately and shown to fail tests.
-- **Bypass tests.** Each bypass in design item 2, in each of its spellings, is shown to move a protected branch in a scratch repository. That keeps the list as evidence, not belief. Each measured non-bypass is shown to leave the hook running.
+  With the marker, what passes depends on the repository:
+  - in one of the user's repositories, a merge passes and a non-merge is still refused;
+  - in a third-party clone (§ Decisions, 3), any update passes.
+
+  Other branches are untouched, and creating a branch is allowed. Without `CLAUDECODE=1` (a terminal outside Claude Code, § Decisions, 1), today's rules apply unchanged: in the user's repositories a merge passes with no marker, and third-party clones are not checked. Each rule is broken deliberately and shown to fail tests.
+- **Bypass tests.** Each bypass in design item 2, in each of its spellings, run with a program that accepts that spelling (BSD `env`, GNU `genv`, zsh), is shown to move a protected branch in a scratch repository. That keeps the list as evidence, not belief. Each measured non-bypass is shown to leave the hook running.
 - **The alias rule.** In a scratch repository, an alias named like one of git's own commands is shown to be ignored.
 - **`git_gate.py` tests:**
   - a replay set of every false ask recorded so far (the loop worker's twelve, engine-deviations' `hash-object`) is silent;
   - the marker and each bypass, in each spelling, ask;
   - an alias already defined, run by its bare name, asks;
   - a git or `git-<name>` program run by a path other than Homebrew's asks;
-  - a non-literal setting, environment value or program path asks.
+  - a non-literal setting, environment value or program path asks;
+  - a command handed to tmux, screen, `launchctl`, `at`, `batch`, `crontab`, `ssh`, `osascript`, `open`, `sudo` or `su` asks.
 - **`/codex-review`** of each PR, in a snapshot clone.
 
 ## Decision Log
@@ -181,3 +205,20 @@ These were the plan's five open questions. The user accepted the recommendation 
 - **2026-10-14, the user: `!` commands carry `CLAUDECODE=1`.** The user ran `! echo "CLAUDECODE=$CLAUDECODE"` in a Claude Code cell, and it printed `1`.
   - Under decision 1, a protected-branch update typed as a `!` command therefore needs the marker; only a terminal outside Claude Code keeps today's rules.
   - The user had accepted decision 1 with this outcome stated in advance, so the decision stands. Design item 1 and decision 1 now say so.
+- **2026-10-14, Codex's fourth review of this plan (PR #34's whole diff).** It ran in a snapshot clone; the real repository's refs were unchanged. Verdict: "CODEX VERDICT: CHANGES REQUESTED". It found no rollout window. Three findings, all accepted:
+  - **(high) A command handed to a process started outside the session.** Examples: `tmux send-keys`, `screen -X stuff`, `launchctl submit`, a local service. Git there runs without `CLAUDECODE=1`, so decision 1 lets an unmarked merge through in the user's repositories, and any update in a third-party clone.
+    - Design item 2 now asks on the programs that hand a command over.
+    - § Accepted gaps names local services that run commands.
+    - Both record what the sandbox already refuses.
+  - **(medium) Verification contradicted decision 3.** With the marker, a non-merge passes in a third-party clone. The expectations are now split by repository.
+  - **(low) `env --ignore-environment` is GNU syntax,** and BSD `env` rejects it. Item 2 now names each spelling with the program that accepts it: BSD `env`, GNU `genv`, zsh's `exec -c`.
+
+  **Added by the agent:**
+  - the concrete broker on this machine: MulmoTerminal runs its cells in a tmux server, which the sandbox kept a session from reaching;
+  - the sandbox measurements in item 2.
+
+  **Weighed and not taken:** requiring the marker everywhere (decision 1's other option) would close this class outright. But every git outside Claude Code would then need the marker to update `main`, `master` or `develop`: the user's terminal, VS Code's Sync, GitHub Desktop. Decision 1 stands, with the class bounded as above; the user may reopen it.
+- **2026-10-14, Codex's fifth review of this plan (round 4's fixes).** It ran in a snapshot clone; the real repository's refs were unchanged. Verdict: "CODEX VERDICT: CHANGES REQUESTED".
+  - It confirmed the medium and low fixes, the sandbox statements it could reproduce, and the plan's consistency. It did not test `launchctl submit`, to avoid creating persistent state.
+  - One finding, accepted: **(high) the round-4 class missed programs that run a command in a fresh environment.** `sudo` and `su` drop `CLAUDECODE`. The sandbox refuses both. Design item 2 and the `git_gate.py` tests now name them, and item 2 records what Codex found allowed (`open -Ra Terminal`, an `osascript` expression that automates nothing).
+  - No sixth round. The fix adds members to the class round 4 introduced, and changes no rule.
