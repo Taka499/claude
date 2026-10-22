@@ -1,4 +1,4 @@
-"""Tests for git_gate.py. Run: python3 -m unittest discover -s hooks"""
+"""Tests for git_gate.py. Run with a Python 3.10+: /opt/homebrew/opt/python@3.14/libexec/bin/python3 -m unittest discover -s hooks"""
 from __future__ import annotations
 
 import contextlib
