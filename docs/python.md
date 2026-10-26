@@ -96,6 +96,10 @@ Extracted from `Taka499/info-gathering` on 2026-08-05. Rules here apply to any P
 
 **Treat "credential absent" as a supported off switch, not an error.** A missing webhook variable means that platform/channel is disabled: logged once at startup, skipped silently after. This is what let a second delivery platform be fully implemented and unit-tested while remaining dark in production with zero code changes to enable later (info-gathering, 2026-06-11).
 
+## Showing a test red
+
+**Delete `__pycache__` before each run of a mutation check (break the code, watch red, restore, watch green).** A cached `.pyc` is checked against its source's mtime in whole seconds and its size, and nothing else. So a mutation that keeps the file's size (`False` → `True `), made or undone within the same second as the previous run, runs the previous version's bytecode: the restored code still fails, or the mutant never runs at all. `python -B` (`PYTHONDONTWRITEBYTECODE=1`) is not enough: it only stops new `.pyc` files from being written, and one left by an earlier run is still read. Deleting `__pycache__` before every run, or giving every run a fresh `PYTHONPYCACHEPREFIX`, holds both ways. Apple's `/usr/bin/python3` does not show the effect inside the Claude Code sandbox, because it caches under `~/Library/Caches/com.apple.python`, which the sandbox does not let it write. (gkms-contest-ai, 2026-10-17, Python 3.13.7: a restored module still failed its test; both directions and the fixes measured with Python 3.14.9, 2026-10-26.)
+
 ## Testing an integration-heavy pipeline
 
 **Make the default test command hermetic: `uv run pytest` must touch no network.** Every fetcher test uses `httpx.MockTransport` with a request handler, and every parser test reads a small checked-in fixture. This is what makes the suite runnable on a fresh CI runner with no secrets configured (info-gathering).
