@@ -20,6 +20,11 @@ The user chose to land two sets of lessons. The first is the two captures approv
   - in a worktree, tracked settings come from the worktree and `.claude/settings.local.json` from the main checkout (v2.1.211+);
   - approve a script by an exact-path allow rule, never by parsing shell text to grant, with the documented matching rules and the undocumented `$(…)` case;
   - `lsof -d cwd` instead of `ps`/`pgrep`.
+- `docs/typescript.md` § Package manager for a repository worked on from several worktrees (new, added on the user's request of 2026-10-26 after the first review):
+  - npm stays the default; a new repository worked on from several worktrees starts on pnpm, or on Bun if it runs on Bun;
+  - the two settings pnpm needs under the sandbox (`storeDir`, `XDG_RUNTIME_DIR`), as measured;
+  - the global virtual store stays off;
+  - `strictDepBuilds` and `allowBuilds`.
 
 ## Evidence (gkms-contest-ai, `develop` at bb0bcae)
 
@@ -57,7 +62,19 @@ The user chose to land two sets of lessons. The first is the two captures approv
   Both change `settings.json`, which the user keeps by hand (ADR 0002). Put to the user, not decided here.
 - **Not captured.**
   - The tooling (`stamp.py`, `heavy.py`, `brief_check.py`, the board, the worker scripts) waits for a second project that wants parallel sessions.
-  - The package-manager question for worktree-heavy repositories was researched and put to the user separately.
+  - The package-manager question for worktree-heavy repositories was first put to the user separately. The user then asked for it in this PR; see the next entry.
+- **pnpm under the sandbox, measured 2026-10-26.** pnpm 12.15.0 ran through `npx` in a scratch directory under `$TMPDIR`, in Claude Code 2.1.310, with `npm_config_cache` in `$TMPDIR`. Nothing was installed on the machine.
+  - Default settings: `pnpm store path` gave `/private/tmp/claude-501/.pnpm-store/v11`, the nearest writable directory above the project, not `~/Library/pnpm/store`. The install exited 1 with `ERR_PNPM_STORE_DIR_OPEN_OPERATION_LOCK … Operation not permitted`: the lock directory falls back to `/tmp`, which the sandbox does not let it write.
+  - With `XDG_RUNTIME_DIR` set to a mode-700 directory and `--store-dir` set, two installs succeeded. pnpm printed "Packages are cloned from the content-addressable store to the virtual store". The same file in the two projects had different inodes with link count 1: clones, not hard links.
+  - `pnpm_config_store_dir` gave the same `storeDir` in `node_modules/.modules.yaml` as the flag. Without `XDG_RUNTIME_DIR` the lock error came back even with the store set.
+  - Not measured, taken from pnpm's docs:
+    - the store inside the project (`node_modules/.pnpm-store`) when no directory above the project is writable;
+    - the global virtual store and its trust warning;
+    - `strictDepBuilds` and `allowBuilds`;
+    - `minimumReleaseAge` 1440 being non-strict unless set explicitly;
+    - Bun's default `clonefile` backend on macOS.
+  
+  This rests on one tiny dependency, so the disk saving on a real tree is not measured.
 - **No ADR.** Prose, trivially reversible: it fails gate one.
 - **Codex review, one pass on `origin/master...HEAD` at 2c3b965: CHANGES REQUESTED, three findings, all accepted.**
   - Medium: reusing a check by tree hash is sound only when the check's other inputs are equal too. `docs/testing.md` now says to pin toolchain, configuration and data outside git in the tree, or record and compare them.
