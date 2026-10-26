@@ -16,7 +16,7 @@ The approach emulates [isamu/claude](https://github.com/isamu/claude) (see the a
   - The hook cannot stop `core.hooksPath` or a `hook.*` setting given for a command (the user's bypass, which a script can use as well), or a process writing ref files directly instead of running git; plan 0019 § Decision Log has both.
   - `protect-github.sh OWNER/REPOSITORY` creates or updates a GitHub ruleset blocking deletion and force pushes of those branches; the free plans enforce it on public repositories only.
   - Tests: `python3 -m unittest discover -s git-hooks`.
-- `docs/` — read-on-demand references: the canonical ExecPlan methodology (`PLANS.md`), distilled stack notes (`rust.md`, `typescript.md`, `python.md`, `github-actions.md`, `cloudflare.md`), the cross-stack testing doctrine (`testing.md`), and this repo's ADRs (`docs/adr/`).
+- `docs/` — read-on-demand references: the canonical ExecPlan methodology (`PLANS.md`), distilled stack notes (`rust.md`, `typescript.md`, `python.md`, `github-actions.md`, `cloudflare.md`, and `claude-code.md` for Claude Code itself), the cross-stack testing doctrine (`testing.md`), and this repo's ADRs (`docs/adr/`).
 - `plans/` — lightweight plan files (goal / changes / verification) committed alongside non-trivial PRs. Not full ExecPlans: harness changes are small and reversible, so the ceremony is scaled down deliberately (see `plans/0001-bootstrap-central-claude.md` § Decision Log).
 
 ## Deployment
