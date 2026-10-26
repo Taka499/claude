@@ -50,7 +50,7 @@ The user chose to land two sets of lessons. The first is the two captures approv
   Apple's `/usr/bin/python3` 3.9.6 did not reproduce it: its `sys.pycache_prefix` is `~/Library/Caches/com.apple.python`, which the sandbox does not let it write. The note gives deletion or a fresh prefix, and says why `-B` is not enough.
 - **A new stack note, not more `CLAUDE.md`.** These are reference facts to read before writing hooks, permission rules or sandbox settings, which is how stack notes are used, and `CLAUDE.md` stays thin. The two Quality Gates bullets do go in `CLAUDE.md`: they govern every session's own conduct and process, all the time.
 - **Additive.** Nothing existing is replaced. The permission entry bans *granting* by text parsing. `hooks/git_gate.py` only ever returns `ask` or stays out of the way, so the entry cites it as the acceptable form rather than contradicting it.
-- **Found and not fixed: this harness breaks the new first rule.** A sandboxed `touch hooks/.write-probe` in this checkout succeeded (2026-10-26). Meanwhile `~/.claude/settings.json` runs `$HOME/Developer/claude/hooks/git_gate.py` outside the sandbox before every Bash call of every session. So a session in this repository can change code that runs unsandboxed in all sessions, and so does checking out a branch here. There are two ways out:
+- **Found and not fixed: this harness breaks the new first rule.** A sandboxed `touch hooks/.write-probe` in this checkout succeeded (2026-10-26). Meanwhile `~/.claude/settings.json` runs `$HOME/Developer/claude/hooks/git_gate.py` outside the sandbox before every Bash call of every session. The reach is wider than this repository: `sandbox.filesystem.allowWrite` opens `~/Developer/claude` to every session on the machine (`README.md`, the `mv` bullet). So any sandboxed session can change code that then runs unsandboxed in all sessions, and so does checking out a branch here. There are two ways out:
   - deploy a copy the way `git-hooks/install-global.sh` does;
   - add a deny rule, which would also stop the hook being developed in this checkout.
   
@@ -59,6 +59,12 @@ The user chose to land two sets of lessons. The first is the two captures approv
   - The tooling (`stamp.py`, `heavy.py`, `brief_check.py`, the board, the worker scripts) waits for a second project that wants parallel sessions.
   - The package-manager question for worktree-heavy repositories was researched and put to the user separately.
 - **No ADR.** Prose, trivially reversible: it fails gate one.
+- **Codex review, one pass on `origin/master...HEAD` at 2c3b965: CHANGES REQUESTED, three findings, all accepted.**
+  - Medium: reusing a check by tree hash is sound only when the check's other inputs are equal too. `docs/testing.md` now says to pin toolchain, configuration and data outside git in the tree, or record and compare them.
+  - Medium: hooks at the main checkout's paths meet the rule only if those copies are themselves write-protected. `docs/claude-code.md` now requires the deny rule with them.
+  - Low: the `.pyc` claim holds for timestamp-based pycs, CPython's default, and the text now says so.
+  
+  Two fixes of this session's own reading went in with them: the same-second condition is tied to the file's previous write, not the previous run, and a missing "were" in the second Quality Gates bullet. The snapshot's base was first fetched from the local `master` (9 commits behind), which put merged work in the diff. It was re-fetched from `refs/remotes/origin/master` before Codex ran. The repository check found no ref moved and no working-tree file changed. `.git/index` was refreshed during the run, with no Codex command against the repository in its log.
 
 ## Verification
 
