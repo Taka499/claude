@@ -75,6 +75,7 @@ The user chose to land two sets of lessons. The first is the two captures approv
     - Bun's default `clonefile` backend on macOS.
   
   This rests on one tiny dependency, so the disk saving on a real tree is not measured.
+- **Codex review, second pass on `origin/master...HEAD` at cc95ffc: inconclusive.** Codex tried a web search to check pnpm's docs. The sandbox blocked the connection, and the run ended on a fatal error with no verdict line. Before that it noted that some sentences mixed measured behaviour with claims from the docs. That was fair, so `docs/typescript.md` now says for each claim whether it was measured or comes from pnpm's or Bun's docs. The npm claim is now pnpm's own quoted sentence; before, it had no source. The global-virtual-store paragraph now says that the default layout's store is still trusted by every later install.
 - **No ADR.** Prose, trivially reversible: it fails gate one.
 - **Codex review, one pass on `origin/master...HEAD` at 2c3b965: CHANGES REQUESTED, three findings, all accepted.**
   - Medium: reusing a check by tree hash is sound only when the check's other inputs are equal too. `docs/testing.md` now says to pin toolchain, configuration and data outside git in the tree, or record and compare them.
