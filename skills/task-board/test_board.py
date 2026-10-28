@@ -36,24 +36,33 @@ def issue(number: int, created: str = "2026-10-01T00:00:00Z", blocked_by=None) -
 
 
 class FakeGh:
-    """Answers the gh calls Board makes, and records them."""
+    """Answers the gh calls Board makes, and records them. Like the real gh, item-list gives a field's values
+    only when asked for that field with --field. fail_on fails every call with that (verb, subverb);
+    fail_once_on fails only the first such call, to test a rerun."""
 
-    def __init__(self, items=(), issues=(), comments=None, fail_on=None):
+    def __init__(self, items=(), issues=(), comments=None, fail_on=None, fail_once_on=None, create_output=None):
         self.items, self.issues = list(items), list(issues)
         self.comments = {number: list(entries) for number, entries in (comments or {}).items()}
-        self.fail_on, self.calls = fail_on, []
+        self.fail_on, self.fail_once_on, self.calls = fail_on, fail_once_on, []
+        self.create_output = "https://github.com/o/r/issues/9\n" if create_output is None else create_output
 
     def run(self, *args: str) -> str:
         self.calls.append(args)
         key = args[:2]
         if self.fail_on == key:
             raise board.GhError("gh failed")
+        if self.fail_once_on == key:
+            self.fail_once_on = None
+            raise board.GhError("gh failed once")
         if key == ("project", "view"):
             return json.dumps(PROJECT)
         if key == ("project", "field-list"):
             return json.dumps(FIELDS)
         if key == ("project", "item-list"):
-            return json.dumps({"items": self.items, "totalCount": len(self.items)})
+            asked = {args[i + 1].lower() for i, arg in enumerate(args) if arg == "--field"}
+            shown = [{k: v for k, v in entry.items() if k not in ("status", "priority") or k in asked}
+                     for entry in self.items]
+            return json.dumps({"items": shown, "totalCount": len(shown)})
         if key == ("issue", "list"):
             return json.dumps(self.issues)
         if key == ("issue", "comment"):
@@ -66,10 +75,20 @@ class FakeGh:
         if key == ("api", "user"):
             return "me\n"
         if key == ("issue", "create"):
-            return "https://github.com/o/r/issues/9\n"
+            return self.create_output
         if key == ("project", "item-add"):
             return json.dumps({"id": "PVTI_9"})
-        if key in (("project", "item-edit"), ("issue", "close")):
+        if key == ("project", "item-edit"):
+            # Reflect the change, so a rerun sees it.
+            item_id, option = args[args.index("--id") + 1], args[args.index("--single-select-option-id") + 1]
+            names = {"s_triage": ("status", "Triage"), "s_todo": ("status", "Todo"),
+                     "s_progress": ("status", "In Progress"), "s_done": ("status", "Done"),
+                     "p1": ("priority", "P1"), "p2": ("priority", "P2"), "p3": ("priority", "P3")}
+            for entry in self.items:
+                if entry["id"] == item_id:
+                    entry[names[option][0]] = names[option][1]
+            return ""
+        if key == ("issue", "close"):
             return ""
         raise AssertionError(f"unexpected gh call: {args}")
 
@@ -190,18 +209,39 @@ class ClaimHolder(unittest.TestCase):
         self.assertEqual(board.claim_holder(comments, "me"), "feature/a")
 
 
+def claimed(branch: str = "feature/x", at: str = "10:00") -> dict:
+    return comment(f"task-board claim: {branch}", at)
+
+
 class Steps(unittest.TestCase):
-    def test_claim_moves_to_in_progress_and_comments(self):
+    def test_the_item_list_asks_gh_for_status_and_priority(self):
+        gh = FakeGh(items=[item(1, "Todo", "P1")], issues=[issue(1)])
+        self.assertEqual([entry["priority"] for entry in make_board(gh).ready()], ["P1"])
+        listing = next(call for call in gh.calls if call[:2] == ("project", "item-list"))
+        asked = [listing[i + 1] for i, arg in enumerate(listing) if arg == "--field"]
+        self.assertEqual(sorted(asked), ["Priority", "Status"])
+
+    def test_claim_comments_first_then_moves_to_in_progress(self):
         gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)])
         make_board(gh).claim(1, "feature/x", "../r-x")
         self.assertEqual(gh.edits(), [("F_STATUS", "s_progress")])
         self.assertEqual(gh.comments[1][-1]["body"], "task-board claim: feature/x in ../r-x")
+        first_comment = next(i for i, call in enumerate(gh.calls) if call[:2] == ("issue", "comment"))
+        first_edit = next(i for i, call in enumerate(gh.calls) if call[:2] == ("project", "item-edit"))
+        self.assertLess(first_comment, first_edit)
+
+    def test_a_claim_whose_status_change_failed_finishes_on_a_rerun(self):
+        gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)], fail_once_on=("project", "item-edit"))
+        with self.assertRaises(board.GhError):
+            make_board(gh).claim(1, "feature/x", None)
+        make_board(gh).claim(1, "feature/x", None)
+        self.assertEqual(board.status_of(gh.items[0]), "In Progress")
 
     def test_claim_backs_off_when_another_session_claimed_first(self):
-        earlier = comment("task-board claim: feature/other", "11:00")
-        gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)], comments={1: [earlier]})
+        gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)], comments={1: [claimed("feature/other", "11:00")]})
         with self.assertRaisesRegex(board.Refused, "feature/other"):
             make_board(gh).claim(1, "feature/x", None)
+        self.assertEqual(gh.edits(), [])
 
     def test_claim_is_not_blocked_by_a_strangers_claim_comment(self):
         spoof = comment("task-board claim: feature/spoof", "11:00", login="stranger")
@@ -217,13 +257,15 @@ class Steps(unittest.TestCase):
             self.assertEqual(gh.edits(), [])
             self.assertNotIn(1, gh.comments)
 
-    def test_file_into_todo_sets_status_and_default_priority(self):
+    def test_file_into_todo_sets_priority_then_status(self):
         gh = FakeGh()
         number = make_board(gh).file("New task", "", todo=True, priority=None, blocked_by="4")
         self.assertEqual(number, 9)
         create = next(call for call in gh.calls if call[:2] == ("issue", "create"))
         self.assertEqual(create[create.index("--blocked-by") + 1], "4")
-        self.assertEqual(gh.edits(), [("F_STATUS", "s_todo"), ("F_PRIORITY", "p2")])
+        add = next(call for call in gh.calls if call[:2] == ("project", "item-add"))
+        self.assertEqual(add[add.index("--url") + 1], "https://github.com/o/r/issues/9")
+        self.assertEqual(gh.edits(), [("F_PRIORITY", "p2"), ("F_STATUS", "s_todo")])
 
     def test_file_into_triage_sets_no_priority(self):
         gh = FakeGh()
@@ -236,11 +278,23 @@ class Steps(unittest.TestCase):
             make_board(gh).file("x", "", todo=True, priority=None, blocked_by=None)
         self.assertFalse(any(call[:2] == ("issue", "create") for call in gh.calls))
 
+    def test_file_names_the_created_issue_when_placing_it_fails(self):
+        gh = FakeGh(fail_on=("project", "item-add"))
+        with self.assertRaisesRegex(board.GhError, "#9 was created"):
+            make_board(gh).file("x", "", todo=True, priority=None, blocked_by=None)
+
+    def test_file_refuses_output_without_this_repositorys_issue_url(self):
+        for output in ("", "Creating issue…\n", "https://github.com/o/other/issues/9\n"):
+            gh = FakeGh(create_output=output)
+            with self.assertRaises(board.GhError):
+                make_board(gh).file("x", "", todo=False, priority=None, blocked_by=None)
+            self.assertFalse(any(call[:2] == ("project", "item-add") for call in gh.calls))
+
     def test_queue_accepts_a_triage_item_with_a_priority(self):
         for status in (None, "Triage"):
             gh = FakeGh(items=[item(1, status)], issues=[issue(1)])
             make_board(gh).queue(1, "P1")
-            self.assertEqual(gh.edits(), [("F_STATUS", "s_todo"), ("F_PRIORITY", "p1")])
+            self.assertEqual(gh.edits(), [("F_PRIORITY", "p1"), ("F_STATUS", "s_todo")])
 
     def test_queue_refuses_an_item_already_past_triage(self):
         gh = FakeGh(items=[item(1, "In Progress")], issues=[issue(1)])
@@ -248,22 +302,53 @@ class Steps(unittest.TestCase):
             make_board(gh).queue(1, None)
         self.assertEqual(gh.edits(), [])
 
-    def test_done_closes_with_evidence_only_from_in_progress(self):
-        gh = FakeGh(items=[item(1, "In Progress")], issues=[issue(1)])
-        make_board(gh).done(1, "merged abc123 into develop; tests green")
+    def test_queue_refuses_a_closed_or_claimed_issue_even_with_a_blank_status(self):
+        for issues, comments in (([], {}), ([issue(1)], {1: [claimed()]})):
+            gh = FakeGh(items=[item(1, None)], issues=issues, comments=comments)
+            with self.assertRaises(board.Refused):
+                make_board(gh).queue(1, None)
+            self.assertEqual(gh.edits(), [])
+
+    def test_done_closes_first_then_sets_done(self):
+        gh = FakeGh(items=[item(1, "In Progress")], issues=[issue(1)], comments={1: [claimed()]})
+        make_board(gh).done(1, "feature/x", "merged abc123 into develop; tests green")
         self.assertEqual(gh.edits(), [("F_STATUS", "s_done")])
-        close = next(call for call in gh.calls if call[:2] == ("issue", "close"))
-        self.assertEqual(close[close.index("--comment") + 1], "task-board done: merged abc123 into develop; tests green")
-        gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)])
-        with self.assertRaises(board.Refused):
-            make_board(gh).done(1, "x")
-        self.assertFalse(any(call[:2] == ("issue", "close") for call in gh.calls))
+        close = next(i for i, call in enumerate(gh.calls) if call[:2] == ("issue", "close"))
+        edit = next(i for i, call in enumerate(gh.calls) if call[:2] == ("project", "item-edit"))
+        self.assertLess(close, edit)
+        self.assertEqual(gh.calls[close][gh.calls[close].index("--comment") + 1],
+                         "task-board done: feature/x: merged abc123 into develop; tests green")
+
+    def test_done_refuses_outside_in_progress_or_for_another_branch(self):
+        cases = [("Todo", [claimed()], "feature/x"), ("In Progress", [claimed("feature/other")], "feature/x"),
+                 ("In Progress", [], "feature/x")]
+        for status, comments, branch in cases:
+            gh = FakeGh(items=[item(1, status)], issues=[issue(1)], comments={1: comments})
+            with self.assertRaises(board.Refused):
+                make_board(gh).done(1, branch, "x")
+            self.assertFalse(any(call[:2] == ("issue", "close") for call in gh.calls))
 
     def test_release_returns_to_todo_with_a_reason(self):
-        gh = FakeGh(items=[item(1, "In Progress")], issues=[issue(1)])
-        make_board(gh).release(1, "blocked on the card data file")
+        gh = FakeGh(items=[item(1, "In Progress")], issues=[issue(1)], comments={1: [claimed()]})
+        make_board(gh).release(1, "feature/x", "blocked on the card data file")
         self.assertEqual(gh.edits(), [("F_STATUS", "s_todo")])
-        self.assertEqual(gh.comments[1][-1]["body"], "task-board release: blocked on the card data file")
+        self.assertEqual(gh.comments[1][-1]["body"], "task-board release: feature/x: blocked on the card data file")
+        self.assertIsNone(board.claim_holder(gh.comments[1], "me"))
+
+    def test_release_refuses_another_branchs_claim(self):
+        gh = FakeGh(items=[item(1, "In Progress")], issues=[issue(1)], comments={1: [claimed("feature/other")]})
+        with self.assertRaises(board.Refused):
+            make_board(gh).release(1, "feature/x", "x")
+        self.assertEqual(gh.edits(), [])
+
+    def test_a_release_whose_comment_failed_finishes_on_a_rerun(self):
+        gh = FakeGh(items=[item(1, "In Progress")], issues=[issue(1)], comments={1: [claimed()]},
+                    fail_once_on=("issue", "comment"))
+        with self.assertRaises(board.GhError):
+            make_board(gh).release(1, "feature/x", "stopping")
+        make_board(gh).release(1, "feature/x", "stopping")
+        self.assertIsNone(board.claim_holder(gh.comments[1], "me"))
+        self.assertEqual(board.status_of(gh.items[0]), "Todo")
 
 
 class CommandLine(unittest.TestCase):
@@ -275,11 +360,24 @@ class CommandLine(unittest.TestCase):
     def test_exit_status_per_outcome(self):
         gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)])
         self.assertEqual(board.main(["ready"], gh=gh, cwd=self.folder), 0)
-        self.assertEqual(board.main(["done", "1", "--evidence", "x"], gh=gh, cwd=self.folder), 3)
+        self.assertEqual(board.main(["done", "1", "--branch", "feature/x", "--evidence", "x"], gh=gh,
+                                    cwd=self.folder), 3)
         self.assertEqual(board.main(["ready"], gh=FakeGh(fail_on=("project", "item-list")), cwd=self.folder), 2)
         empty = Path(tempfile.mkdtemp())
         (empty / ".git").mkdir()
         self.assertEqual(board.main(["ready"], gh=gh, cwd=empty), 1)
+
+    def test_unexpected_gh_output_exits_2_not_with_a_traceback(self):
+        class Garbled(FakeGh):
+            def run(self, *args):
+                return "not json" if args[:2] == ("project", "item-list") else super().run(*args)
+
+        self.assertEqual(board.main(["ready"], gh=Garbled(), cwd=self.folder), 2)
+
+    def test_release_and_done_need_a_branch(self):
+        for argv in (["release", "1", "--reason", "x"], ["done", "1", "--evidence", "x"]):
+            with self.assertRaises(SystemExit):
+                board.parse_args(argv)
 
     def test_priority_is_refused_with_triage(self):
         with self.assertRaises(SystemExit):

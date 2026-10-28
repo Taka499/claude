@@ -30,10 +30,10 @@ python3 -I ~/.claude/skills/task-board/board.py <step> …
 `gh` takes the project's narrow token from its `GH_CONFIG_DIR` (global `CLAUDE.md` § Git Operations). Exit status:
 - 0: done;
 - 1: bad usage, or no `.task-board.json`;
-- 2: `gh` failed, with its message;
+- 2: `gh` failed, or answered in a shape the helper does not expect, with the message. If the message says an issue was already created, do not file it again;
 - 3: refused, because the issue is in the wrong state or another session claimed it first.
 
-On 3, read the message and do not force the step another way.
+On 3, read the message and do not force the step another way. A step that failed partway (exit 2) can be rerun as it was: each one is ordered so that a rerun finishes it.
 
 ## Steps
 
@@ -44,8 +44,8 @@ On 3, read the message and do not force the step another way.
    - **`/backlog`, an idea parked for later:** `file --triage --title …`.
    - **A follow-up you find while working,** a bug outside your task or a gap the user should hear about: `file --triage --title … --body "Found while working on #N: …"`, then say in your reply "filed #M in Triage". Do not start on it: it is not ready work until the user moves it to Todo.
 4. **An ExecPlan:** when the work needs one, cite `#N` in the plan's purpose, and comment the plan's path on the issue once.
-5. **Stopping before it is done:** `release N --reason "…"`. It returns to Todo with your reason as a comment.
-6. **Done:** only after the user-approved merge into the integration branch (`develop`, or `main` where that is the only branch), run `done N --evidence "merge <sha> into develop; <checks that passed>; plan <path>"`. A finished branch that is not merged yet is not Done.
+5. **Stopping before it is done:** `release N --branch <branch> --reason "…"`. It returns to Todo with your reason as a comment. Only the branch holding the claim may release it.
+6. **Done:** only after the user-approved merge into the integration branch (`develop`, or `main` where that is the only branch), run `done N --branch <branch> --evidence "merge <sha> into develop; <checks that passed>; plan <path>"`. Only the branch holding the claim may close it. A finished branch that is not merged yet is not Done.
 
 ## Rules
 

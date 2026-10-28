@@ -13,9 +13,10 @@ Usage:
     python3 -I board.py file (--triage | --todo [--priority P1|P2|P3]) --title TITLE [--body BODY] [--blocked-by 3,7]
     python3 -I board.py queue N [--priority P1|P2|P3]          (only when the user asks: Triage is their gate)
     python3 -I board.py claim N --branch BRANCH [--worktree PATH]
-    python3 -I board.py release N --reason TEXT
-    python3 -I board.py done N --evidence TEXT
-Exit status: 0 done, 1 bad usage or configuration, 2 gh failed, 3 refused (wrong state, or another session's claim).
+    python3 -I board.py release N --branch BRANCH --reason TEXT
+    python3 -I board.py done N --branch BRANCH --evidence TEXT
+Exit status: 0 done, 1 bad usage or configuration, 2 gh failed or answered in an unexpected shape, 3 refused (wrong
+state, or another session's claim).
 Tests: python3 -m unittest discover -s skills/task-board
 """
 from __future__ import annotations
@@ -208,9 +209,12 @@ class Board:
         return self._fields
 
     def items(self) -> list:
+        # gh adds a field's values to the item list only when asked with --field. Without them every item would
+        # read as blank, which status_of() counts as Triage.
         data = json.loads(self.gh.run("project", "item-list", str(self.config.project), "--owner", self.config.owner,
-                                      "--format", "json", "--limit", LIMIT))
-        return data.get("items", [])
+                                      "--field", STATUS_FIELD, "--field", PRIORITY_FIELD, "--format", "json",
+                                      "--limit", LIMIT))
+        return data.get("items") or []
 
     def open_issues(self) -> list:
         return json.loads(self.gh.run("issue", "list", "--repo", self.config.repo, "--state", "open", "--limit",
@@ -245,7 +249,18 @@ class Board:
             raise Refused(f"issue #{number} is not on the board")
         return found
 
-    # -- the five steps --
+    def holder(self, number: int):
+        return claim_holder(self.comments(number), self.login())
+
+    def require_holder(self, number: int, branch: str) -> None:
+        holder = self.holder(number)
+        if holder != branch:
+            who = "no one" if holder is None else repr(holder)
+            raise Refused(f"issue #{number} is claimed by {who}, not {branch!r}; only the claiming branch may do this")
+
+    # -- the steps --
+    # Each step changes things in an order whose failure leaves the safer state, and a rerun of the same step
+    # finishes it. A gh failure after the first change says what was already done.
 
     def ready(self) -> list:
         return ready(self.items(), self.open_issues(), self.config.repo)
@@ -255,49 +270,75 @@ class Board:
         args = ["issue", "create", "--repo", self.config.repo, "--title", title, "--body", body]
         if blocked_by:
             args += ["--blocked-by", blocked_by]
-        url = self.gh.run(*args).strip().splitlines()[-1]
-        number = int(url.rstrip("/").rsplit("/", 1)[1])
-        item_id = json.loads(self.gh.run("project", "item-add", str(self.config.project), "--owner",
-                                         self.config.owner, "--url", url, "--format", "json"))["id"]
-        self.set_status(item_id, TODO if todo else TRIAGE)
-        if todo:
-            self.set_field(item_id, fields.priority_id, fields.priority_options[priority or DEFAULT_PRIORITY])
+        output = self.gh.run(*args).strip()
+        match = re.search(rf"(https://github\.com/{re.escape(self.config.repo)}/issues/(\d+))\s*$", output)
+        if not match:
+            raise GhError(f"gh issue create gave no issue URL for {self.config.repo}; check the repository's issues"
+                          f" for {title!r} before filing again. Output: {output[-200:]!r}")
+        url, number = match.group(1), int(match.group(2))
+        try:
+            # Auto-add may have put it on the board already; item-add then returns the same item.
+            item_id = json.loads(self.gh.run("project", "item-add", str(self.config.project), "--owner",
+                                             self.config.owner, "--url", url, "--format", "json"))["id"]
+            # Priority before Status: if setting Status fails, the item stays in Triage, the safe side.
+            if todo:
+                self.set_field(item_id, fields.priority_id, fields.priority_options[priority or DEFAULT_PRIORITY])
+            self.set_status(item_id, TODO if todo else TRIAGE)
+        except (GhError, KeyError, ValueError, TypeError) as error:
+            raise GhError(f"issue #{number} was created, but placing it on the board failed ({error}); it counts as"
+                          f" {TRIAGE}. Run `queue {number}` on the user's ask, or set it on the board.") from None
         return number
 
     def queue(self, number: int, priority: str | None) -> None:
         """Accept a Triage item into Todo. Triage is the user's gate, so a session runs this only when the user
-        asks for that issue to be worked on or queued."""
+        asks for that issue to be worked on or queued. Refuses a closed issue and one with a live claim, so a
+        Status misread as blank cannot pull finished or claimed work back into the queue."""
         item = self.item(number)
         if status_of(item) != TRIAGE:
             raise Refused(f"issue #{number} is in {status_of(item)}, not {TRIAGE}")
+        if number not in {issue["number"] for issue in self.open_issues()}:
+            raise Refused(f"issue #{number} is closed")
+        if self.holder(number) is not None:
+            raise Refused(f"issue #{number} has a live claim by {self.holder(number)!r}")
         fields = self.fields()
-        self.set_status(item["id"], TODO)
+        # Priority before Status: if setting Status fails, the item stays in Triage, and a rerun finishes it.
         self.set_field(item["id"], fields.priority_id, fields.priority_options[priority or DEFAULT_PRIORITY])
+        self.set_status(item["id"], TODO)
 
     def claim(self, number: int, branch: str, worktree: str | None) -> None:
         if number not in [entry["number"] for entry in self.ready()]:
             item = item_for(self.items(), number, self.config.repo)
             state = "not on the board" if item is None else f"in {status_of(item)}, or blocked, or closed"
             raise Refused(f"issue #{number} is not ready work ({state}); only Todo with no open blocker can be claimed")
-        self.set_status(self.item(number)["id"], IN_PROGRESS)
+        # The comment first: it is what decides a race. If setting the Status then fails, the item stays in Todo
+        # with this branch's claim, and a rerun of claim with the same branch finds the claim its own and finishes.
         self.comment(number, f"{CLAIM} {branch}" + (f" in {worktree}" if worktree else ""))
-        holder = claim_holder(self.comments(number), self.login())
+        holder = self.holder(number)
         if holder != branch:
             raise Refused(f"issue #{number} was claimed first by {holder!r}; this session backs off")
+        self.set_status(self.item(number)["id"], IN_PROGRESS)
 
-    def release(self, number: int, reason: str) -> None:
+    def release(self, number: int, branch: str, reason: str) -> None:
         item = self.item(number)
-        if status_of(item) != IN_PROGRESS:
+        if status_of(item) not in (IN_PROGRESS, TODO):
             raise Refused(f"issue #{number} is in {status_of(item)}, not {IN_PROGRESS}")
-        self.set_status(item["id"], TODO)
-        self.comment(number, f"{RELEASE} {reason}")
+        self.require_holder(number, branch)
+        # The Status first, then the comment that ends the claim. A rerun after a failed comment finds the item in
+        # Todo, still claimed by this branch, and posts the comment.
+        if status_of(item) == IN_PROGRESS:
+            self.set_status(item["id"], TODO)
+        self.comment(number, f"{RELEASE} {branch}: {reason}")
 
-    def done(self, number: int, evidence: str) -> None:
+    def done(self, number: int, branch: str, evidence: str) -> None:
         item = self.item(number)
         if status_of(item) != IN_PROGRESS:
             raise Refused(f"issue #{number} is in {status_of(item)}, not {IN_PROGRESS}; claim it before closing it")
+        self.require_holder(number, branch)
+        # Closing first: the board's "Item closed" workflow sets Done as well, so a failure setting Done leaves a
+        # closed issue the workflow still files under Done.
+        self.gh.run("issue", "close", str(number), "--repo", self.config.repo, "--comment",
+                    f"{DONE_MARK} {branch}: {evidence}")
         self.set_status(item["id"], DONE)
-        self.gh.run("issue", "close", str(number), "--repo", self.config.repo, "--comment", f"{DONE_MARK} {evidence}")
 
 
 # ---- command line -----------------------------------------------------------------------------------------------
@@ -323,9 +364,11 @@ def parse_args(argv: list) -> argparse.Namespace:
     claim.add_argument("--worktree")
     release = steps.add_parser("release")
     release.add_argument("number", type=int)
+    release.add_argument("--branch", required=True)
     release.add_argument("--reason", required=True)
     done = steps.add_parser("done")
     done.add_argument("number", type=int)
+    done.add_argument("--branch", required=True)
     done.add_argument("--evidence", required=True)
     args = parser.parse_args(argv)
     if args.step == "file" and args.triage and args.priority:
@@ -364,10 +407,10 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None) -> int:
             board.claim(args.number, args.branch, args.worktree)
             print(f"claimed #{args.number} for {args.branch}")
         elif args.step == "release":
-            board.release(args.number, args.reason)
+            board.release(args.number, args.branch, args.reason)
             print(f"released #{args.number} to {TODO}")
         else:
-            board.done(args.number, args.evidence)
+            board.done(args.number, args.branch, args.evidence)
             print(f"closed #{args.number} as {DONE}")
         return 0
     except BoardError as error:
@@ -379,6 +422,10 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None) -> int:
     except Refused as error:
         print(f"board.py: refused: {error}", file=sys.stderr)
         return 3
+    except (KeyError, ValueError, TypeError, IndexError, AttributeError) as error:
+        # gh answered in a shape this script does not expect: report it as gh's failure, not a traceback.
+        print(f"board.py: unexpected output from gh ({type(error).__name__}: {error})", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
