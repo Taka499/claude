@@ -237,6 +237,17 @@ class ConfigAndFields(unittest.TestCase):
         with self.assertRaisesRegex(board.BoardError, "Urgent, High, Medium, Low"):
             field.priority("P1")
 
+    def test_an_option_without_an_integer_priority_stops_rather_than_sorting_last(self):
+        for bad in (None, "2", True, 2.0):
+            fields = json.loads(json.dumps(ISSUE_FIELDS))
+            fields[0]["options"][0]["priority"] = bad
+            with self.assertRaisesRegex(board.GhError, "High"):
+                board.parse_priority_field(json.dumps(fields))
+        fields = json.loads(json.dumps(ISSUE_FIELDS))
+        del fields[0]["options"][1]["priority"]
+        with self.assertRaisesRegex(board.GhError, "Low"):
+            board.parse_priority_field(json.dumps(fields))
+
     def test_priority_is_the_field_named_priority_not_another_with_the_same_options(self):
         only_effort = [field for field in ISSUE_FIELDS if field["name"] != "Priority"]
         with self.assertRaisesRegex(board.BoardError, "Issue Fields"):
@@ -385,6 +396,18 @@ class Ready(unittest.TestCase):
         elsewhere = [issue(1, blocked_by=[{"number": 2, "url": "https://github.com/o/other/issues/2"}])]
         self.assertEqual(self.ready_numbers([item(1, "Todo")], elsewhere), [])
 
+    def test_a_blocker_in_an_unknown_state_stops_rather_than_counting_as_closed(self):
+        for state in ("MERGED", "open-ish", "DRAFT"):
+            with self.assertRaisesRegex(board.GhError, "unknown state"):
+                self.ready_numbers([item(1, "Todo")], [issue(1, blocked_by=[{"number": 2, "state": state}])])
+
+    def test_blockers_missing_or_of_another_shape_stop_rather_than_reading_as_none(self):
+        missing = {"number": 1, "title": "x", "createdAt": "2026-10-01T00:00:00Z"}
+        for broken in (missing, issue(1, blocked_by="2"), dict(issue(1), blockedBy={"nodes": None}),
+                       dict(issue(1), blockedBy=None)):
+            with self.assertRaises(board.GhError):
+                self.ready_numbers([item(1, "Todo")], [broken])
+
     def test_blockers_given_as_graphql_nodes(self):
         nodes = [issue(1, blocked_by={"nodes": [{"number": 2, "state": "OPEN"}]})]
         self.assertEqual(self.ready_numbers([item(1, "Todo")], nodes), [])
@@ -422,6 +445,14 @@ class ClaimHolder(unittest.TestCase):
             self.assertIsNone(board.claim_holder(comments, "me"))
         later = comments + [comment("task-board claim: feature/c", "12:00")]
         self.assertEqual(board.claim_holder(later, "me"), "feature/c")
+
+    def test_an_own_comment_without_a_timestamp_stops_rather_than_sorting_first(self):
+        undated = {"body": "task-board claim: feature/b", "author": {"login": "me"}}
+        with self.assertRaises(board.GhError):
+            board.claim_holder([comment("task-board claim: feature/a", "10:00"), undated], "me")
+        stranger = {"body": "task-board claim: feature/b", "author": {"login": "stranger"}}
+        self.assertEqual(board.claim_holder([comment("task-board claim: feature/a", "10:00"), stranger], "me"),
+                         "feature/a")
 
     def test_ordinary_comments_are_ignored(self):
         self.assertIsNone(board.claim_holder([comment("looks good", "10:00")], "me"))

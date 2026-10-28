@@ -120,6 +120,24 @@ Revised after the research, on the user's choice "All of it now", 2026-10-29. Th
 
   All 57 tests passed. No ref moved. The new files in `.git` were the automatic security review's markers for the commit (`sg-reviewed-shas`, `sg-reviewed-diffs`), not Codex's.
 
+- **Codex review of the revision, pass 2 at e9881ba: CHANGES REQUESTED.** It confirmed pass 1's fixes, legitimate empty and last pages included. Two findings, both accepted:
+  - **High:** a blocker whose state was anything but `OPEN` counted as closed, so a new or malformed state could make blocked work look ready. Now only `OPEN` and `CLOSED` are known, and any other state stops the run.
+  - **Medium:** a Priority option without a `priority` number sorted last. GitHub documents the number as nullable, but the ready list's order rests on it. So an option without an integer one now stops the run, with a message to set the order in the organization's issue-field settings.
+  - **Low:** the texts' claim of failing closed was overstated until these two. It holds now.
+- **My own sweep of every remaining fallback in `board.py`,** after pass 2:
+  - **Two more fixed:**
+    - an issue without `blockedBy`, or with one of another shape, read as "no blockers", and now stops the run;
+    - a comment by this account without `createdAt` sorted first, which could change who holds a claim, and now stops the run.
+  - **Left as they are, because each only makes work look not ready:** an item whose content is missing (a redacted or draft item is skipped), a missing repository, a blocker without a state.
+  - **Left lenient on purpose:** a missing title or creation date only affects the display, and the order among ready items.
+
+  72 tests, OK on 3.9.6 and 3.14.9; the replay ran, 25 shapes, nothing skipped. Each fix was seen failing against a broken copy:
+  - an unknown blocker state;
+  - an unranked option;
+  - a missing `blockedBy`;
+  - a `blockedBy` of another shape;
+  - an undated own comment.
+
 ## Verification
 
 - **The schema, checked 2026-10-29.** In GitHub's public GraphQL schema (docs.github.com/public/fpt/schema.docs.graphql, 1,561,946 bytes), every field and input the operations use exists, and none is `@deprecated`:

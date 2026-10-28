@@ -210,14 +210,19 @@ def mutation_id(response_json: str, *path: str) -> str:
 def parse_priority_field(issue_fields_json: str) -> PriorityField:
     """The organization's issue field "Priority", from `GET /orgs/{org}/issue-fields`. Its options are listed in no
     useful order (measured: High, Low, Medium, Urgent), so they are ranked by each option's own "priority" number,
-    1 the most urgent; an option without one goes last, in listed order."""
+    1 the most urgent. GitHub documents that number as nullable, but the ready list's order rests on it, so an option
+    without an integer one stops the run: set the order in the organization's issue-field settings."""
     for field in json.loads(issue_fields_json):
         if field.get("name") == PRIORITY_FIELD and field.get("data_type") == "single_select" and field.get("options"):
             listed = list(enumerate(field["options"]))
             if not all(isinstance(option.get("name"), str) and option["name"] for _, option in listed):
                 raise GhError(f"the organization's {PRIORITY_FIELD} field has an option without a name")
-            ranked = sorted(listed, key=lambda pair: (pair[1].get("priority") is None,
-                                                      pair[1].get("priority") or 0, pair[0]))
+            unranked = [option["name"] for _, option in listed
+                        if not isinstance(option.get("priority"), int) or isinstance(option["priority"], bool)]
+            if unranked:
+                raise GhError(f"the organization's {PRIORITY_FIELD} option(s) {', '.join(unranked)} have no priority"
+                              f" number to rank by; set the order in the organization's issue-field settings")
+            ranked = sorted(listed, key=lambda pair: (pair[1]["priority"], pair[0]))
             return PriorityField(int(field["id"]), tuple(option["name"] for _, option in ranked))
     raise BoardError(f"the organization has no single-select issue field {PRIORITY_FIELD!r} with options (the"
                      f" token needs Organization permissions: Issue Fields, read)")
@@ -273,11 +278,16 @@ def item_for(items: list, number: int, repo: str):
 
 def open_blockers(issue: dict, open_numbers: set, repo: str) -> list:
     """Numbers of the blockers still open. gh's `blockedBy` may come as a list or as {"nodes": [...]}. A blocker
-    with a state is open if that state is OPEN. One without a state is open if it is among this repository's open
+    with a state is open if that state is OPEN, closed if CLOSED, and any other state stops the run: an unknown
+    state must not let blocked work look ready. One without a state is open if it is among this repository's open
     issues, and also when it cannot be placed (no number, or another repository): in doubt, nothing starts early."""
-    value = issue.get("blockedBy") or []
+    if "blockedBy" not in issue:  # absent would read as "no blockers" and let blocked work look ready
+        raise GhError(f"issue {issue.get('number')!r} came back without blockedBy")
+    value = issue["blockedBy"]
     if isinstance(value, dict):
-        value = value.get("nodes") or []
+        value = value.get("nodes")
+    if not isinstance(value, list):
+        raise GhError(f"issue {issue.get('number')!r} has blockedBy of an unexpected shape: {issue['blockedBy']!r}")
     blockers = []
     for blocker in value:
         number = blocker.get("number")
@@ -285,6 +295,8 @@ def open_blockers(issue: dict, open_numbers: set, repo: str) -> list:
         if state:
             if state == "OPEN":
                 blockers.append(number)
+            elif state != "CLOSED":
+                raise GhError(f"blocker {number!r} has an unknown state {blocker.get('state')!r}")
             continue
         elsewhere = repo_of(blocker) not in ("", repo)
         if number is None or elsewhere or number in open_numbers:
@@ -322,14 +334,22 @@ def ready(items: list, issues: list, repo: str, priorities, priority_of: dict) -
                                              entry["number"]))
 
 
+def own_comments(comments: list, login: str) -> list:
+    """The comments `login` wrote, oldest first. Order decides who holds a claim, so one of them without a
+    timestamp stops the run rather than sorting first."""
+    own = [comment for comment in comments if ((comment.get("author") or {}).get("login") or "") == login]
+    for comment in own:
+        if not isinstance(comment.get("createdAt"), str) or not comment["createdAt"]:
+            raise GhError("a comment by this account came back without createdAt")
+    return sorted(own, key=lambda comment: comment["createdAt"])
+
+
 def claim_holder(comments: list, login: str):
     """The branch holding the claim: the earliest claim comment since the last release or done comment, or None.
     Only comments written by `login`, the account every session acts as, count. On a public repository anyone can
     comment, and a stranger's marker comment must not take, block or end a claim."""
     holder = None
-    for comment in sorted(comments, key=lambda comment: comment.get("createdAt", "")):
-        if ((comment.get("author") or {}).get("login") or "") != login:
-            continue
+    for comment in own_comments(comments, login):
         body = (comment.get("body") or "").strip()
         if body.startswith(RELEASE) or body.startswith(DONE_MARK):
             holder = None
@@ -342,9 +362,7 @@ def last_marker(comments: list, login: str):
     """The latest of this account's marker comments, as (kind, branch), kind being claim, release or done; or
     None. Lets `done` recognise its own earlier, half-finished run."""
     last = None
-    for comment in sorted(comments, key=lambda comment: comment.get("createdAt", "")):
-        if ((comment.get("author") or {}).get("login") or "") != login:
-            continue
+    for comment in own_comments(comments, login):
         body = (comment.get("body") or "").strip()
         for kind, marker in (("claim", CLAIM), ("release", RELEASE), ("done", DONE_MARK)):
             if body.startswith(marker):
