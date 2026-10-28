@@ -105,10 +105,14 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
   - `sandbox.filesystem.allowRead` holding that same folder.
 
   The folder holds a fine-grained token in plain text.
-  - **Keep the user-level deny.** Without it, every sandboxed command on the machine could read and use any project's token, Codex included. Measured on 2026-10-28: from a session in this repository, which had not opted in, `gh` read gkms-contest-ai's token and used it.
-    - The sandbox docs say "when read rules overlap, the rule with the narrower path applies", and that the levels' arrays merge. So a project's `allowRead` of its own folder re-opens only that folder.
-    - Nothing in managed settings locks the sandbox here; a lock would make the docs' rules ignore such an `allowRead`.
-  - **One folder per owner and visibility, shared by the projects that use it:** `tia-tools-private`, `tia-tools-public`. A new repository is added to the existing token on GitHub, with no new token.
+  - **Keep the user-level deny, and its two permission rules.** `sandbox.filesystem.denyRead` holds `~/.config/gh-tokens`, and `permissions.deny` holds `Read(~/.config/gh-tokens/**)` and `Edit(~/.config/gh-tokens/**)`.
+    - **Why:** without them, every sandboxed command on the machine could read and use any project's token, Codex included. Measured on 2026-10-28: from a session in this repository, which had not opted in, `gh` read gkms-contest-ai's token and used it.
+    - **The `Edit` rule** also keeps the file tools from writing a `gh` alias into a token folder's `config.yml`.
+    - **How the re-allow works:** the sandbox docs say "when read rules overlap, the rule with the narrower path applies", and that the levels' arrays merge. So a project's `allowRead` of its own folder re-opens only that folder.
+    - **No lock here:** nothing in managed settings locks the sandbox. A lock would make the sandbox ignore such an `allowRead`.
+  - **The boundary is the sandbox, not the session.** A command run outside the sandbox, a hook or an MCP server can still read the folder. Of those, the command asks first.
+    - **A path-based deny does not follow hard links,** so a hard link made elsewhere to a token file would bypass it. Keep each token file's link count at 1 (`stat -f %l`), and make no copies outside the folder.
+  - **One folder per owner and visibility, shared by the projects that use it:** `tia-tools-private`, `tia-tools-public`. A new repository is added to the existing token on GitHub, with no new token. The cost is that each such project's sessions can also write issues in the others' repositories.
   - **Never mix public and private repositories in one token.** A project with private data would then hold a way to publish it.
   - **Keep the token narrow.** Every sandboxed command in a project that re-allows the folder can read it, Codex included:
     - one resource owner, and only the opted-in repositories of one visibility;

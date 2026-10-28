@@ -41,9 +41,11 @@ This is the user-level `~/.claude/CLAUDE.md`, applied to every project on this m
     - `GH_CONFIG_DIR` and `SSL_CERT_FILE` in `env`;
     - `GH_CONFIG_DIR`'s folder in `sandbox.filesystem.allowRead`.
 
-    The folders sit under `~/.config/gh-tokens/`, which `~/.claude/settings.json` denies to every sandboxed read. Without that deny, any session on the machine could read and use any project's token. With it, only a project that re-allows a folder can.
+    The folders sit under `~/.config/gh-tokens/`. `~/.claude/settings.json` denies that path to every sandboxed read, and keeps Claude's own file tools out with `Read` and `Edit` deny rules. Without those, any session on the machine could read and use any project's token. With them, only sandboxed commands in a project that re-allows a folder can.
 
-    There is one folder per owner and visibility (`<owner>-private`, `<owner>-public`), shared by the projects that use it. Each holds a fine-grained token with:
+    The boundary is the sandbox. A command run outside it, a hook or an MCP server can still read the folder. Of those, the command asks first.
+
+    There is one folder per owner and visibility (`<owner>-private`, `<owner>-public`), shared by the projects that use it. Each such project's sessions can therefore also write issues in the others' repositories. Each folder holds a fine-grained token with:
     - only that owner's opted-in repositories of that visibility, so a new repository is added to the existing token on GitHub, with no new token;
     - only the permissions their use needs (Issues write for an issue tracker);
     - never Contents write.

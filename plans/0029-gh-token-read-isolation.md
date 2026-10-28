@@ -13,7 +13,9 @@ This plan:
 
 ## Design
 
-- **One parent folder, denied.** Token folders live under `~/.config/gh-tokens/`, and `~/.claude/settings.json` adds that path to `sandbox.filesystem.denyRead`.
+- **One parent folder, denied.** Token folders live under `~/.config/gh-tokens/`. `~/.claude/settings.json` adds that path to `sandbox.filesystem.denyRead`, plus two permission rules for Claude's own file tools, which the sandbox does not cover: `Read(~/.config/gh-tokens/**)` and `Edit(~/.config/gh-tokens/**)` in `permissions.deny`. The `Edit` rule also stops the file tools from writing a `gh` alias into a folder's `config.yml`.
+  - **The boundary is sandboxed commands.** A command run outside the sandbox, a hook or an MCP server can still read the folder; of those, the command asks first.
+  - **A path-based deny does not follow a hard link.** A link made elsewhere to a token file would expose it. Each token file keeps a link count of 1, and no copies are made outside the folder.
   - It denies only that folder, not `~/.config`: sandboxed git reads `~/.config/git/` (its global ignore file and branch-protection hook).
   - `~/.config` is outside every `allowWrite`, so sessions still cannot write the folders. Plan 0027's reason holds: `gh` runs shell aliases from `config.yml`.
 - **Re-allowed per project.** A project that uses a folder lists it in `sandbox.filesystem.allowRead` of its own `.claude/settings.local.json`, beside `GH_CONFIG_DIR` and `SSL_CERT_FILE` in `env`. Per the sandboxing docs:
@@ -43,7 +45,7 @@ This plan:
 - **`README.md` § The one file this repo does not deploy:** the per-project token bullet becomes the token-folder bullet, with the deny as an invariant. It also corrects the claim about who can read a token.
 - **`plans/0027-gh-sandboxed-per-project.md`:** a dated correction note.
 - **The user's settings, hand-kept:**
-  - `~/.claude/settings.json`: add `"~/.config/gh-tokens"` to `sandbox.filesystem.denyRead`.
+  - `~/.claude/settings.json`: add `"~/.config/gh-tokens"` to `sandbox.filesystem.denyRead`, and `"Read(~/.config/gh-tokens/**)"` and `"Edit(~/.config/gh-tokens/**)"` to `permissions.deny`.
   - Move `~/.config/gh-tia-tools` to `~/.config/gh-tokens/tia-tools-private`.
   - gkms-contest-ai's `.claude/settings.local.json`: `GH_CONFIG_DIR` becomes `/Users/ghensk/.config/gh-tokens/tia-tools-private`, and `sandbox.filesystem.allowRead` gets `["~/.config/gh-tokens/tia-tools-private"]`.
   - A new fine-grained token: owner `tia-tools`, only `tia-tools/gmks-hif-final-stats`, Issues read and write, an expiry. Stored with `pbpaste | GH_CONFIG_DIR=~/.config/gh-tokens/tia-tools-public gh auth login --hostname github.com --insecure-storage --with-token`.
@@ -74,12 +76,22 @@ This plan:
 - **One token per owner and visibility** over one per project. The user asked not to set a token per repository. Sharing costs only cross-repository writes within one visibility.
 - **Not chosen: `ask` rules on `gh issue create` and similar writes.** A rule matches command text, and any script that reads the token from the folder passes it. The folder's read rules are what bind every command.
 - **No ADR.** Removing the deny and the `allowRead` entries reverses it, so it fails gate one (hard to reverse).
+- **Codex review, one pass on `origin/master...HEAD` at a37901d: CHANGES REQUESTED.** Four findings, all accepted:
+  - **Medium:** the texts said a "session" was confined, but the deny binds only sandboxed commands. Claude's Read tool, MCP servers, hooks and unsandboxed commands are outside it. Now `Read` and `Edit` deny rules cover the file tools, and the texts name the boundary.
+  - **Medium:** a hard link outside the denied folder would bypass a path-based deny. Now a link count of 1, and no copies, is an invariant, with a check under Verification.
+  - **Medium:** the cost of sharing one token was stated only here. Now `CLAUDE.md` and `README.md` say that each sharing project's sessions can write issues in the others' repositories.
+  - **Low:** Verification named `gkms-coord` without its project. Now it says which session that is.
+
+  No second pass: each fix states a boundary or adds a deny rule and a check, in the direction its finding asked, and the measurements below test them.
+- **Did any Codex run read the token while it was exposed?** No. The four Codex logs written while gkms-contest-ai's token was readable from every session (2026-10-28 20:13 to 2026-10-29 00:42) mention its folder only in quoted diffs and docs. Codex's commands there were `rg` and `git diff` over repository files, and no log holds a token-shaped string (`github_pat_` and 20 or more characters).
 
 ## Verification
 
 After the user's changes:
 - **From this repository,** sandboxed: reading `~/.config/gh-tokens/tia-tools-private/hosts.yml` is refused, and `GH_CONFIG_DIR=… gh auth status` cannot log in.
-- **gkms-coord,** sandboxed: `gh auth status` logs in from `~/.config/gh-tokens/tia-tools-private/hosts.yml`, and `gh issue list` works.
+- **From this repository, with the Read tool:** reading that file is refused by the permission rule.
+- **Link counts:** every file under `~/.config/gh-tokens/` has a link count of 1.
+- **`gkms-coord`, gkms-contest-ai's coordinating session,** sandboxed: `gh auth status` logs in from `~/.config/gh-tokens/tia-tools-private/hosts.yml`, and `gh issue list` works. If the `Read` deny rule turns out to be merged into the sandbox's read rules in a way that overrides the project's `allowRead`, this check fails. The rule then comes out, and the file tools' access is recorded as left open.
 - **A session in gmks-hif-final-stats,** sandboxed:
   - `gh auth status` logs in from `~/.config/gh-tokens/tia-tools-public/hosts.yml`;
   - a title-less issue request gets 422 in its repository and 403 in `tia-tools/gkms-contest-ai`;
