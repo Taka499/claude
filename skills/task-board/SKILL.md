@@ -30,13 +30,14 @@ python3 -I ~/.claude/skills/task-board/board.py <step> …
 `gh` takes the project's narrow token from its `GH_CONFIG_DIR` (global `CLAUDE.md` § Git Operations). Exit status:
 - 0: done;
 - 1: bad usage, or no `.task-board.json`;
-- 2: `gh` failed, or answered in a shape the helper does not expect, with the message. If the message says an issue was already created, do not file it again;
+- 2: `gh` failed, or answered in a shape the helper does not expect, with the message. The helper fails closed: an unexpected Status or Priority value stops it, and never reads as Triage or as the default priority. If the message says an issue was already created, do not file it again;
 - 3: refused, because the issue is in the wrong state or another session claimed it first.
 
 On 3, read the message and do not force the step another way. A step that failed partway (exit 2) can be rerun as it was: each one is ordered so that a rerun finishes it.
 
 ## Steps
 
+0. **Once per session, before the first step:** `check`. It reads the board, the Priority field and a few issues the way the other steps do, and changes nothing. If GitHub changed a shape the helper relies on, renamed the Status field, or stopped supporting the pinned REST version, it stops with exit 2 and says what. A `warn:` line, such as the pinned REST version being marked deprecated, goes to the user, and the session can carry on.
 1. **What is next:** `ready` (`--json` for a list to parse). Take the top item, unless the user names one.
 2. **Claim it before any work:** `claim N --branch <branch> --worktree <path>`. This moves it to In Progress and comments the branch. If another session's claim comment is earlier, the step exits 3: leave that issue and take the next. If the user asks for work on an issue still in Triage, run `queue N [--priority <option>]` first. Only the user's ask allows that, because Triage is their gate.
 3. **Filing:**
@@ -89,4 +90,4 @@ Most of this happens in GitHub's web interface, by the user, once per project:
    - commit `.task-board.json` with `{"owner": "<org>", "project": <number>, "repo": "<org>/<name>"}`;
    - add to its `CLAUDE.md` the line "Tasks live on the GitHub board `<org>` project `<number>`; work them with the `task-board` skill";
    - give the project's `.claude/settings.local.json` its token folder (global `CLAUDE.md` § Git Operations).
-7. **Check:** `board.py ready` runs. If a field or option is missing, the helper names it.
+7. **Check:** `board.py check` passes. If a field or option is missing, the helper names it.

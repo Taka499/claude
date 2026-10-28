@@ -56,24 +56,41 @@ The user asked whether GraphQL could break as well. A research agent read GitHub
 
 ## Design
 
-- **The board's items through GraphQL, Status asked for by name.** The query `ITEMS_QUERY` asks for each item's `id`, `fieldValueByName(name: "Status")` and its issue's `number`, `title`, `url` and `repository`. It pages 100 at a time. A missing Status then truly means the item has none, which counts as Triage (plan 0030 D14). `gh project item-list` is no longer used. A page cursor that comes back twice is reported as an error, not looped on.
-- **Priority from the organization's issue field `Priority`:**
-  - its options come from `GET /orgs/{owner}/issue-fields`, ranked by each option's `"priority"` number, 1 the most urgent, not by listed order. An option without a number goes last;
-  - the field is picked by name, so `Effort`, with the same option names, is never taken;
-  - an issue's value is read with `GET …/issue-field-values`, only for the ready candidates;
-  - it is written with `POST …/issue-field-values` by option name, the body passed on stdin (`--input -`);
-  - the default for an issue without one stays the middle option (Medium).
-- **Status is still written with `gh project item-edit`.** The field list still gives its IDs.
-- **What does not change:** claims, holders, blockers, reruns and the order of each step. Priority goes before Status in `file` and `queue`, as before.
+Revised after the research, on the user's choice "All of it now", 2026-10-29. The first version of this fix still used four `gh project` subcommands. It was reviewed LGTM at 5c7005e, below, and then replaced.
+
+- **The board only through GraphQL, via `gh api graphql`.** It is one contract: GA, breaking changes announced three months ahead, every field used checked against the public schema, none deprecated.
+  - **`BOARD_QUERY`** asks for the board's `id`, its field `field(name: "Status")` with `__typename`, `id` and `options { id name }`, and the items 100 to a page. Each item comes with `fieldValueByName(name: "Status") { __typename … on ProjectV2ItemFieldSingleSelectValue { name } }` and its issue's `number`, `title`, `url` and `repository`.
+  - **`SET_STATUS_MUTATION`** is `updateProjectV2ItemFieldValue`, with `singleSelectOptionId`. It must answer with the same item ID.
+  - **`ADD_ITEM_MUTATION`** is `addProjectV2ItemById`. The issue's node ID comes from `GET repos/{repo}/issues/{n}`.
+  - `gh project view`, `field-list`, `item-edit` and `item-add` are no longer used.
+- **REST with the version named.** Every REST call sends `X-GitHub-Api-Version: 2022-11-28` itself, supported until at least 2028-03-10, so a change of `gh`'s default cannot move it. That covers the issue fields, their values, an issue's node ID and the list of versions.
+- **Fail closed.** Any of these stops the run with exit 2, or exit 1 for the board's configuration, instead of being read as Triage or Medium:
+  - a Status value that is not a named single-select option;
+  - a missing, renamed or retyped Status field;
+  - a missing option;
+  - a Priority entry without an option name;
+  - an option without a name;
+  - a mutation that answers without an ID, or for another item;
+  - GraphQL `errors`;
+  - a page cursor that does not advance.
+- **`check`, read-only.** It reads the board, the Priority field, the open issues and up to three issues' Priority, the account, `GET versions` and the headers of one REST call. It fails if the pinned version is no longer listed, and warns on `Deprecation` or `Sunset`. The skill has a session run it once before its first step.
+- **A test that runs the real `gh`.** Every distinct command the other tests produced, 25 shapes covering all 15 kinds of call, is replayed through the installed `gh`. Its host is a closed local port and its token a dummy. `gh` checks flags, argument combinations and `--json` field names before it connects, so each must reach `dial tcp`. A refused argument fails the test, with nothing sent.
+- **Unchanged:** Priority from the organization's issue field, ranked by its `"priority"` number and read and written per issue; claims, holders, blockers, reruns and step order.
 
 ## Changes
 
 - `skills/task-board/board.py`:
-  - `parse_status_field`, `parse_priority_field`, `parse_item_page`, `priority_value` and `ready_candidates`;
-  - `Board.items` through GraphQL, `priority_field`, `priority_of` and `set_priority`;
+  - the three GraphQL operations and the pinned REST version;
+  - `parse_board_page`, `mutation_id`, `graphql_data`, `parse_priority_field`, `priority_value` (fails closed), `parse_headers` and `ready_candidates`;
+  - `Board.graphql`, `rest`, `board`, `add_to_board`, `set_status`, `set_priority` and `check`;
   - `Gh.run` takes a request body.
-- `skills/task-board/test_board.py`: 57 tests. The fixtures for the field list and the organization's issue fields are trimmed from the captures.
-- `skills/task-board/SKILL.md`: what Priority is, the token's Issue Fields permission, and setup step 4.
+- `skills/task-board/test_board.py`: 66 tests. The fixtures for the Status options and the organization's issue fields are trimmed from the captures. The last test replays every command through the real `gh`.
+- `skills/task-board/SKILL.md`:
+  - what Priority is;
+  - the token's Issue Fields permission;
+  - `check` as step 0;
+  - exit 2 failing closed;
+  - setup steps 4 and 7.
 - Global `CLAUDE.md` and `README.md`: the token permission Issue Fields, Read-only, never write.
 
 ## Decision Log (2026-10-29)
@@ -82,6 +99,8 @@ The user asked whether GraphQL could break as well. A research agent read GitHub
 - **GraphQL for the items, over `item-list` without `--field`.** Whether `item-list --format json` carries field values could not be seen on an empty board. Even if it does today, `--field`'s meaning has just changed under the helper. GraphQL asks for exactly the values the helper relies on.
 - **The organization's Priority field, read-only on the organization side** (the user chose the field; read-only follows least privilege). Writing values needs only the Issues permission the token already has. Issue Fields write would let any session in the project change the organization's field definitions.
 - **Rank by the options' `"priority"` number.** The captured options were listed out of order. Ranking by position would have made High the most urgent.
+- **GraphQL for every board operation, REST pinned for issue fields, fail closed, `check`, and the real-`gh` test** (the user, "All of it now", after the research above). A rename or a shape change now stops the helper and names the cause, instead of quietly misreading the board.
+- **Not built: a weekly job outside the helper** that diffs GitHub's public GraphQL schema and REST description for the exact fields used. The schema was checked by hand on 2026-10-29, below. The user can watch GitHub's changelog feed and `gh`'s release feed.
 - **No ADR.** It is a fix to a helper, reversible.
 - **Codex review, one pass on `origin/master...HEAD` at 5c7005e: LGTM, no findings.** It confirmed:
   - the GraphQL handling: null Status, items that are not issues, paging with the loop guard, GraphQL errors, a null board, and `-F number=1` passing an integer;
@@ -92,7 +111,26 @@ The user asked whether GraphQL could break as well. A research agent read GitHub
 
 ## Verification
 
-- **Tests:** `python3 -m unittest discover -s skills/task-board`, 57 tests, OK on 3.9.6 and 3.14.9. Each new part was seen failing against a broken copy:
+- **The schema, checked 2026-10-29.** In GitHub's public GraphQL schema (docs.github.com/public/fpt/schema.docs.graphql, 1,561,946 bytes), every field and input the operations use exists, and none is `@deprecated`:
+  - `Organization.projectV2(number: Int!)`;
+  - `ProjectV2.id`, `field(name: String!)` and `items`;
+  - `ProjectV2Item.id`, `fieldValueByName` and `content`;
+  - `ProjectV2ItemFieldSingleSelectValue.name`;
+  - `ProjectV2SingleSelectField.id` and `options`;
+  - `ProjectV2SingleSelectFieldOption.id: String!` and `name: String!`;
+  - the two mutations and their payloads, and their inputs: `projectId`, `itemId`, `fieldId`, `value.singleSelectOptionId: String`, `contentId`.
+
+  The unions `ProjectV2FieldConfiguration`, `ProjectV2ItemFieldValue` and `ProjectV2ItemContent` (DraftIssue | Issue | PullRequest) hold the types the fragments name.
+- **Tests, after the revision:** 66, OK on 3.9.6 and 3.14.9. The real-`gh` test replayed 25 shapes, 0 skipped. Seen failing against broken copies:
+  - a `--json` field `gh` lacks, caught only by the real-`gh` test, the same kind of failure as the original bug;
+  - a Status of another shape read leniently;
+  - a missing Status field let through;
+  - a Priority entry without a name let through;
+  - REST calls without the pinned version;
+  - a mutation answer for another item accepted;
+  - `check` ignoring `Deprecation`/`Sunset`;
+  - `check` ignoring an unlisted version.
+- **Tests, first version:** `python3 -m unittest discover -s skills/task-board`, 57 tests, OK on 3.9.6 and 3.14.9. Each new part was seen failing against a broken copy:
   - Priority ranked by listed order;
   - another single-select field taken;
   - a missing Status read as Todo;
