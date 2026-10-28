@@ -36,6 +36,7 @@ From the Decision Log below, D1–D11:
 - **The tool (D10):** the `task-board` skill describes all of this. Its helper (`skills/task-board/board.py`, standard-library Python, tested) runs the board operations by name, through `gh`, and looks up the board's internal IDs itself:
   - `ready`;
   - `file --triage|--todo`;
+  - `queue`, only on the user's ask (D15);
   - `claim`;
   - `release`;
   - `done`.
