@@ -95,8 +95,11 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
     - **Contents write** is needed to merge a PR or push, so the token can do neither.
     - **Scope:** it cannot reach a public repository or one outside the token's scope.
   - **Keep the folder outside every session's write area.** `gh` runs aliases from its `config.yml`, and an alias starting with `!` runs a shell command, which a `gh` run outside the sandbox would execute.
-  - **Never put a token in the default `~/.config/gh/hosts.yml`.** `gh` reads a token file before the keychain, outside the sandbox too (measured on 2026-10-28), so every `gh` call in every project would use it.
-  - **The project's setting reaches unsandboxed commands too,** so `gh` there runs with the narrow token either way. What it cannot do goes to the user.
+  - **Store it with `gh auth login --insecure-storage`, never as a top-level `oauth_token:`.** Where the token sits in `hosts.yml` decides whether `gh` reads it before the keychain or after. Measured on 2026-10-28 with gh 2.103.0:
+    - **Under the account (`users: <login>: oauth_token:`):** this is what the login command writes. Outside the sandbox `gh` uses the keychain login first, so in the project, a `gh` command the token cannot do still runs unsandboxed, with the user's login, as elsewhere. Inside the sandbox, where the keychain is denied, `gh` falls back to the token.
+    - **At the top level (`github.com: oauth_token:`):** read before the keychain. A project's unsandboxed `gh` would then use the narrow token too. In the default `~/.config/gh` it would replace the user's login in every `gh` call in every project.
+
+    The project's `GH_CONFIG_DIR` reaches unsandboxed commands too, since a settings `env` does.
 
   Evidence: [`plans/0027-gh-sandboxed-per-project.md`](plans/0027-gh-sandboxed-per-project.md).
 - Hook commands must be self-contained and portable. They run under `sh -c` on macOS/Linux and Git Bash on Windows, so a bare `afplay …` raises a non-blocking hook error on every Windows notification; branch on `uname -s` inline and end with `exit 0`.
