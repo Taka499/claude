@@ -34,6 +34,13 @@ Plan 0025 removed `hooks/git_gate.py`. Two lessons from it had lived only in tha
 - **Additive.** Nothing existing is replaced.
 - **The example command uses `-I`.** It shows both lessons in one line.
 - **No ADR.** Prose, trivially reversible.
+- **Codex review, one pass on `origin/master...HEAD` at 2f697f3: CHANGES REQUESTED.** All findings accepted:
+  - Medium: "cannot start or crashes fails open" generalised from crashes. A crash that exits 2 blocks. The headline and first sentence now state the exact rule: 0 succeeds, 2 blocks, any other status is a non-blocking error.
+  - Low: "disappears when the default moves" claimed more than plan 0023 shows. The note now gives the actual cause: the default moved to an uninstalled 3.15, and `python@3.14` stopped linking its unversioned names.
+  - Low: "before the standard library" now says the standard library's modules on disk. Built-in and frozen modules are found before the path is searched.
+  - Low, no change: the example command is correct and passes the hook's stdin through.
+
+  No re-run: these are wording fixes. The repository check found no ref moved; `.git/index` was refreshed, as in earlier passes.
 
 ## Verification
 
