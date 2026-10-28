@@ -48,12 +48,14 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
   - git's own `reference-transaction` hook refuses every update of those branches that is not a merge (§ Layout, `git-hooks/`);
   - `permissions.ask` holds `Bash(git -c *)`, `Bash(git --config-env*)` and `Bash(/usr/bin/git *)`, the plain forms that switch git's hook off for one command or run a git that ignores it;
   - it also holds `Bash(git branch -d*)`, `-f*`, `-m*`, `-M*`, `-C*`, `--delete*`, `--force*` and `--move*` beside the older `-D`, because `allow` holds `Bash(git branch *)`;
+  - and `Bash(git update-ref *)`, `Bash(git switch -C*)`, `Bash(git filter-branch *)`, `Bash(git filter-repo *)` and `Bash(git replace *)`, which rewrite a branch the way the denied `reset` and `rebase` do;
   - a push asks twice over: `Bash(git push *)` is in `ask`, and it runs outside the sandbox, as `gh pr merge` does, where `Bash(dangerouslyDisableSandbox:true)` asks;
   - in auto mode, the classifier's `soft_deny` names protected-branch history and pushes (next bullet).
 
   Left open, knowingly:
   - a merge into a protected branch prompts only in auto mode: an `ask` rule for `git merge` would also prompt for merging the integration branch into a feature branch, which is standing permission;
   - `git -C <repo> branch -d …`, which `allow Bash(git -C * branch*)` passes;
+  - `git worktree add -B` and `git worktree remove --force`, and a `fetch` with a `+` refspec into a local branch, since a rule on either command would prompt for its routine use;
   - every form a text rule cannot see: `bash -c`, `GIT_CONFIG_*` variables, a script that runs git.
 
   Evidence and decision: [`plans/0025-remove-git-gate.md`](plans/0025-remove-git-gate.md).

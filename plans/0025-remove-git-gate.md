@@ -21,6 +21,7 @@ Only the gate covered three things:
 1. **A merge into a protected branch.** git's hook allows merges by design.
 2. **Switching git's hook off for one command, or using a git that ignores it:** `-c core.hooksPath=…`, a `hook.*` setting, `--config-env`, `GIT_CONFIG_*` variables, and Apple's `/usr/bin/git`.
 3. **`git branch -f`, `-d` and `-m` on a feature branch.** Only `-D` had an ask rule.
+4. **Other commands that rewrite a feature branch,** where `reset` and `rebase` are denied: `update-ref`, `switch -C`, `filter-branch`, `filter-repo` and `replace`, and `worktree add -B`. The protected branches stay covered by git's hook; a feature branch has no such guard. Found while preparing this change, after the user's decision.
 
 ## Changes
 
@@ -41,6 +42,7 @@ Only the gate covered three things:
   - add to `permissions.ask`:
     - `Bash(git -c *)`, `Bash(git --config-env*)` and `Bash(/usr/bin/git *)`, for item 2;
     - `Bash(git branch -d*)`, `Bash(git branch -f*)`, `Bash(git branch -m*)`, `Bash(git branch -M*)`, `Bash(git branch -C*)`, `Bash(git branch --delete*)`, `Bash(git branch --force*)` and `Bash(git branch --move*)`, for item 3;
+    - `Bash(git update-ref *)`, `Bash(git switch -C*)`, `Bash(git filter-branch *)`, `Bash(git filter-repo *)` and `Bash(git replace *)`, for item 4;
   - in the `autoMode.allow` entry that begins "Feature-branch commits", drop the clause "; the git_gate hook asks for the protected branches".
 
 ## Other projects
@@ -73,6 +75,7 @@ That project should correct the two sentences. If it wants a prompt there in eve
 - **`Bash(git -c *)` broad rather than per setting.** Setting names are case-insensitive (`core.hookspath`), so a rule naming `core.hooksPath` misses spellings. The cost is a prompt for every `git -c`; the gate's records hold 15 such prompts in 16 days (9 `hooksPath`, 6 unknown settings). `/codex-review`'s clone was the routine use. It now sets `GIT_ADVICE=0`, which, measured with git 2.56.0, silences the detached-HEAD notice that `-c advice.detachedHead=false` did.
 - **Left open, knowingly:**
   - `git -C <repo> branch -d …` passes through `allow Bash(git -C * branch*)`. Another eight rules for a rare form are not worth it.
+  - `git worktree add -B`, which resets a branch, and `git worktree remove --force`, which drops a worktree's uncommitted changes: a `Bash(git worktree *)` rule would prompt for every routine `git worktree add` too. So would a rule on `git fetch` for a `+` refspec into a local branch.
   - Everything a text rule cannot see: `bash -c`, `GIT_CONFIG_*` variables, a script that runs git.
 - **Plan 0022 stays proposed.** If unasked merges into protected branches become a problem, making git's hook refuse merges without an explicit marker is the structural fix. It would not need this gate.
 - **Not captured, for the user to decide:**
