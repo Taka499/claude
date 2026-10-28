@@ -140,7 +140,13 @@ All `gh` runs used a dummy token, so no credential was sent.
   - **Low:** the push, merge and alias claims are sound, with update-branch as the exception. Covered by the first finding.
   - **Low:** "per project" is not the only safe design. The per-command alternative is now recorded above.
 
-  No second pass. Each fix narrows a scope or a claim in the direction its finding asked for, and none adds a mechanism. The repository check found no ref moved. `.git/index` changed only its metadata (change time 20:13:19, modification time still the commit's, 20:11:27), as in earlier passes, and Codex's log holds no command against the repository.
+  These fixes alone would not have needed a second pass: each narrows a scope or a claim in the direction its finding asked. The token-order measurement that came later did, and it is the next entry. The repository check found no ref moved. `.git/index` changed only its metadata (change time 20:13:19, modification time still the commit's, 20:11:27), as in earlier passes, and Codex's log holds no command against the repository.
+
+- **Codex review, second pass on `origin/master...HEAD` at c5b5912: CHANGES REQUESTED.** It ran because the token-order measurement changed what the texts say `gh` does outside the sandbox. It confirmed the first pass's findings resolved, and that no text still claims every `gh` call in an opted-in project uses the narrow token. Two Low findings, both accepted:
+  - the global `CLAUDE.md` stated the token order as fact. It now says the order was measured with gh 2.103.0, is not documented, and should be re-checked with `gh auth status` outside the sandbox after an upgrade;
+  - this log said "No second pass", which this pass made false. Reworded above.
+
+  No third pass: both fixes are wording. The repository check found no ref moved, and `.git/index` changed only its metadata again.
 
 ## Verification
 
