@@ -48,7 +48,7 @@ This is the user-level `~/.claude/CLAUDE.md`, applied to every project on this m
 
     There is one folder per owner and visibility (`<owner>-private`, `<owner>-public`), shared by the projects that use it. Each such project's sessions can therefore also write issues in the others' repositories. Each folder holds a fine-grained token with:
     - only that owner's opted-in repositories of that visibility, so a new repository is added to the existing token on GitHub, with no new token;
-    - only the permissions their use needs: Issues write for an issue tracker, plus the organization permission Projects write for a board;
+    - only the permissions their use needs: Issues write for an issue tracker, Pull requests write where sessions open PRs, and the organization permission Projects write for a board;
     - never Contents write.
 
     The Projects permission reaches every board of the organization; it cannot be limited to one. So while a public token holds it, no board of that owner may hold private data.

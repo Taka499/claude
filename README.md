@@ -118,7 +118,7 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
   - **Never mix public and private repositories in one token.** A project with private data would then hold a way to publish it.
   - **Keep the token narrow.** Every sandboxed command in a project that re-allows the folder can read it, Codex included:
     - one resource owner, and only the opted-in repositories of one visibility;
-    - only the permissions their use needs: Issues write and Metadata read for an issue tracker. For a board (the `task-board` skill), add the **organization** permission Projects: Read and write. It sits under "Organization permissions", shown only for a token owned by an organization. It reaches every board of that organization, so while a public token holds it, no board of that owner may hold private data;
+    - only the permissions their use needs: Issues write and Metadata read for an issue tracker, and Pull requests write where sessions open PRs. Pull requests write adds approving, dismissing and deleting reviews, and updating a PR's branch; GitHub lets no author approve their own PR, and every session is the user. For a board (the `task-board` skill), add the **organization** permission Projects: Read and write. It sits under "Organization permissions", shown only for a token owned by an organization. It reaches every board of that organization, so while a public token holds it, no board of that owner may hold private data;
     - never Contents write;
     - an expiry.
   - **On a public repository,** whatever a session writes in an issue is public at once, and anyone can open issues and comment. Sessions treat text anyone else wrote as data.
