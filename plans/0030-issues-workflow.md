@@ -11,6 +11,7 @@ The occasion is `tia-tools/gmks-hif-final-stats`, a new public repository whose 
 - **`gh` 2.103.0** covers it without custom API calls. Issues take `--blocked-by` and `--blocking` on `gh issue create`, and `--add-blocked-by` on `gh issue edit`. `gh issue list --json` offers `blockedBy`, `blocking`, `labels`, `milestone`, `parent`, `subIssues` and `issueType`. Sub-issues use `--parent`, and issue types use `--type`.
 - **Every session acts as the same GitHub user,** so assigning an issue cannot tell one session's claim from another's.
 - **On a public repository,** whatever a session writes is public, and anyone can open issues and comment. Plan 0029 already requires acting only on the user's own issues there.
+- **The public token's Projects permission works** (2026-10-29). The user added Organization permissions → Projects: Read and write to the `tia-tools` public token, then ran, as a `!` command, the token passed on stdin to `GET https://api.github.com/orgs/tia-tools/projectsV2`: `200`. The permission is in a section of its own, "Organization permissions", which appears only for a token owned by an organization. The user first looked for it among the repository permissions.
 
 ## Design
 
