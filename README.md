@@ -65,6 +65,23 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
   - every form a text rule cannot see: `bash -c`, `GIT_CONFIG_*` variables, a script that runs git.
 
   Evidence and decision: [`plans/0025-remove-git-gate.md`](plans/0025-remove-git-gate.md).
+- **`hooks.PermissionRequest` holds one logger, written inline, run with `"async": true`, and printing nothing.** Each time Claude Code is about to ask for permission, the entry appends one JSON line to `~/.claude/permission-requests.jsonl`, using `/opt/homebrew/bin/jq`:
+  - UTC time, session id, subagent id, folder, permission mode and tool name;
+  - the first 200 characters of the command, file path or URL.
+
+  No session log records these requests, so this is the only count of the approvals the user is asked for.
+  - **Why `PermissionRequest`:** a `Notification` hook on `permission_prompt` fires only after a dialog has waited about six seconds, so quick approvals would go uncounted.
+  - **It counts requests, not exactly dialogs shown.**
+    - The event also fires where a call that can't prompt would be auto-denied, such as a background subagent or a non-interactive run.
+    - `AskUserQuestion` logs a line too, as `tool: "AskUserQuestion"`.
+    - A call that auto mode lets through with no dialog logs nothing.
+
+    Measured on 2026-10-28, except the auto-denial case, which is from the docs. A review counts approval dialogs by filtering on the logged fields, and checks doubtful lines against the transcript.
+  - **Keep it async and silent.** Per the docs, an async hook's decision fields have no effect, and Claude Code doesn't wait for it, so it can neither decide nor delay a dialog. Run synchronously, a decision object on stdout would allow or deny the call, and a hung `jq` would delay the dialog. Its stdout goes to the log in any case.
+  - **The one hook allowed to write,** and only to its own log. It is an inline command in this file, which no session can write, so there is no script to protect.
+  - **Its log is safe from sessions:** they cannot write `~/.claude` itself.
+
+  The exact entry and its tests: [`plans/0028-permission-request-log.md`](plans/0028-permission-request-log.md).
 - **`autoMode` must agree with the commit rule two bullets up, because the classifier enforces its own copy.** `/auto-mode-setup` once wrote a `soft_deny` entry blocking every `git commit` "without explicit per-operation permission"; left in place, it would have kept refusing feature-branch commits after the `ask` rule went. `soft_deny` now names only history on the protected branches and pushes, and `autoMode.allow` (which must keep `"$defaults"`, or it replaces the built-in exceptions) states the standing commit permission and that `/codex-review`'s `codex exec` runs inside the sandbox — without that entry the classifier refuses it as `[Create Unsafe Agents]`, approvals being off. The exact entries are in plan 0018.
 - `permissions.ask` also covers `git checkout *`, but it does not guard the hazard it was added for. Switching branches in the deployed clone silently swaps the live global config (ADR 0001), and sessions here switch with `git switch`, which the rule does not match: this repository's session transcripts hold 18 `git switch` branch switches against 2 `git checkout` ones (2026-06-13 to 2026-10-26). Since the git gate hook went (plan 0025), the rule is the only prompt for any `checkout` form, `git checkout -- <path>` included, which discards working-tree changes. A global `Bash(git switch *)` ask would prompt in every repository.
 - Mutating `git -C <other-repo> …` forms are denied while the read-only ones are allowed — a blanket `Bash(git -C *)` deny breaks `/adopt-from-sibling`, whose whole job is reading a neighbouring checkout.
