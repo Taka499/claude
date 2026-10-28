@@ -169,12 +169,33 @@ From the Decision Log below, D1–D11:
 - **D16. Claims count only comments written by the account the helper runs as.** The automatic security review, run on the commit that added the helper, found that `claim_holder` trusted any comment starting with the marker. On a public repository, a stranger could then post an earlier claim (blocking work) or a release (ending a session's claim). Every session is that one account, so filtering on it keeps every real claim. The review's second suggestion was to set the Status back when a claim is refused. It does not apply: a session backs off only when an earlier claim exists, and then In Progress is right, since that session holds the issue.
 - **D17. The helper runs on Python 3.9.** A session's bare `python3` here is Apple's 3.9.6, so the code avoids newer syntax. Tested on 3.9.6 and on Homebrew's 3.14.9.
 
+- **D18. Codex review, first pass on the plan's own commits at 8039022: CHANGES REQUESTED.** All accepted, fixed in d987fc4:
+  - **High:** `items()` did not pass `--field Status --field Priority`. `gh project item-list --help` says a field's values appear only with `--field`. Without them every item read as blank, so as Triage, and `queue` could pull an In Progress or Done item back into Todo. Now the fields are asked for. The test double returns them only when asked, as `gh` does. `queue` also refuses a closed issue and one with a live claim.
+  - **High:** `release` and `done` checked only the Status, so any session could release or close another's claim. Both now take `--branch`, and act only if that branch holds the claim.
+  - **Medium:** a failure after a step's first change left a state that a rerun refused. Each step is now ordered so a failure leaves the safer state and a rerun finishes it:
+    - `claim`: comment, check the claim, then set the Status;
+    - `release`: set the Status, then comment, and a rerun posts the missing comment;
+    - `done`: close, then set the Status, which the board's "Item closed" workflow sets as well;
+    - `queue` and `file`: Priority, then Status.
+  - **Medium:** `file` parsed `gh issue create`'s output loosely. It now requires this repository's issue URL. A failure after the issue exists names the issue, so it is not filed twice.
+  - **Medium:** unexpected `gh` output raised Python exceptions. It now exits 2, with a message.
+  - **Low, open:** the JSON shapes (`blockedBy`, the field keys, `author.login`, `item-add`'s `id`) are still assumptions in test fixtures. The first board's verification captures real output, and adds it as a fixture.
+  - **Low, no change:** the § General exception cannot be read as permission to start unqueued work.
+
+  The test suite went from 33 to 43 tests. Each new safety property was seen failing against a broken copy:
+  - no `--field`;
+  - no holder check in `release`, or in `done`;
+  - no closed check, or no claim check, in `queue`;
+  - no catch for unexpected output;
+  - `file` accepting another repository's URL.
+
 ## Progress
 
-- [x] (2026-10-29) `skills/task-board/board.py` and `test_board.py`: 33 tests, OK on 3.9.6 and 3.14.9. Each target was seen failing against a broken copy (the blocker check, the earliest-claim rule, the ready check in `claim`, blank Status as Triage, `queue`'s state check, the claim author filter).
+- [x] (2026-10-29) `skills/task-board/board.py` and `test_board.py`: 33 tests, 43 after D18, OK on 3.9.6 and 3.14.9. Each target was seen failing against a broken copy (the blocker check, the earliest-claim rule, the ready check in `claim`, blank Status as Triage, `queue`'s state check, the claim author filter).
 - [x] (2026-10-29) `skills/task-board/SKILL.md`: the workflow, the rules and a board's one-time setup.
 - [x] (2026-10-29) `skills/backlog/SKILL.md`, global `CLAUDE.md` (§ General, the `gh` bullet, § Skills) and `README.md`.
-- [ ] Codex review of the branch.
+- [x] (2026-10-29) Codex review, first pass (D18), all findings fixed.
+- [ ] Codex review, second pass, since the logic moved.
 - [ ] After the merge: `./setup.sh` outside the sandbox, to link the new skill into `~/.claude/skills` (ADR 0003).
 - [ ] The user's setup for gmks-hif-final-stats: the board, its fields and workflows, `.task-board.json` and the `CLAUDE.md` line.
 - [ ] Verification on that board, from a session there.
