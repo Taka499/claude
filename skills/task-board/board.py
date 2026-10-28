@@ -10,8 +10,8 @@ Standard library only; Python 3.9 or later.
 
 Usage:
     python3 -I board.py ready [--json]
-    python3 -I board.py file (--triage | --todo [--priority P1|P2|P3]) --title TITLE [--body BODY] [--blocked-by 3,7]
-    python3 -I board.py queue N [--priority P1|P2|P3]          (only when the user asks: Triage is their gate)
+    python3 -I board.py file (--triage | --todo [--priority NAME]) --title TITLE [--body BODY] [--blocked-by 3,7]
+    python3 -I board.py queue N [--priority NAME]               (only when the user asks: Triage is their gate)
     python3 -I board.py claim N --branch BRANCH [--worktree PATH]
     python3 -I board.py release N --branch BRANCH --reason TEXT
     python3 -I board.py done N --branch BRANCH --evidence TEXT
@@ -33,8 +33,6 @@ CONFIG_FILE = ".task-board.json"
 STATUS_FIELD, PRIORITY_FIELD = "Status", "Priority"
 TRIAGE, TODO, IN_PROGRESS, DONE = "Triage", "Todo", "In Progress", "Done"
 STATUSES = (TRIAGE, TODO, IN_PROGRESS, DONE)
-PRIORITIES = ("P1", "P2", "P3")
-DEFAULT_PRIORITY = "P2"
 # Markers at the start of the comments this script writes, so a later run can read the claim history back.
 CLAIM, RELEASE, DONE_MARK = "task-board claim:", "task-board release:", "task-board done:"
 LIMIT = "1000"  # gh's list commands default to 30 items
@@ -65,7 +63,22 @@ class Fields:
     status_id: str
     status_options: dict  # option name -> option id
     priority_id: str
-    priority_options: dict
+    priority_options: dict  # option name -> option id, in the board's order: first is the most urgent
+
+    @property
+    def priorities(self) -> list:
+        return list(self.priority_options)
+
+    def default_priority(self) -> str:
+        """The middle option (Medium of Urgent, High, Medium, Low): what an item without a Priority counts as."""
+        return self.priorities[len(self.priorities) // 2]
+
+    def priority(self, name: str | None) -> str:
+        if name is None:
+            return self.default_priority()
+        if name not in self.priority_options:
+            raise BoardError(f"the board has no Priority {name!r}; its options are {', '.join(self.priorities)}")
+        return name
 
 
 # ---- pure functions -------------------------------------------------------------------------------------------------
@@ -87,11 +100,12 @@ def parse_fields(project_json: str, fields_json: str) -> Fields:
     project_id = json.loads(project_json)["id"]
     fields = {field["name"]: field for field in json.loads(fields_json)["fields"]}
     found = {}
-    for name, wanted in ((STATUS_FIELD, STATUSES), (PRIORITY_FIELD, PRIORITIES)):
+    for name, wanted in ((STATUS_FIELD, STATUSES), (PRIORITY_FIELD, ())):
         field = fields.get(name)
-        if field is None or "options" not in field:
-            raise BoardError(f"the board has no single-select field {name!r} (wanted options: {', '.join(wanted)})")
-        options = {option["name"]: option["id"] for option in field["options"]}
+        if field is None or not field.get("options"):
+            raise BoardError(f"the board has no single-select field {name!r} with options"
+                             + (f" (wanted: {', '.join(wanted)})" if wanted else ""))
+        options = {option["name"]: option["id"] for option in field["options"]}  # keeps the board's order
         missing = [option for option in wanted if option not in options]
         if missing:
             raise BoardError(f"the board's {name} field lacks the option(s) {', '.join(missing)}")
@@ -148,11 +162,13 @@ def open_blockers(issue: dict, open_numbers: set, repo: str) -> list:
     return blockers
 
 
-def ready(items: list, issues: list, repo: str) -> list:
+def ready(items: list, issues: list, repo: str, priorities: list) -> list:
     """Ready work: board items for open issues of this repository with Status Todo and no open blocker, ordered by
-    Priority (none counts as P2), then oldest first. Each entry: number, title, priority, created."""
+    Priority in the board's order (first is the most urgent; none counts as the middle option), then oldest first.
+    Each entry: number, title, priority, created."""
     open_issues = {issue["number"]: issue for issue in issues}
-    rank = {priority: index for index, priority in enumerate(PRIORITIES)}
+    rank = {priority: index for index, priority in enumerate(priorities)}
+    default = priorities[len(priorities) // 2]
     result = []
     for item in items:
         content = item.get("content") or {}
@@ -161,10 +177,10 @@ def ready(items: list, issues: list, repo: str) -> list:
             continue
         if status_of(item) != TODO or open_blockers(open_issues[number], set(open_issues), repo):
             continue
-        priority = field_value(item, PRIORITY_FIELD) or DEFAULT_PRIORITY
+        priority = field_value(item, PRIORITY_FIELD) or default
         result.append({"number": number, "title": open_issues[number].get("title", content.get("title", "")),
                        "priority": priority, "created": open_issues[number].get("createdAt", "")})
-    return sorted(result, key=lambda entry: (rank.get(entry["priority"], len(PRIORITIES)), entry["created"],
+    return sorted(result, key=lambda entry: (rank.get(entry["priority"], len(priorities)), entry["created"],
                                              entry["number"]))
 
 
@@ -284,10 +300,11 @@ class Board:
     # finishes it. A gh failure after the first change says what was already done.
 
     def ready(self) -> list:
-        return ready(self.items(), self.open_issues(), self.config.repo)
+        return ready(self.items(), self.open_issues(), self.config.repo, self.fields().priorities)
 
     def file(self, title: str, body: str, todo: bool, priority: str | None, blocked_by: str | None) -> int:
-        fields = self.fields()  # check the board before creating anything on it
+        fields = self.fields()  # check the board, and the priority, before creating anything on it
+        chosen = fields.priority(priority) if todo else None
         args = ["issue", "create", "--repo", self.config.repo, "--title", title, "--body", body]
         if blocked_by:
             args += ["--blocked-by", blocked_by]
@@ -303,7 +320,7 @@ class Board:
                                              self.config.owner, "--url", url, "--format", "json"))["id"]
             # Priority before Status: if setting Status fails, the item stays in Triage, the safe side.
             if todo:
-                self.set_field(item_id, fields.priority_id, fields.priority_options[priority or DEFAULT_PRIORITY])
+                self.set_field(item_id, fields.priority_id, fields.priority_options[chosen])
             self.set_status(item_id, TODO if todo else TRIAGE)
         except (GhError, KeyError, ValueError, TypeError) as error:
             raise GhError(f"issue #{number} was created, but placing it on the board failed ({error}); it counts as"
@@ -322,8 +339,9 @@ class Board:
         if self.holder(number) is not None:
             raise Refused(f"issue #{number} has a live claim by {self.holder(number)!r}")
         fields = self.fields()
+        chosen = fields.priority(priority)
         # Priority before Status: if setting Status fails, the item stays in Triage, and a rerun finishes it.
-        self.set_field(item["id"], fields.priority_id, fields.priority_options[priority or DEFAULT_PRIORITY])
+        self.set_field(item["id"], fields.priority_id, fields.priority_options[chosen])
         self.set_status(item["id"], TODO)
 
     def claim(self, number: int, branch: str, worktree: str | None) -> None:
@@ -378,13 +396,13 @@ def parse_args(argv: list) -> argparse.Namespace:
     where = file_.add_mutually_exclusive_group(required=True)
     where.add_argument("--triage", action="store_true")
     where.add_argument("--todo", action="store_true")
-    file_.add_argument("--priority", choices=PRIORITIES)
+    file_.add_argument("--priority", help="one of the board's Priority options; default: the middle one")
     file_.add_argument("--title", required=True)
     file_.add_argument("--body", default="")
     file_.add_argument("--blocked-by")
     queue = steps.add_parser("queue")
     queue.add_argument("number", type=int)
-    queue.add_argument("--priority", choices=PRIORITIES)
+    queue.add_argument("--priority", help="one of the board's Priority options; default: the middle one")
     claim = steps.add_parser("claim")
     claim.add_argument("number", type=int)
     claim.add_argument("--branch", required=True)
@@ -429,7 +447,7 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None) -> int:
             print(f"filed #{number} in {TODO if args.todo else TRIAGE}")
         elif args.step == "queue":
             board.queue(args.number, args.priority)
-            print(f"queued #{args.number} in {TODO} as {args.priority or DEFAULT_PRIORITY}")
+            print(f"queued #{args.number} in {TODO} as {args.priority or board.fields().default_priority()}")
         elif args.step == "claim":
             board.claim(args.number, args.branch, args.worktree)
             print(f"claimed #{args.number} for {args.branch}")

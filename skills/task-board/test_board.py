@@ -15,7 +15,8 @@ FIELDS = {"fields": [
      "options": [{"id": "s_triage", "name": "Triage"}, {"id": "s_todo", "name": "Todo"},
                  {"id": "s_progress", "name": "In Progress"}, {"id": "s_done", "name": "Done"}]},
     {"id": "F_PRIORITY", "name": "Priority", "type": "ProjectV2SingleSelectField",
-     "options": [{"id": "p1", "name": "P1"}, {"id": "p2", "name": "P2"}, {"id": "p3", "name": "P3"}]},
+     "options": [{"id": "pu", "name": "Urgent"}, {"id": "ph", "name": "High"}, {"id": "pm", "name": "Medium"},
+                 {"id": "pl", "name": "Low"}]},
     {"id": "F_TITLE", "name": "Title", "type": "ProjectV2Field"}]}
 
 
@@ -83,7 +84,8 @@ class FakeGh:
             item_id, option = args[args.index("--id") + 1], args[args.index("--single-select-option-id") + 1]
             names = {"s_triage": ("status", "Triage"), "s_todo": ("status", "Todo"),
                      "s_progress": ("status", "In Progress"), "s_done": ("status", "Done"),
-                     "p1": ("priority", "P1"), "p2": ("priority", "P2"), "p3": ("priority", "P3")}
+                     "pu": ("priority", "Urgent"), "ph": ("priority", "High"), "pm": ("priority", "Medium"),
+                     "pl": ("priority", "Low")}
             for entry in self.items:
                 if entry["id"] == item_id:
                     entry[names[option][0]] = names[option][1]
@@ -124,7 +126,11 @@ class ConfigAndFields(unittest.TestCase):
         fields = board.parse_fields(json.dumps(PROJECT), json.dumps(FIELDS))
         self.assertEqual((fields.project_id, fields.status_id, fields.priority_id), ("PVT_1", "F_STATUS", "F_PRIORITY"))
         self.assertEqual(fields.status_options["In Progress"], "s_progress")
-        self.assertEqual(fields.priority_options["P3"], "p3")
+        self.assertEqual(fields.priorities, ["Urgent", "High", "Medium", "Low"])
+        self.assertEqual(fields.default_priority(), "Medium")
+        self.assertEqual(fields.priority("Low"), "Low")
+        with self.assertRaisesRegex(board.BoardError, "Urgent, High, Medium, Low"):
+            fields.priority("P1")
 
     def test_a_missing_status_option_is_named(self):
         broken = json.loads(json.dumps(FIELDS))
@@ -141,7 +147,7 @@ class ConfigAndFields(unittest.TestCase):
 
 class Ready(unittest.TestCase):
     def ready_numbers(self, items, issues) -> list:
-        return [entry["number"] for entry in board.ready(items, issues, REPO)]
+        return [entry["number"] for entry in board.ready(items, issues, REPO, ["Urgent", "High", "Medium", "Low"])]
 
     def test_only_open_todo_issues_of_this_repository(self):
         items = [item(1, "Todo"), item(2, None), item(3, "Triage"), item(4, "In Progress"), item(5, "Done"),
@@ -153,11 +159,18 @@ class Ready(unittest.TestCase):
         self.assertEqual(board.status_of(item(2, None)), "Triage")
         self.assertEqual(board.status_of(item(2, "Todo")), "Todo")
 
-    def test_priority_then_age_orders_the_list(self):
-        items = [item(1, "Todo", "P3"), item(2, "Todo"), item(3, "Todo", "P1"), item(4, "Todo", "P2")]
-        issues = [issue(1, "2026-01-01"), issue(2, "2026-03-01"), issue(3, "2026-05-01"), issue(4, "2026-02-01")]
-        # 2 has no Priority, so it counts as P2, and 4 is the older of the two P2s.
-        self.assertEqual(self.ready_numbers(items, issues), [3, 4, 2, 1])
+    def test_priority_in_the_boards_order_then_age_orders_the_list(self):
+        items = [item(1, "Todo", "Low"), item(2, "Todo"), item(3, "Todo", "Urgent"), item(4, "Todo", "Medium"),
+                 item(5, "Todo", "High")]
+        issues = [issue(1, "2026-01-01"), issue(2, "2026-03-01"), issue(3, "2026-05-01"), issue(4, "2026-02-01"),
+                  issue(5, "2026-06-01")]
+        # 2 has no Priority, so it counts as Medium, the middle option; 4 is the older of the two Mediums.
+        self.assertEqual(self.ready_numbers(items, issues), [3, 5, 4, 2, 1])
+
+    def test_the_order_comes_from_the_board_not_the_names(self):
+        items = [item(1, "Todo", "A"), item(2, "Todo", "B")]
+        issues = [issue(1), issue(2)]
+        self.assertEqual([e["number"] for e in board.ready(items, issues, REPO, ["B", "A"])], [2, 1])
 
     def test_an_open_blocker_in_the_repository_holds_an_issue_back(self):
         items = [item(1, "Todo"), item(2, "Todo")]
@@ -220,8 +233,8 @@ def claimed(branch: str = "feature/x", at: str = "10:00") -> dict:
 
 class Steps(unittest.TestCase):
     def test_the_item_list_asks_gh_for_status_and_priority(self):
-        gh = FakeGh(items=[item(1, "Todo", "P1")], issues=[issue(1)])
-        self.assertEqual([entry["priority"] for entry in make_board(gh).ready()], ["P1"])
+        gh = FakeGh(items=[item(1, "Todo", "Urgent")], issues=[issue(1)])
+        self.assertEqual([entry["priority"] for entry in make_board(gh).ready()], ["Urgent"])
         listing = next(call for call in gh.calls if call[:2] == ("project", "item-list"))
         asked = [listing[i + 1] for i, arg in enumerate(listing) if arg == "--field"]
         self.assertEqual(sorted(asked), ["Priority", "Status"])
@@ -270,7 +283,7 @@ class Steps(unittest.TestCase):
         self.assertEqual(create[create.index("--blocked-by") + 1], "4")
         add = next(call for call in gh.calls if call[:2] == ("project", "item-add"))
         self.assertEqual(add[add.index("--url") + 1], "https://github.com/o/r/issues/9")
-        self.assertEqual(gh.edits(), [("F_PRIORITY", "p2"), ("F_STATUS", "s_todo")])
+        self.assertEqual(gh.edits(), [("F_PRIORITY", "pm"), ("F_STATUS", "s_todo")])
 
     def test_file_into_triage_sets_no_priority(self):
         gh = FakeGh()
@@ -298,8 +311,17 @@ class Steps(unittest.TestCase):
     def test_queue_accepts_a_triage_item_with_a_priority(self):
         for status in (None, "Triage"):
             gh = FakeGh(items=[item(1, status)], issues=[issue(1)])
+            make_board(gh).queue(1, "Urgent")
+            self.assertEqual(gh.edits(), [("F_PRIORITY", "pu"), ("F_STATUS", "s_todo")])
+
+    def test_a_priority_the_board_lacks_is_refused_before_anything_changes(self):
+        gh = FakeGh(items=[item(1, None)], issues=[issue(1)])
+        with self.assertRaisesRegex(board.BoardError, "Urgent"):
             make_board(gh).queue(1, "P1")
-            self.assertEqual(gh.edits(), [("F_PRIORITY", "p1"), ("F_STATUS", "s_todo")])
+        with self.assertRaises(board.BoardError):
+            make_board(gh).file("x", "", todo=True, priority="P1", blocked_by=None)
+        self.assertEqual(gh.edits(), [])
+        self.assertFalse(any(call[:2] == ("issue", "create") for call in gh.calls))
 
     def test_queue_refuses_an_item_already_past_triage(self):
         gh = FakeGh(items=[item(1, "In Progress")], issues=[issue(1)])
@@ -407,7 +429,7 @@ class CommandLine(unittest.TestCase):
 
     def test_priority_is_refused_with_triage(self):
         with self.assertRaises(SystemExit):
-            board.parse_args(["file", "--triage", "--priority", "P1", "--title", "x"])
+            board.parse_args(["file", "--triage", "--priority", "High", "--title", "x"])
 
     def test_the_config_is_found_from_a_subfolder_but_not_above_the_repository(self):
         sub = self.folder / "src" / "deep"
