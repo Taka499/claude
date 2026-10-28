@@ -57,6 +57,8 @@ Let machines enforce what code review used to catch — size, complexity, and ty
 - Introduce a new strict rule as a warning, drain the existing backlog to zero, then ratchet it to error. NEVER add findings to a warning list nobody reads — a rule is either green-and-enforced or being actively drained.
 - Decide gate vs report deliberately. A check with expected false positives (dead-code scans, duplication scans) runs as a non-blocking report; blocking on day one trains reflexive ignore-comments. Promote to a gate only once it is trustworthy.
 - Every CI gate SHOULD state, in a comment at the top of its workflow, what it actually guards. A gate whose purpose cannot be written down is either unnecessary or mis-aimed.
+- A rule a session must remember to follow (read the clock before writing a time, quote a message rather than paraphrase it) SHOULD be carried by a tool that writes or checks the value, not by more prose. A rule held only in context is lost at compaction and slips under load (gkms-contest-ai, 2026-10-20: progress times typed without reading the clock more than 15 times, 6 of them after a written rule against it).
+- Before adding a rule, an approval or a check so that a process failure does not recur, measure what the process already costs: prompts per hour, hours waited on approvals, machine-hours of checking against hours of the work it guards. Prefer the fix that removes a step. Fixing each failure with one more step accretes until the guarding costs more than the work (gkms-contest-ai, 2026-10-20: about 30 job-hours of checking against 1.7 h of evaluation work in three days, and 351 of 438 sessions were automated per-commit reviews, almost all empty).
 
 ## Testing
 
@@ -95,6 +97,7 @@ Distilled cross-project lessons, extracted from real projects. MUST read the rel
 - Python (uv, pipelines, testing) → [`docs/python.md`](docs/python.md)
 - GitHub Actions (built-in token, schedules, automated PRs) → [`docs/github-actions.md`](docs/github-actions.md)
 - Cloudflare (R2, platform behaviour) → [`docs/cloudflare.md`](docs/cloudflare.md)
+- Claude Code itself (code run outside the sandbox, settings in worktrees, permission-rule matching, processes) → [`docs/claude-code.md`](docs/claude-code.md)
 
 ## Continuous Learning
 
