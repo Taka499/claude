@@ -65,13 +65,14 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
   - every form a text rule cannot see: `bash -c`, `GIT_CONFIG_*` variables, a script that runs git.
 
   Evidence and decision: [`plans/0025-remove-git-gate.md`](plans/0025-remove-git-gate.md).
-- **`hooks.PermissionRequest` holds one logger, written inline, and it must print nothing.** Each time Claude Code is about to show a permission dialog, the entry appends one JSON line to `~/.claude/permission-requests.jsonl`, using `/opt/homebrew/bin/jq`:
-  - UTC time, session id, folder, permission mode and tool name;
+- **`hooks.PermissionRequest` holds one logger, written inline, run with `"async": true`, and printing nothing.** Each time Claude Code is about to ask for permission, the entry appends one JSON line to `~/.claude/permission-requests.jsonl`, using `/opt/homebrew/bin/jq`:
+  - UTC time, session id, subagent id, folder, permission mode and tool name;
   - the first 200 characters of the command, file path or URL.
 
-  That gives the count of approvals the user is asked for, which no session log records.
+  No session log records these requests, so this is the only count of the approvals the user is asked for.
   - **Why `PermissionRequest`:** a `Notification` hook on `permission_prompt` fires only after a dialog has waited about six seconds, so quick approvals would go uncounted.
-  - **Never let it print to stdout.** A decision object there would allow or deny the call. With no output, the docs say, the permission flow is unchanged.
+  - **It counts requests, not exactly dialogs shown.** The event also fires where a call that can't prompt would be auto-denied, such as a background subagent or a non-interactive run. Whether it fires in auto mode before the classifier approves is not documented. A review filters on the logged fields, and checks doubtful lines against the transcript.
+  - **Keep it async and silent.** Per the docs, an async hook's decision fields have no effect, and Claude Code doesn't wait for it, so it can neither decide nor delay a dialog. Run synchronously, a decision object on stdout would allow or deny the call, and a hung `jq` would delay the dialog. Its stdout goes to the log in any case.
   - **The one hook allowed to write,** and only to its own log. It is an inline command in this file, which no session can write, so there is no script to protect.
   - **Its log is safe from sessions:** they cannot write `~/.claude` itself.
 
