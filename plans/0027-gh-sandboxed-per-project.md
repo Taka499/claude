@@ -73,13 +73,13 @@ All `gh` runs used a dummy token, so no credential was sent.
   - `gh api user` gave `401`;
   - `gh auth status` named the file as the token's source ("The token in …/hosts.yml is invalid").
 
-  The keychain holds a valid login for the same account, so `gh` took the file's top-level token first. That rules out a token at the top level of the default `~/.config/gh`, or of a user-level `GH_CONFIG_DIR`: every `gh` call in every project would then use it.
+  The keychain holds a valid login for the same account, so `gh` took the file's top-level token first. That rules out a token at the top level of the default `~/.config/gh`, or of a user-level `GH_CONFIG_DIR`: every `gh` call in every project would then use it. That would include this repository's PRs on the public `Taka499/claude`, which a token owned by `tia-tools` cannot write to. A fine-grained token has one resource owner, so one token could not cover both owners anyway.
 - **A token under the account comes after the keychain.** `gh auth login --insecure-storage --with-token` (run by the user at 20:58) wrote the token only under `users: Taka499:`, with no top-level `oauth_token:`. With `GH_CONFIG_DIR` pointing there:
   - **Outside the sandbox:** `gh auth status` said "Logged in to github.com account Taka499 (keyring)", with the full login's scopes (`repo`, `gist`, `read:org`, `admin:public_key`), and `gh api user` returned the login.
   - **Inside the sandbox:** `gh auth status` named the file as the source.
 
   So in an opted-in project, the narrow token serves only sandboxed calls.
-- **The first token stored was rejected by GitHub,** on every route: `401 Bad credentials` from `gh` inside the sandbox, and from `curl` both inside and outside it. `curl` got the token on stdin, so it never appeared in a process listing. Inside the sandbox, `curl` showed a `CONNECT` tunnel through the sandbox's proxy and GitHub's own certificate (`CN=*.github.com`, issued by Sectigo), so the proxy does not intercept or change the request. The stored value had a token's shape (93 characters, `github_pat_` prefix, no whitespace). The fault was the token, not the sandbox. That would include this repository's PRs on the public `Taka499/claude`, which a token owned by `tia-tools` cannot reach. A fine-grained token has one resource owner, so one token could not cover both owners anyway.
+- **The first token stored was rejected by GitHub,** on every route: `401 Bad credentials` from `gh` inside the sandbox, and from `curl` both inside and outside it. `curl` got the token on stdin, so it never appeared in a process listing. Inside the sandbox, `curl` showed a `CONNECT` tunnel through the sandbox's proxy and GitHub's own certificate (`CN=*.github.com`, issued by Sectigo), so the proxy does not intercept or change the request. The stored value had a token's shape (93 characters, `github_pat_` prefix, no whitespace). The fault was the token, not the sandbox. The user had deleted it on GitHub right after pasting it into the shell by mistake: `--with-token` waits on stdin without a prompt. The replacement was stored with `pbpaste | … gh auth login …`, so it was never typed or pasted into a terminal.
 - **Other tools with `SSL_CERT_FILE` set, inside the sandbox:**
   - `curl` to `api.github.com`: 200;
   - `git ls-remote` over HTTPS: works;
@@ -129,7 +129,7 @@ All `gh` runs used a dummy token, so no credential was sent.
   - with Issues write, a command can delete comments, and they cannot be restored;
   - in such a project, `gh` calls that run sandboxed stop asking.
 
-  No `ask` rule is added. The token cannot push, merge or reach another repository, and what it can do stays inside the project's private repositories.
+  No `ask` rule is added. The token cannot push, merge, or write to another repository, so what it can change stays inside the project's private repositories.
 - **The project token is not git's credential.** Pushes and private fetches keep their path outside the sandbox.
 - **No ADR.** Deleting the token and two `env` lines reverses it, so it fails gate one (hard to reverse).
 - **Codex review, one pass on `origin/master...HEAD` at e42d826: CHANGES REQUESTED.** All six findings were accepted:
