@@ -11,7 +11,7 @@ On 2026-10-28 the user decided to remove it, after the comparison below. Two thi
 ## What it guarded, and what stands without it
 
 These stay:
-- git's own `reference-transaction` hook, a copy at `~/.config/git/protect-branches` that no session can write. It refuses every update of `main`, `master` or `develop` that is not a merge, whatever program runs git;
+- git's own `reference-transaction` hook, a copy at `~/.config/git/protect-branches` that no session can write. It refuses every update of `main`, `master` or `develop` that is not a merge, whatever program runs git. Creating one of them passes;
 - the `ask` rules on `git push` and `git checkout`, and the `deny` rules on `reset`, `rebase`, force pushes, `git add .` and `-A`, `clean`, and the mutating `git -C` forms;
 - `git push` and `gh` run outside the sandbox, where `Bash(dangerouslyDisableSandbox:true)` asks;
 - in auto mode, the classifier's `soft_deny` entry on protected-branch history and pushes;
@@ -27,7 +27,7 @@ Only the gate covered three things:
 
 - Delete `hooks/git_gate.py` and `hooks/test_git_gate.py`. The untracked `hooks/.claude/` and `hooks/__pycache__/` stay, per the global rule against deleting untracked files.
 - Rewrite every text that described the gate:
-  - the global `CLAUDE.md` § Git Operations, in four places;
+  - the global `CLAUDE.md` § Git Operations, in four places, plus the hook's own bullet, which now says creating a protected branch passes;
   - `README.md`:
     - the layout entry for `hooks/` goes;
     - the gate's bullet under § The one file this repo does not deploy becomes what stands in its place;
@@ -74,6 +74,8 @@ That project should correct the two sentences. If it wants a prompt there in eve
 - **No ask rule for `git merge`.** A rule cannot tell a merge into `develop` from a merge of `develop` into a feature branch, and the second is standing permission. A merge into a protected branch therefore rests on the written rule, and in auto mode on the classifier. The worst case is an unapproved merge commit on a local protected branch. It is visible, it reaches GitHub only through a push, which asks, and undoing it takes a revert merge or the user's bypass.
 - **`Bash(git -c *)` broad rather than per setting.** Setting names are case-insensitive (`core.hookspath`), so a rule naming `core.hooksPath` misses spellings. The cost is a prompt for every `git -c`; the gate's records hold 15 such prompts in 16 days (9 `hooksPath`, 6 unknown settings). `/codex-review`'s clone was the routine use. It now sets `GIT_ADVICE=0`, which, measured with git 2.56.0, silences the detached-HEAD notice that `-c advice.detachedHead=false` did.
 - **Left open, knowingly:**
+  - Creating `main`, `master` or `develop`: a repository's first commit, `git branch develop <start>`, `git switch -c main`, `git stash branch main`. git's hook allows creation, and the gate asked. A rule could not tell creation from `git switch develop` making the local branch from `origin/develop`, which is routine. A branch made this way reaches GitHub only through a push, which asks, and once it exists git's hook guards it.
+  - `git switch -f` and `--discard-changes`, which drop working-tree changes. The gate asked only because it allowed no `switch` form but the plain ones. `git restore` drops changes the same way, and the gate never asked for it. In auto mode the classifier judges both.
   - `git -C <repo> branch -d …` passes through `allow Bash(git -C * branch*)`. Another eight rules for a rare form are not worth it.
   - `git worktree add -B`, which resets a branch, and `git worktree remove --force`, which drops a worktree's uncommitted changes: a `Bash(git worktree *)` rule would prompt for every routine `git worktree add` too. So would a rule on `git fetch` for a `+` refspec into a local branch.
   - Everything a text rule cannot see: `bash -c`, `GIT_CONFIG_*` variables, a script that runs git.
@@ -82,6 +84,17 @@ That project should correct the two sentences. If it wants a prompt there in eve
   - Python's import of modules beside the script, for any Python hook, belongs in `docs/claude-code.md` § Code that runs outside the sandbox: protect the script's whole directory, and run it with `-I`.
   - The interpreter-path lesson (plan 0023) leaves the guidance with the gate's README bullet: name a Python hook's interpreter by a version's own link, never a bare `python3`, or a crash makes the hook fail open.
 - **No ADR.** Adding a hook back is easy, so the decision fails gate one (hard to reverse).
+- **Codex review, one pass on `origin/master...HEAD` at 72beed8: CHANGES REQUESTED.** Codex had the deleted hook and its tests to compare against.
+  - High, accepted as a gap to record, not to close: the plan missed the creation of a protected branch, which the gate asked for and git's hook allows. It is now under "Left open", with the reason no rule is added.
+  - Medium, accepted the same way: `git switch -f` and `--discard-changes`. They are now under "Left open", beside `git restore`, which never asked.
+  - Medium, accepted: "refuses every update / every other change" overstated git's hook, which allows creation. Fixed in `CLAUDE.md` (the merge sentence, and the same claim in the hook's own bullet), in `README.md` (the new bullet and the `git-hooks/` layout entry) and in this plan.
+  - Medium, accepted: the `CLAUDE.md` merge sentence said the merge "waits on this rule alone", but in auto mode the classifier's `soft_deny` also stops it. It now says that outside auto mode nothing else stops it.
+  - Low, accepted: the `.gitignore` comment named the deleted `hooks/` tests. It now names `git-hooks/`.
+  - Low, no change: the new patterns match as claimed (`git branch -d*` covers `-df`, `git switch -C*` covers `-Cname`, ask beats the `git branch *` allow), and no skill or command uses `git -c`, a mutating `git branch` or `git switch` routinely.
+  
+  No re-run: the fixes are wording and two entries in the open list; no rule or file changed meaning.
+
+  Checking the repository afterwards found no ref moved. It also found four new unreferenced objects in `.git/objects`, all written at 17:04:04: a blob of the edited `CLAUDE.md`, an index commit, a tree, and a commit with two parents, `HEAD` and that index commit. That is the shape `git stash create` writes. Codex's log holds no command against this repository, and the time matches this session's own edit of `CLAUDE.md`. So it was most likely a program watching the working tree, not Codex. No ref points at them, so `git gc` will prune them.
 
 ## Verification
 
