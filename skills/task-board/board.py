@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""Run a project's GitHub board by name: ready, file, queue, claim, release, done.
+"""Run a project's GitHub board by name: ready, file, queue, claim, release, done, and check.
 
 The task-board skill (SKILL.md beside this file) describes the workflow; this script is its only way to change the
 board, so no session has to look up the board's internal IDs, and a wrong ID cannot set the wrong field. It reads
 `.task-board.json` at the repository root, for example
     {"owner": "tia-tools", "project": 3, "repo": "tia-tools/gmks-hif-final-stats"}
 and calls `gh`, which takes its token from the project's GH_CONFIG_DIR (global CLAUDE.md § Git Operations).
+
+What it relies on, and why (plan 0031 in the Taka499/claude repo):
+- the board through GitHub's GraphQL API only, via `gh api graphql`: GA since 2022, breaking changes announced at
+  least three months ahead. Not `gh project …`, whose commands and JSON are gh's own and have changed;
+- the organization's issue field "Priority" through the REST API, with the version pinned (REST_VERSION), so a
+  change of gh's default cannot move it;
+- every shape it reads is checked, and anything unexpected stops with exit 2 instead of being read as a default.
 Standard library only; Python 3.9 or later.
 
 Usage:
+    python3 -I board.py check                                   (read-only: is the board and the API as expected?)
     python3 -I board.py ready [--json]
     python3 -I board.py file (--triage | --todo [--priority NAME]) --title TITLE [--body BODY] [--blocked-by 3,7]
     python3 -I board.py queue N [--priority NAME]               (only when the user asks: Triage is their gate)
@@ -36,6 +44,43 @@ STATUSES = (TRIAGE, TODO, IN_PROGRESS, DONE)
 # Markers at the start of the comments this script writes, so a later run can read the claim history back.
 CLAIM, RELEASE, DONE_MARK = "task-board claim:", "task-board release:", "task-board done:"
 LIMIT = "1000"  # gh's list commands default to 30 items
+# The REST version every REST call names. Supported until at least 2028-03-10; `check` warns when GitHub marks it
+# deprecated or stops listing it.
+REST_VERSION = "2022-11-28"
+REST_HEADER = f"X-GitHub-Api-Version: {REST_VERSION}"
+
+# The board's ID, its Status field and options, and its items with their Status, asked for by name.
+BOARD_QUERY = """query($owner: String!, $number: Int!, $after: String) {
+  organization(login: $owner) {
+    projectV2(number: $number) {
+      id
+      field(name: "Status") {
+        __typename
+        ... on ProjectV2SingleSelectField { id options { id name } }
+      }
+      items(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          status: fieldValueByName(name: "Status") {
+            __typename
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+          content { __typename ... on Issue { number title url repository { nameWithOwner } } }
+        }
+      }
+    }
+  }
+}"""
+SET_STATUS_MUTATION = """mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+  updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field,
+                                        value: {singleSelectOptionId: $option}}) {
+    projectV2Item { id }
+  }
+}"""
+ADD_ITEM_MUTATION = """mutation($project: ID!, $content: ID!) {
+  addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } }
+}"""
 
 
 class BoardError(Exception):
@@ -43,7 +88,7 @@ class BoardError(Exception):
 
 
 class GhError(Exception):
-    """gh exited non-zero (exit 2)."""
+    """gh exited non-zero, or answered in a shape this script does not expect (exit 2)."""
 
 
 class Refused(Exception):
@@ -58,26 +103,26 @@ class Config:
 
 
 @dataclass(frozen=True)
-class Fields:
+class StatusField:
     project_id: str
     status_id: str
     status_options: dict  # option name -> option id
-    priority_id: str
-    priority_options: dict  # option name -> option id, in the board's order: first is the most urgent
 
-    @property
-    def priorities(self) -> list:
-        return list(self.priority_options)
+
+@dataclass(frozen=True)
+class PriorityField:
+    field_id: int
+    priorities: tuple  # option names, most urgent first
 
     def default_priority(self) -> str:
-        """The middle option (Medium of Urgent, High, Medium, Low): what an item without a Priority counts as."""
+        """The middle option (Medium of Urgent, High, Medium, Low): what an issue without a Priority counts as."""
         return self.priorities[len(self.priorities) // 2]
 
     def priority(self, name: str | None) -> str:
         if name is None:
             return self.default_priority()
-        if name not in self.priority_options:
-            raise BoardError(f"the board has no Priority {name!r}; its options are {', '.join(self.priorities)}")
+        if name not in self.priorities:
+            raise BoardError(f"there is no Priority {name!r}; the options are {', '.join(self.priorities)}")
         return name
 
 
@@ -94,35 +139,125 @@ def parse_config(text: str) -> Config:
     return config
 
 
-def parse_fields(project_json: str, fields_json: str) -> Fields:
-    """The board's ID and the IDs of its Status and Priority fields and their options, from `gh project view` and
-    `gh project field-list`. Names a missing field or option rather than guessing one."""
-    project_id = json.loads(project_json)["id"]
-    fields = {field["name"]: field for field in json.loads(fields_json)["fields"]}
-    found = {}
-    for name, wanted in ((STATUS_FIELD, STATUSES), (PRIORITY_FIELD, ())):
-        field = fields.get(name)
-        if field is None or not field.get("options"):
-            raise BoardError(f"the board has no single-select field {name!r} with options"
-                             + (f" (wanted: {', '.join(wanted)})" if wanted else ""))
-        options = {option["name"]: option["id"] for option in field["options"]}  # keeps the board's order
-        missing = [option for option in wanted if option not in options]
-        if missing:
-            raise BoardError(f"the board's {name} field lacks the option(s) {', '.join(missing)}")
-        found[name] = (field["id"], options)
-    return Fields(project_id, found[STATUS_FIELD][0], found[STATUS_FIELD][1],
-                  found[PRIORITY_FIELD][0], found[PRIORITY_FIELD][1])
+def graphql_data(response_json: str) -> dict:
+    """The `data` of a GraphQL response; its `errors` become a GhError."""
+    response = json.loads(response_json)
+    if not isinstance(response, dict):
+        raise GhError(f"GraphQL answered with {type(response).__name__}, not an object")
+    if response.get("errors"):
+        raise GhError(f"GraphQL: {'; '.join(str(error.get('message', error)) for error in response['errors'])}")
+    if not isinstance(response.get("data"), dict):
+        raise GhError("GraphQL answered with no data")
+    return response["data"]
 
 
-def field_value(item: dict, name: str) -> str:
-    """gh's item-list JSON gives each field's value under the field's name in lower case."""
-    value = item.get(name.lower(), item.get(name))
-    return value if isinstance(value, str) else ""
+def parse_board_page(page_json: str, project: int):
+    """One page of BOARD_QUERY: (the Status field, the page's items, the cursor of the next page or None).
+
+    Each item is {"id", "status", "content": {"type", "number", "title", "url", "repository"}}. "status" is the
+    name of the item's Status option, or "" where the item has none. Fails closed: a missing or renamed Status
+    field, a missing option, or a value that is not a named single-select option stops the run, so nothing is
+    silently read as Triage."""
+    board = (graphql_data(page_json).get("organization") or {}).get("projectV2")
+    if board is None:
+        raise BoardError(f"no board number {project} for this owner, or the token cannot read it")
+    field = board.get("field")
+    if not field:
+        raise BoardError(f"the board has no field named {STATUS_FIELD!r}; was it renamed? (wanted options:"
+                         f" {', '.join(STATUSES)})")
+    if field.get("__typename") != "ProjectV2SingleSelectField" or not field.get("options"):
+        raise BoardError(f"the board's {STATUS_FIELD!r} field is a {field.get('__typename')}, not a single-select"
+                         f" field with options")
+    options = {option["name"]: option["id"] for option in field["options"]}
+    missing = [option for option in STATUSES if option not in options]
+    if missing:
+        raise BoardError(f"the board's {STATUS_FIELD} field lacks the option(s) {', '.join(missing)}")
+    status_field = StatusField(board["id"], field["id"], options)
+    page = board.get("items")
+    info = (page or {}).get("pageInfo")
+    if not isinstance(page, dict) or not isinstance(page.get("nodes"), list) or not isinstance(info, dict) \
+            or not isinstance(info.get("hasNextPage"), bool):
+        raise GhError("the board's items came back without nodes or pageInfo.hasNextPage")
+    if info["hasNextPage"] and not (isinstance(info.get("endCursor"), str) and info["endCursor"]):
+        raise GhError("the board says there are more items but gives no cursor for them")
+    items = []
+    for node in page["nodes"]:
+        value = node.get("status")
+        if value is None:
+            status = ""
+        elif value.get("__typename") == "ProjectV2ItemFieldSingleSelectValue" and value.get("name"):
+            status = value["name"]
+        else:
+            raise GhError(f"item {node.get('id')!r} has a Status of an unexpected shape: {value!r}")
+        content = node.get("content") or {}
+        items.append({"id": node["id"], "status": status,
+                      "content": {"type": content.get("__typename", ""), "number": content.get("number"),
+                                  "title": content.get("title", ""), "url": content.get("url", ""),
+                                  "repository": (content.get("repository") or {}).get("nameWithOwner", "")}})
+    return status_field, items, (info["endCursor"] if info["hasNextPage"] else None)
+
+
+def mutation_id(response_json: str, *path: str) -> str:
+    """The ID a mutation answered with, at `path` inside its data; anything else is a GhError."""
+    value = graphql_data(response_json)
+    for key in path:
+        value = value.get(key) if isinstance(value, dict) else None
+    if not isinstance(value, str) or not value:
+        raise GhError(f"GraphQL mutation answered without {'.'.join(path)}")
+    return value
+
+
+def parse_priority_field(issue_fields_json: str) -> PriorityField:
+    """The organization's issue field "Priority", from `GET /orgs/{org}/issue-fields`. Its options are listed in no
+    useful order (measured: High, Low, Medium, Urgent), so they are ranked by each option's own "priority" number,
+    1 the most urgent. GitHub documents that number as nullable, but the ready list's order rests on it, so an option
+    without an integer one stops the run: set the order in the organization's issue-field settings."""
+    for field in json.loads(issue_fields_json):
+        if field.get("name") == PRIORITY_FIELD and field.get("data_type") == "single_select" and field.get("options"):
+            listed = list(enumerate(field["options"]))
+            if not all(isinstance(option.get("name"), str) and option["name"] for _, option in listed):
+                raise GhError(f"the organization's {PRIORITY_FIELD} field has an option without a name")
+            unranked = [option["name"] for _, option in listed
+                        if not isinstance(option.get("priority"), int) or isinstance(option["priority"], bool)]
+            if unranked:
+                raise GhError(f"the organization's {PRIORITY_FIELD} option(s) {', '.join(unranked)} have no priority"
+                              f" number to rank by; set the order in the organization's issue-field settings")
+            ranked = sorted(listed, key=lambda pair: (pair[1]["priority"], pair[0]))
+            return PriorityField(int(field["id"]), tuple(option["name"] for _, option in ranked))
+    raise BoardError(f"the organization has no single-select issue field {PRIORITY_FIELD!r} with options (the"
+                     f" token needs Organization permissions: Issue Fields, read)")
+
+
+def priority_value(values_json: str, field: PriorityField) -> str:
+    """An issue's Priority from `GET …/issues/{n}/issue-field-values`, or "" if it has none. An entry for the field
+    without an option name, or with a name that is not one of the field's options, stops the run rather than
+    counting as the default or sorting last."""
+    for entry in json.loads(values_json):
+        if entry.get("issue_field_id") == field.field_id:
+            name = (entry.get("single_select_option") or {}).get("name")
+            if not isinstance(name, str) or not name:
+                raise GhError(f"the issue's {PRIORITY_FIELD} value has an unexpected shape: {entry!r}")
+            if name not in field.priorities:
+                raise GhError(f"the issue's {PRIORITY_FIELD} {name!r} is not one of the field's options"
+                              f" ({', '.join(field.priorities)})")
+            return name
+    return ""
+
+
+def parse_headers(response: str) -> dict:
+    """The headers of `gh api -i` output, lower-cased: the lines after the status line, up to the first blank."""
+    headers = {}
+    for line in response.replace("\r\n", "\n").split("\n\n", 1)[0].split("\n")[1:]:
+        name, _, value = line.partition(":")
+        if value:
+            headers[name.strip().lower()] = value.strip()
+    return headers
 
 
 def status_of(item: dict) -> str:
     """An item with no Status yet counts as Triage: the board's auto-add puts new issues there without one."""
-    return field_value(item, STATUS_FIELD) or TRIAGE
+    status = item.get("status")
+    return status if isinstance(status, str) and status else TRIAGE
 
 
 def repo_of(content: dict) -> str:
@@ -143,11 +278,16 @@ def item_for(items: list, number: int, repo: str):
 
 def open_blockers(issue: dict, open_numbers: set, repo: str) -> list:
     """Numbers of the blockers still open. gh's `blockedBy` may come as a list or as {"nodes": [...]}. A blocker
-    with a state is open if that state is OPEN. One without a state is open if it is among this repository's open
+    with a state is open if that state is OPEN, closed if CLOSED, and any other state stops the run: an unknown
+    state must not let blocked work look ready. One without a state is open if it is among this repository's open
     issues, and also when it cannot be placed (no number, or another repository): in doubt, nothing starts early."""
-    value = issue.get("blockedBy") or []
+    if "blockedBy" not in issue:  # absent would read as "no blockers" and let blocked work look ready
+        raise GhError(f"issue {issue.get('number')!r} came back without blockedBy")
+    value = issue["blockedBy"]
     if isinstance(value, dict):
-        value = value.get("nodes") or []
+        value = value.get("nodes")
+    if not isinstance(value, list):
+        raise GhError(f"issue {issue.get('number')!r} has blockedBy of an unexpected shape: {issue['blockedBy']!r}")
     blockers = []
     for blocker in value:
         number = blocker.get("number")
@@ -155,6 +295,8 @@ def open_blockers(issue: dict, open_numbers: set, repo: str) -> list:
         if state:
             if state == "OPEN":
                 blockers.append(number)
+            elif state != "CLOSED":
+                raise GhError(f"blocker {number!r} has an unknown state {blocker.get('state')!r}")
             continue
         elsewhere = repo_of(blocker) not in ("", repo)
         if number is None or elsewhere or number in open_numbers:
@@ -162,26 +304,44 @@ def open_blockers(issue: dict, open_numbers: set, repo: str) -> list:
     return blockers
 
 
-def ready(items: list, issues: list, repo: str, priorities: list) -> list:
-    """Ready work: board items for open issues of this repository with Status Todo and no open blocker, ordered by
-    Priority in the board's order (first is the most urgent; none counts as the middle option), then oldest first.
-    Each entry: number, title, priority, created."""
+def ready_candidates(items: list, issues: list, repo: str) -> list:
+    """Numbers of the board's items for open issues of this repository with Status Todo and no open blocker."""
     open_issues = {issue["number"]: issue for issue in issues}
-    rank = {priority: index for index, priority in enumerate(priorities)}
-    default = priorities[len(priorities) // 2]
-    result = []
+    numbers = []
     for item in items:
         content = item.get("content") or {}
         number = content.get("number")
         if content.get("type") != "Issue" or repo_of(content) != repo or number not in open_issues:
             continue
-        if status_of(item) != TODO or open_blockers(open_issues[number], set(open_issues), repo):
-            continue
-        priority = field_value(item, PRIORITY_FIELD) or default
-        result.append({"number": number, "title": open_issues[number].get("title", content.get("title", "")),
-                       "priority": priority, "created": open_issues[number].get("createdAt", "")})
+        if status_of(item) == TODO and not open_blockers(open_issues[number], set(open_issues), repo):
+            numbers.append(number)
+    return numbers
+
+
+def ready(items: list, issues: list, repo: str, priorities, priority_of: dict) -> list:
+    """Ready work, ordered by Priority (most urgent first; an issue without one counts as the middle option), then
+    oldest first. `priority_of` maps an issue number to its Priority, or "" for none. Each entry: number, title,
+    priority, created."""
+    open_issues = {issue["number"]: issue for issue in issues}
+    rank = {priority: index for index, priority in enumerate(priorities)}
+    default = priorities[len(priorities) // 2]
+    result = []
+    for number in ready_candidates(items, issues, repo):
+        priority = priority_of.get(number) or default
+        result.append({"number": number, "title": open_issues[number].get("title", ""), "priority": priority,
+                       "created": open_issues[number].get("createdAt", "")})
     return sorted(result, key=lambda entry: (rank.get(entry["priority"], len(priorities)), entry["created"],
                                              entry["number"]))
+
+
+def own_comments(comments: list, login: str) -> list:
+    """The comments `login` wrote, oldest first. Order decides who holds a claim, so one of them without a
+    timestamp stops the run rather than sorting first."""
+    own = [comment for comment in comments if ((comment.get("author") or {}).get("login") or "") == login]
+    for comment in own:
+        if not isinstance(comment.get("createdAt"), str) or not comment["createdAt"]:
+            raise GhError("a comment by this account came back without createdAt")
+    return sorted(own, key=lambda comment: comment["createdAt"])
 
 
 def claim_holder(comments: list, login: str):
@@ -189,9 +349,7 @@ def claim_holder(comments: list, login: str):
     Only comments written by `login`, the account every session acts as, count. On a public repository anyone can
     comment, and a stranger's marker comment must not take, block or end a claim."""
     holder = None
-    for comment in sorted(comments, key=lambda comment: comment.get("createdAt", "")):
-        if ((comment.get("author") or {}).get("login") or "") != login:
-            continue
+    for comment in own_comments(comments, login):
         body = (comment.get("body") or "").strip()
         if body.startswith(RELEASE) or body.startswith(DONE_MARK):
             holder = None
@@ -204,9 +362,7 @@ def last_marker(comments: list, login: str):
     """The latest of this account's marker comments, as (kind, branch), kind being claim, release or done; or
     None. Lets `done` recognise its own earlier, half-finished run."""
     last = None
-    for comment in sorted(comments, key=lambda comment: comment.get("createdAt", "")):
-        if ((comment.get("author") or {}).get("login") or "") != login:
-            continue
+    for comment in own_comments(comments, login):
         body = (comment.get("body") or "").strip()
         for kind, marker in (("claim", CLAIM), ("release", RELEASE), ("done", DONE_MARK)):
             if body.startswith(marker):
@@ -221,9 +377,9 @@ class Gh:
     def __init__(self, executable: str = "gh"):
         self.executable = executable
 
-    def run(self, *args: str) -> str:
+    def run(self, *args: str, input: str | None = None) -> str:
         try:
-            result = subprocess.run([self.executable, *args], capture_output=True, text=True)
+            result = subprocess.run([self.executable, *args], capture_output=True, text=True, input=input)
         except OSError as error:
             raise GhError(f"could not run {self.executable}: {error}") from None
         if result.returncode != 0:
@@ -234,44 +390,65 @@ class Gh:
 class Board:
     def __init__(self, config: Config, gh: Gh):
         self.config, self.gh = config, gh
-        self._fields = None
+        self._status_field = None
+        self._priority_field = None
         self._login = None
 
-    def fields(self) -> Fields:
-        if self._fields is None:
-            number, owner = str(self.config.project), self.config.owner
-            self._fields = parse_fields(self.gh.run("project", "view", number, "--owner", owner, "--format", "json"),
-                                        self.gh.run("project", "field-list", number, "--owner", owner, "--format",
-                                                    "json", "--limit", LIMIT))
-        return self._fields
+    # -- reading --
+
+    def graphql(self, query: str, *variables: str) -> str:
+        """`gh api graphql` with `query` and `variables` given as `-f name=value`, or `-F` for an integer."""
+        args = ["api", "graphql", "-f", f"query={query}"]
+        for variable in variables:
+            flag = "-F" if variable.startswith("number=") else "-f"
+            args += [flag, variable]
+        return self.gh.run(*args)
+
+    def rest(self, path: str, *extra: str, input: str | None = None) -> str:
+        """`gh api` against REST, naming the pinned version."""
+        return self.gh.run("api", "-H", REST_HEADER, *extra, path, input=input)
+
+    def board(self):
+        """(the Status field, every item), reading all pages of BOARD_QUERY."""
+        items, cursor, seen = [], None, set()
+        while True:
+            variables = [f"owner={self.config.owner}", f"number={self.config.project}"]
+            if cursor:
+                variables.append(f"after={cursor}")
+            field, page, cursor = parse_board_page(self.graphql(BOARD_QUERY, *variables), self.config.project)
+            self._status_field = field
+            items += page
+            if cursor is None:
+                return field, items
+            if cursor in seen:  # a page that does not advance would otherwise loop forever
+                raise GhError(f"the board's item pages did not advance: cursor {cursor!r} came back twice")
+            seen.add(cursor)
+
+    def status_field(self) -> StatusField:
+        if self._status_field is None:
+            self.board()
+        return self._status_field
 
     def items(self) -> list:
-        # gh adds a field's values to the item list only when asked with --field. Without them every item would
-        # read as blank, which status_of() counts as Triage.
-        data = json.loads(self.gh.run("project", "item-list", str(self.config.project), "--owner", self.config.owner,
-                                      "--field", STATUS_FIELD, "--field", PRIORITY_FIELD, "--format", "json",
-                                      "--limit", LIMIT))
-        return data.get("items") or []
+        return self.board()[1]
+
+    def priority_field(self) -> PriorityField:
+        if self._priority_field is None:
+            self._priority_field = parse_priority_field(self.rest(f"orgs/{self.config.owner}/issue-fields"))
+        return self._priority_field
+
+    def priority_of(self, number: int) -> str:
+        return priority_value(self.rest(f"repos/{self.config.repo}/issues/{number}/issue-field-values"),
+                              self.priority_field())
 
     def open_issues(self) -> list:
         return json.loads(self.gh.run("issue", "list", "--repo", self.config.repo, "--state", "open", "--limit",
                                       LIMIT, "--json", "number,title,createdAt,blockedBy"))
 
-    def set_field(self, item_id: str, field_id: str, option_id: str) -> None:
-        self.gh.run("project", "item-edit", "--id", item_id, "--project-id", self.fields().project_id,
-                    "--field-id", field_id, "--single-select-option-id", option_id)
-
-    def set_status(self, item_id: str, status: str) -> None:
-        fields = self.fields()
-        self.set_field(item_id, fields.status_id, fields.status_options[status])
-
-    def comment(self, number: int, body: str) -> None:
-        self.gh.run("issue", "comment", str(number), "--repo", self.config.repo, "--body", body)
-
     def login(self) -> str:
         """The account the token belongs to: every session's comments are written as it."""
         if self._login is None:
-            self._login = self.gh.run("api", "user", "--jq", ".login").strip()
+            self._login = self.rest("user", "--jq", ".login").strip()
             if not self._login:
                 raise GhError("gh api user returned no login")
         return self._login
@@ -295,16 +472,76 @@ class Board:
             who = "no one" if holder is None else repr(holder)
             raise Refused(f"issue #{number} is claimed by {who}, not {branch!r}; only the claiming branch may do this")
 
+    # -- writing --
+
+    def set_status(self, item_id: str, status: str) -> None:
+        field = self.status_field()
+        answered = mutation_id(self.graphql(SET_STATUS_MUTATION, f"project={field.project_id}", f"item={item_id}",
+                                            f"field={field.status_id}", f"option={field.status_options[status]}"),
+                               "updateProjectV2ItemFieldValue", "projectV2Item", "id")
+        if answered != item_id:
+            raise GhError(f"setting Status answered for item {answered!r}, not {item_id!r}")
+
+    def set_priority(self, number: int, name: str) -> None:
+        body = {"issue_field_values": [{"field_id": self.priority_field().field_id, "value": name}]}
+        self.rest(f"repos/{self.config.repo}/issues/{number}/issue-field-values", "--method", "POST", "--input", "-",
+                  input=json.dumps(body))
+
+    def add_to_board(self, number: int) -> str:
+        """Add issue `number` to the board, and return its item ID. Adding an issue already on the board (auto-add
+        may have been first) returns the existing item."""
+        node = json.loads(self.rest(f"repos/{self.config.repo}/issues/{number}")).get("node_id")
+        if not isinstance(node, str) or not node:
+            raise GhError(f"issue #{number} came back without a node_id")
+        return mutation_id(self.graphql(ADD_ITEM_MUTATION, f"project={self.status_field().project_id}",
+                                        f"content={node}"), "addProjectV2ItemById", "item", "id")
+
+    def comment(self, number: int, body: str) -> None:
+        self.gh.run("issue", "comment", str(number), "--repo", self.config.repo, "--body", body)
+
     # -- the steps --
     # Each step changes things in an order whose failure leaves the safer state, and a rerun of the same step
     # finishes it. A gh failure after the first change says what was already done.
 
+    def check(self) -> list:
+        """Read-only: everything the other steps rely on, read once from the live board and API. Returns report
+        lines; a shape the steps could not use raises, as it would there. A deprecated REST version only warns."""
+        lines = []
+        field, items = self.board()
+        lines.append(f"ok: board {self.config.owner} #{self.config.project}: {STATUS_FIELD} has"
+                     f" {', '.join(field.status_options)}; {len(items)} item(s), every Status readable")
+        priority = self.priority_field()
+        lines.append(f"ok: {PRIORITY_FIELD} options, most urgent first: {' > '.join(priority.priorities)}"
+                     f" (default {priority.default_priority()})")
+        issues = self.open_issues()
+        lines.append(f"ok: {len(issues)} open issue(s) in {self.config.repo}")
+        on_board = [item["content"]["number"] for item in items
+                    if item["content"]["type"] == "Issue" and repo_of(item["content"]) == self.config.repo]
+        for number in on_board[:3]:
+            self.priority_of(number)
+        lines.append(f"ok: {PRIORITY_FIELD} read for {len(on_board[:3])} issue(s) on the board")
+        lines.append(f"ok: acting as {self.login()}")
+        versions = json.loads(self.rest("versions"))
+        if REST_VERSION not in versions:
+            raise GhError(f"GitHub no longer lists REST version {REST_VERSION} (it lists {', '.join(versions)})")
+        headers = parse_headers(self.rest(f"orgs/{self.config.owner}/issue-fields", "-i"))
+        if "deprecation" in headers or "sunset" in headers:
+            lines.append(f"warn: GitHub marks REST version {REST_VERSION} deprecated (Deprecation:"
+                         f" {headers.get('deprecation', '-')}; Sunset: {headers.get('sunset', '-')}); move REST_VERSION")
+        else:
+            lines.append(f"ok: REST version {REST_VERSION} supported, not marked deprecated")
+        return lines
+
     def ready(self) -> list:
-        return ready(self.items(), self.open_issues(), self.config.repo, self.fields().priorities)
+        items, issues = self.items(), self.open_issues()
+        priorities = self.priority_field().priorities
+        candidates = ready_candidates(items, issues, self.config.repo)
+        return ready(items, issues, self.config.repo, priorities,
+                     {number: self.priority_of(number) for number in candidates})
 
     def file(self, title: str, body: str, todo: bool, priority: str | None, blocked_by: str | None) -> int:
-        fields = self.fields()  # check the board, and the priority, before creating anything on it
-        chosen = fields.priority(priority) if todo else None
+        self.status_field()  # check the board, and the priority, before creating anything on it
+        chosen = self.priority_field().priority(priority) if todo else None
         args = ["issue", "create", "--repo", self.config.repo, "--title", title, "--body", body]
         if blocked_by:
             args += ["--blocked-by", blocked_by]
@@ -313,14 +550,12 @@ class Board:
         if not match:
             raise GhError(f"gh issue create gave no issue URL for {self.config.repo}; check the repository's issues"
                           f" for {title!r} before filing again. Output: {output[-200:]!r}")
-        url, number = match.group(1), int(match.group(2))
+        number = int(match.group(2))
         try:
-            # Auto-add may have put it on the board already; item-add then returns the same item.
-            item_id = json.loads(self.gh.run("project", "item-add", str(self.config.project), "--owner",
-                                             self.config.owner, "--url", url, "--format", "json"))["id"]
+            item_id = self.add_to_board(number)
             # Priority before Status: if setting Status fails, the item stays in Triage, the safe side.
             if todo:
-                self.set_field(item_id, fields.priority_id, fields.priority_options[chosen])
+                self.set_priority(number, chosen)
             self.set_status(item_id, TODO if todo else TRIAGE)
         except (GhError, KeyError, ValueError, TypeError) as error:
             raise GhError(f"issue #{number} was created, but placing it on the board failed ({error}); it counts as"
@@ -338,10 +573,9 @@ class Board:
             raise Refused(f"issue #{number} is closed")
         if self.holder(number) is not None:
             raise Refused(f"issue #{number} has a live claim by {self.holder(number)!r}")
-        fields = self.fields()
-        chosen = fields.priority(priority)
+        chosen = self.priority_field().priority(priority)
         # Priority before Status: if setting Status fails, the item stays in Triage, and a rerun finishes it.
-        self.set_field(item["id"], fields.priority_id, fields.priority_options[chosen])
+        self.set_priority(number, chosen)
         self.set_status(item["id"], TODO)
 
     def claim(self, number: int, branch: str, worktree: str | None) -> None:
@@ -391,18 +625,19 @@ class Board:
 def parse_args(argv: list) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="board.py", description="Run a project's GitHub board by name.")
     steps = parser.add_subparsers(dest="step", required=True)
+    steps.add_parser("check")
     steps.add_parser("ready").add_argument("--json", action="store_true")
     file_ = steps.add_parser("file")
     where = file_.add_mutually_exclusive_group(required=True)
     where.add_argument("--triage", action="store_true")
     where.add_argument("--todo", action="store_true")
-    file_.add_argument("--priority", help="one of the board's Priority options; default: the middle one")
+    file_.add_argument("--priority", help="one of the Priority options; default: the middle one")
     file_.add_argument("--title", required=True)
     file_.add_argument("--body", default="")
     file_.add_argument("--blocked-by")
     queue = steps.add_parser("queue")
     queue.add_argument("number", type=int)
-    queue.add_argument("--priority", help="one of the board's Priority options; default: the middle one")
+    queue.add_argument("--priority", help="one of the Priority options; default: the middle one")
     claim = steps.add_parser("claim")
     claim.add_argument("number", type=int)
     claim.add_argument("--branch", required=True)
@@ -434,7 +669,10 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None) -> int:
     try:
         args = parse_args(argv)
         board = Board(parse_config(find_config(cwd or Path.cwd()).read_text()), gh or Gh())
-        if args.step == "ready":
+        if args.step == "check":
+            for line in board.check():
+                print(line)
+        elif args.step == "ready":
             entries = board.ready()
             if args.json:
                 print(json.dumps(entries, ensure_ascii=False))
@@ -447,7 +685,7 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None) -> int:
             print(f"filed #{number} in {TODO if args.todo else TRIAGE}")
         elif args.step == "queue":
             board.queue(args.number, args.priority)
-            print(f"queued #{args.number} in {TODO} as {args.priority or board.fields().default_priority()}")
+            print(f"queued #{args.number} in {TODO} as {args.priority or board.priority_field().default_priority()}")
         elif args.step == "claim":
             board.claim(args.number, args.branch, args.worktree)
             print(f"claimed #{args.number} for {args.branch}")
