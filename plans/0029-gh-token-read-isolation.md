@@ -97,6 +97,7 @@ This plan:
     - its sandbox config listed `~/.config/gh-tokens` among the denied reads, and `~/.config/gh-tokens/tia-tools-private` as allowed within that deny.
 
     So the project's `allowRead` wins over the user-level deny, and the `Read` deny rule does not override it. The rule stays.
+  - **Link counts, run by the user** as a `!` command in this session: `find ~/.config/gh-tokens -type f -exec stat -f '%l %N' {} \;` listed `config.yml` and `hosts.yml` in each of the two folders, each with a link count of 1. That a user's `!` command could list the denied folder at all shows it does not run under the sandbox's read rules.
   - **The other project's folder, from gkms-coord:** `ls ~/.config/gh-tokens/tia-tools-public` was refused by the auto-mode classifier ("[Credential Exploration]") before it ran. The sandbox's own refusal is therefore inferred from the session's config, which re-allows only the private folder, not measured.
 
 ## Verification
