@@ -37,7 +37,7 @@ On 3, read the message and do not force the step another way. A step that failed
 
 ## Steps
 
-0. **Once per session, before the first step:** `check`. It reads the board, the Priority field and a few issues the way the other steps do, and changes nothing. If GitHub changed a shape the helper relies on, renamed the Status field, or stopped supporting the pinned REST version, it stops with exit 2 and says what. A `warn:` line, such as the pinned REST version being marked deprecated, goes to the user, and the session can carry on.
+0. **Once per session, before the first step:** `check`. It reads the board, the Priority field and a few issues the way the other steps do, and changes nothing. If the board's Status field or one of its options is missing or renamed, it stops with exit 1. If GitHub changed a shape the helper relies on, or stopped supporting the pinned REST version, it stops with exit 2. Either way it says what. A `warn:` line, such as the pinned REST version being marked deprecated, goes to the user, and the session can carry on.
 1. **What is next:** `ready` (`--json` for a list to parse). Take the top item, unless the user names one.
 2. **Claim it before any work:** `claim N --branch <branch> --worktree <path>`. This moves it to In Progress and comments the branch. If another session's claim comment is earlier, the step exits 3: leave that issue and take the next. If the user asks for work on an issue still in Triage, run `queue N [--priority <option>]` first. Only the user's ask allows that, because Triage is their gate.
 3. **Filing:**

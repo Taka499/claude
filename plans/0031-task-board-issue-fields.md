@@ -138,6 +138,13 @@ Revised after the research, on the user's choice "All of it now", 2026-10-29. Th
   - a `blockedBy` of another shape;
   - an undated own comment.
 
+- **Codex review of the revision, pass 3 at 87e93f1: CHANGES REQUESTED, one Low, accepted.** `SKILL.md` said a renamed Status field makes `check` exit 2; the helper raises a configuration error, exit 1. Fixed in the text.
+  - **What the pass confirmed:**
+    - pass 2's fixes reject nothing legitimate: empty blocker lists, lowercase states and integer priorities all pass;
+    - each fallback kept only fails toward "not ready";
+    - there is no remaining path where malformed input makes blocked, unqueued, claimed or closed work ready, changes who holds a claim, or sends a write to the wrong item or field.
+  - **No fourth pass:** the fix is one sentence of the skill.
+
 ## Verification
 
 - **The schema, checked 2026-10-29.** In GitHub's public GraphQL schema (docs.github.com/public/fpt/schema.docs.graphql, 1,561,946 bytes), every field and input the operations use exists, and none is `@deprecated`:
