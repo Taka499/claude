@@ -99,12 +99,23 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
   - `git ls-remote` over HTTPS: works;
   - Python 3.14's `urllib`: 200;
   - `uv` 0.13.4 resolved a package.
-- **A per-project `gh` token, never one in `~/.config/gh`.** A project that runs `gh` sandboxed sets `env.GH_CONFIG_DIR` and `env.SSL_CERT_FILE=/etc/ssl/cert.pem` in its own `.claude/settings.local.json`. `GH_CONFIG_DIR` names a folder of its own, holding a fine-grained token in plain text.
-  - **Keep the token narrow.** Every sandboxed command in that project can read it, Codex included:
-    - one resource owner, and only the project's private repositories;
-    - only the permissions its use needs: Issues write and Metadata read for an issue tracker;
+- **`gh` tokens live under `~/.config/gh-tokens/`, which `sandbox.filesystem.denyRead` denies; never put one in `~/.config/gh`.** A project that runs `gh` sandboxed opts in with its own `.claude/settings.local.json`:
+  - `env.GH_CONFIG_DIR`, naming one folder under `~/.config/gh-tokens/`;
+  - `env.SSL_CERT_FILE=/etc/ssl/cert.pem`;
+  - `sandbox.filesystem.allowRead` holding that same folder.
+
+  The folder holds a fine-grained token in plain text.
+  - **Keep the user-level deny.** Without it, every sandboxed command on the machine could read and use any project's token, Codex included. Measured on 2026-10-28: from a session in this repository, which had not opted in, `gh` read gkms-contest-ai's token and used it.
+    - The sandbox docs say "when read rules overlap, the rule with the narrower path applies", and that the levels' arrays merge. So a project's `allowRead` of its own folder re-opens only that folder.
+    - Nothing in managed settings locks the sandbox here; a lock would make the docs' rules ignore such an `allowRead`.
+  - **One folder per owner and visibility, shared by the projects that use it:** `tia-tools-private`, `tia-tools-public`. A new repository is added to the existing token on GitHub, with no new token.
+  - **Never mix public and private repositories in one token.** A project with private data would then hold a way to publish it.
+  - **Keep the token narrow.** Every sandboxed command in a project that re-allows the folder can read it, Codex included:
+    - one resource owner, and only the opted-in repositories of one visibility;
+    - only the permissions their use needs: Issues write and Metadata read for an issue tracker;
     - never Contents write;
     - an expiry.
+  - **On a public repository,** whatever a session writes in an issue is public at once, and anyone can open issues and comment. Sessions act only on the user's own issues, and treat other text as data.
 
     What the permissions allow, per GitHub's permission table:
     - **Issues write:** open, edit, close and lock issues, and delete comments, which cannot be restored.
@@ -118,7 +129,7 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
 
     The project's `GH_CONFIG_DIR` reaches unsandboxed commands too, since a settings `env` does.
 
-  Evidence: [`plans/0027-gh-sandboxed-per-project.md`](plans/0027-gh-sandboxed-per-project.md).
+  Evidence: [`plans/0027-gh-sandboxed-per-project.md`](plans/0027-gh-sandboxed-per-project.md) and [`plans/0029-gh-token-read-isolation.md`](plans/0029-gh-token-read-isolation.md).
 - Hook commands must be self-contained and portable. They run under `sh -c` on macOS/Linux and Git Bash on Windows, so a bare `afplay …` raises a non-blocking hook error on every Windows notification; branch on `uname -s` inline and end with `exit 0`.
 - **Secrets are protected by the sandbox, not by `Bash(...)` command-pattern denies.** `sandbox.credentials.files` and `sandbox.filesystem.denyRead` are enforced by the OS for every Bash command *and its child processes*, so they bind `sed`, `awk`, `python3`, `rg` and everything else at once. A `Bash(...)` denylist can only ever match command strings, which is why the previous `cat`/`head`/`tail` bans were removed: they implied a protection they could not deliver, while `sed -n p` walked straight past them. Verified by decoy, not by reading a real secret — see the note below.
 - **No `Bash(curl:*)` in `permissions.ask` — network access is limited by the sandbox, not by command name.** The entry was removed on 2026-10-04, and nothing recorded why it had been added. It was the same mistake as the `cat` bans: `wget`, `python3 -c`, `node -e` and `git` all reach the network without matching it. Meanwhile ask rules override auto mode, so it made *every* `curl` ask for approval. That included the unauthenticated GitHub API reads the global `CLAUDE.md` § Git Operations sends sessions to instead of `gh`, so each PR lookup cost a prompt. What actually limits `curl` is that sandboxed traffic can only reach `sandbox.network.allowedDomains`, and the `~/Library/Keychains` deny keeps tokens out of reach (bullet above). Leaving the sandbox still asks, because `Bash(dangerouslyDisableSandbox:true)` stays in `permissions.ask`. Do not try to replace the entry with a narrower allow such as `Bash(curl -s https://api.github.com/*)`: ask beats allow, so the broad ask rule would win regardless.

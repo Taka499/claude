@@ -14,6 +14,8 @@ This plan meets both reasons without what plan 0016 rejected, and only in a proj
 
 The keychain deny stays.
 
+> **Correction, 2026-10-29** (from `plans/0029-gh-token-read-isolation.md`): this plan says every sandboxed command *in an opted-in project* can read the token. In fact every sandboxed command on the machine could. `GH_CONFIG_DIR` only sets where `gh` looks; the folder stayed readable from every project's sandbox. A session in this repository, which had not opted in, read gkms-contest-ai's token and used it. Plan 0029 denies the folders at user level and re-allows each one per project. It also replaces "only that project's private repositories" with one token per owner and visibility, shared by the projects that use it. The rest of this plan stands.
+
 ## Design
 
 - **Opt-in, per project.** A project that wants `gh` sandboxed sets two variables in `env` of its own `.claude/settings.local.json`:
