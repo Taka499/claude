@@ -89,6 +89,11 @@ class FakeGh:
                     entry[names[option][0]] = names[option][1]
             return ""
         if key == ("issue", "close"):
+            number = int(args[2])
+            body = args[args.index("--comment") + 1]
+            self.comments.setdefault(number, []).append({"body": body, "createdAt": "2026-10-29T13:00:00Z",
+                                                          "author": {"login": "me"}})
+            self.issues = [entry for entry in self.issues if entry["number"] != number]
             return ""
         raise AssertionError(f"unexpected gh call: {args}")
 
@@ -319,6 +324,23 @@ class Steps(unittest.TestCase):
         self.assertEqual(gh.calls[close][gh.calls[close].index("--comment") + 1],
                          "task-board done: feature/x: merged abc123 into develop; tests green")
 
+    def test_a_done_whose_status_change_failed_finishes_on_a_rerun(self):
+        gh = FakeGh(items=[item(1, "In Progress")], issues=[issue(1)], comments={1: [claimed()]},
+                    fail_once_on=("project", "item-edit"))
+        with self.assertRaises(board.GhError):
+            make_board(gh).done(1, "feature/x", "merged abc123")
+        make_board(gh).done(1, "feature/x", "merged abc123")
+        self.assertEqual(board.status_of(gh.items[0]), "Done")
+        self.assertEqual(sum(call[:2] == ("issue", "close") for call in gh.calls), 1)
+
+    def test_a_done_rerun_is_only_for_the_branch_that_closed_it(self):
+        gh = FakeGh(items=[item(1, "In Progress")], issues=[issue(1)], comments={1: [claimed()]},
+                    fail_once_on=("project", "item-edit"))
+        with self.assertRaises(board.GhError):
+            make_board(gh).done(1, "feature/x", "merged abc123")
+        with self.assertRaises(board.Refused):
+            make_board(gh).done(1, "feature/other", "x")
+
     def test_done_refuses_outside_in_progress_or_for_another_branch(self):
         cases = [("Todo", [claimed()], "feature/x"), ("In Progress", [claimed("feature/other")], "feature/x"),
                  ("In Progress", [], "feature/x")]
@@ -373,6 +395,10 @@ class CommandLine(unittest.TestCase):
                 return "not json" if args[:2] == ("project", "item-list") else super().run(*args)
 
         self.assertEqual(board.main(["ready"], gh=Garbled(), cwd=self.folder), 2)
+
+    def test_a_missing_gh_is_gh_failing_not_a_traceback(self):
+        with self.assertRaisesRegex(board.GhError, "could not run"):
+            board.Gh("gh-that-does-not-exist-here").run("api", "user")
 
     def test_release_and_done_need_a_branch(self):
         for argv in (["release", "1", "--reason", "x"], ["done", "1", "--evidence", "x"]):

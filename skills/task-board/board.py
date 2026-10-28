@@ -184,11 +184,32 @@ def claim_holder(comments: list, login: str):
     return holder
 
 
+def last_marker(comments: list, login: str):
+    """The latest of this account's marker comments, as (kind, branch), kind being claim, release or done; or
+    None. Lets `done` recognise its own earlier, half-finished run."""
+    last = None
+    for comment in sorted(comments, key=lambda comment: comment.get("createdAt", "")):
+        if ((comment.get("author") or {}).get("login") or "") != login:
+            continue
+        body = (comment.get("body") or "").strip()
+        for kind, marker in (("claim", CLAIM), ("release", RELEASE), ("done", DONE_MARK)):
+            if body.startswith(marker):
+                words = body[len(marker):].replace(":", " ").split()
+                last = (kind, words[0] if words else "")
+    return last
+
+
 # ---- gh at the edge ---------------------------------------------------------------------------------------------
 
 class Gh:
+    def __init__(self, executable: str = "gh"):
+        self.executable = executable
+
     def run(self, *args: str) -> str:
-        result = subprocess.run(["gh", *args], capture_output=True, text=True)
+        try:
+            result = subprocess.run([self.executable, *args], capture_output=True, text=True)
+        except OSError as error:
+            raise GhError(f"could not run {self.executable}: {error}") from None
         if result.returncode != 0:
             raise GhError(f"gh {' '.join(args[:3])} … failed: {result.stderr.strip() or result.stdout.strip()}")
         return result.stdout
@@ -333,6 +354,12 @@ class Board:
         item = self.item(number)
         if status_of(item) != IN_PROGRESS:
             raise Refused(f"issue #{number} is in {status_of(item)}, not {IN_PROGRESS}; claim it before closing it")
+        closed = number not in {issue["number"] for issue in self.open_issues()}
+        if closed and last_marker(self.comments(number), self.login()) == ("done", branch):
+            # A rerun: this branch's earlier run closed the issue, and its done comment ended the claim, but
+            # setting Done failed. Finish that.
+            self.set_status(item["id"], DONE)
+            return
         self.require_holder(number, branch)
         # Closing first: the board's "Item closed" workflow sets Done as well, so a failure setting Done leaves a
         # closed issue the workflow still files under Done.

@@ -143,9 +143,11 @@ From the Decision Log below, D1–D11:
 - **D10. A skill with a tested helper script** (the user, on the recommendation). The skill, working name `task-board`, describes the workflow. A helper, Python with the standard library only and with tests, calls `gh` and works by name:
   - `ready`;
   - `claim <n> --branch <b>`;
-  - `release <n> --reason …`;
+  - `release <n> --branch <b> --reason …`;
   - `file --triage|--todo "title"`;
-  - `done <n> --evidence …`.
+  - `done <n> --branch <b> --evidence …`.
+
+  `queue` was added in D15, and `--branch` on `release` and `done` in D18.
 
   It looks up the board's internal IDs itself: project, fields and options. It runs sandboxed, so it needs no special trust.
   - **Reason:** `gh project item-edit` needs those IDs, and a wrong one silently sets the wrong field. Per global `CLAUDE.md` § Quality Gates, a step every session must get right belongs in a tool, not in prose.
@@ -189,13 +191,20 @@ From the Decision Log below, D1–D11:
   - no catch for unexpected output;
   - `file` accepting another repository's URL.
 
+- **D19. Codex review, second pass on the whole branch at cb57dd6: CHANGES REQUESTED.** It confirmed the first pass's findings fixed, and the reruns of `claim` and `release` sound. Its findings, all accepted and fixed:
+  - **Medium:** `done` could not be rerun. Its closing comment ends the claim, so a rerun after a failure to set Done failed the holder check. Now, if the issue is closed and this account's latest marker is this branch's done comment, a rerun sets Done and nothing else. Any other branch is still refused.
+  - **Low:** D10's command list lacked `--branch`. Fixed above.
+  - **Low:** a missing `gh` raised an `OSError` traceback. `Gh.run` now reports it as `gh` failing, so exit 2.
+
+  The suite went to 46 tests. Each fix was seen failing against a broken copy: no rerun path, a rerun allowed for any branch, no `OSError` catch.
+
 ## Progress
 
 - [x] (2026-10-29) `skills/task-board/board.py` and `test_board.py`: 33 tests, 43 after D18, OK on 3.9.6 and 3.14.9. Each target was seen failing against a broken copy (the blocker check, the earliest-claim rule, the ready check in `claim`, blank Status as Triage, `queue`'s state check, the claim author filter).
 - [x] (2026-10-29) `skills/task-board/SKILL.md`: the workflow, the rules and a board's one-time setup.
 - [x] (2026-10-29) `skills/backlog/SKILL.md`, global `CLAUDE.md` (§ General, the `gh` bullet, § Skills) and `README.md`.
 - [x] (2026-10-29) Codex review, first pass (D18), all findings fixed.
-- [ ] Codex review, second pass, since the logic moved.
+- [x] (2026-10-29) Codex review, second pass (D19), all findings fixed.
 - [ ] After the merge: `./setup.sh` outside the sandbox, to link the new skill into `~/.claude/skills` (ADR 0003).
 - [ ] The user's setup for gmks-hif-final-stats: the board, its fields and workflows, `.task-board.json` and the `CLAUDE.md` line.
 - [ ] Verification on that board, from a session there.
