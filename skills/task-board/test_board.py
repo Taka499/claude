@@ -35,6 +35,12 @@ ISSUE_FIELDS = [
      "options": [{"id": 76872382, "name": "High", "priority": 1}, {"id": 76872384, "name": "Low", "priority": 3},
                  {"id": 76872383, "name": "Medium", "priority": 2}]}]
 PRIORITIES = ("Urgent", "High", "Medium", "Low")
+OPTION_IDS = {"Urgent": 76872378, "High": 76872379, "Medium": 76872380, "Low": 76872381}
+# captured: `gh api …/issues/1/issue-field-values` after the user set Priority High on the board. "value" is the
+# option's numeric ID, not its name; the name is only in single_select_option.
+FIELD_VALUES_CAPTURED = [{"issue_field_id": 43924878, "node_id": "IFSSV_kgDOAOdA_w", "data_type": "single_select",
+                          "issue_field_name": "Priority", "value": 76872379,
+                          "single_select_option": {"id": 76872379, "name": "High", "color": "red"}}]
 
 
 def item(number: int, status: str | None, repo: str = REPO, kind: str = "Issue") -> dict:
@@ -157,9 +163,10 @@ class FakeGh:
         if kind == "priority-read":
             number = int(args[-1].split("/")[-2])
             name = self.priorities.get(number)
-            return json.dumps([] if not name else [
-                {"issue_field_id": PRIORITY_FIELD_ID, "issue_field_name": "Priority", "data_type": "single_select",
-                 "value": name, "single_select_option": {"id": 1, "name": name, "color": "red"}}])
+            return json.dumps([] if not name else [  # shaped as FIELD_VALUES_CAPTURED
+                {"issue_field_id": PRIORITY_FIELD_ID, "node_id": f"IFSSV_{number}", "data_type": "single_select",
+                 "issue_field_name": "Priority", "value": OPTION_IDS.get(name, 0),
+                 "single_select_option": {"id": OPTION_IDS.get(name, 0), "name": name, "color": "red"}}])
         if kind == "issue-list":
             return json.dumps(self.issues)
         if kind == "comment":
@@ -259,6 +266,10 @@ class ConfigAndFields(unittest.TestCase):
         field = board.parse_priority_field(json.dumps(ISSUE_FIELDS))
         self.assertEqual(board.priority_value(json.dumps(values), field), "Urgent")
         self.assertEqual(board.priority_value("[]", field), "")
+
+    def test_the_captured_priority_value_reads_as_its_option_name_not_its_numeric_value(self):
+        field = board.parse_priority_field(json.dumps(ISSUE_FIELDS))
+        self.assertEqual(board.priority_value(json.dumps(FIELD_VALUES_CAPTURED), field), "High")
 
     def test_a_priority_entry_without_an_option_name_stops_rather_than_counting_as_the_default(self):
         field = board.parse_priority_field(json.dumps(ISSUE_FIELDS))
