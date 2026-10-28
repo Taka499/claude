@@ -15,7 +15,7 @@ A project that keeps its tasks on a GitHub board says so in its `CLAUDE.md`, and
   - **Todo:** the user has queued it for work.
   - **In Progress:** a session has claimed it.
   - **Done:** merged into the integration branch, and closed.
-- **Priority** uses the board's own field and its options, ranked in the board's order, first most urgent. On GitHub's built-in field that is Urgent, High, Medium, Low. An item without one counts as the middle option (Medium). The user sets it.
+- **Priority** is the organization's issue field `Priority`, set on the issue itself. The board shows it as a column. Its options are ranked by their own priority number, 1 the most urgent, whatever order they are listed in: Urgent, High, Medium, Low on `tia-tools`. An issue without one counts as the middle option (Medium). The user sets it.
 - **Blocked** is not a column. It is GitHub's own issue dependency, set with `--blocked-by`, and the helper reads it.
 - **Ready work** is Todo with no open blocker, ordered by Priority, then oldest first.
 
@@ -72,10 +72,14 @@ Most of this happens in GitHub's web interface, by the user, once per project:
 
 1. **The token.** The owner's token for the repository's visibility (`~/.config/gh-tokens/<owner>-public` or `-private`, per global `CLAUDE.md` § Git Operations) needs:
    - **Repository permissions:** Issues, Read and write. Add Pull requests, Read and write, if the project merges through PRs, so sessions open PRs sandboxed.
-   - **Organization permissions:** Projects, Read and write. That section appears only for a token owned by an organization. The permission reaches every board of the organization: while a public token holds it, no board of that owner may hold private data.
+   - **Organization permissions:**
+     - **Projects, Read and write.** It reaches every board of the organization: while a public token holds it, no board of that owner may hold private data.
+     - **Issue Fields, Read-only,** so the helper can read the Priority field's options. Never Read and write: that would let a session change the organization's field definitions.
+
+     The section appears only for a token owned by an organization. Writing an issue's Priority needs only Issues write.
 2. **The board.** Under the organization's Projects, create a new project with the Board layout, private, named after the repository.
 3. **Status field.** Add the option `Triage` before `Todo`, and keep `Todo`, `In Progress` and `Done` exactly as GitHub names them.
-4. **Priority field.** Use GitHub's built-in `Priority` field as it comes, or any single-select field named `Priority`. The helper reads its options, ranks them in the board's order (first most urgent), and treats the middle one as the default.
+4. **Priority.** Nothing to create: every organization has the issue field `Priority`, and the board shows it. The helper reads its options from `GET /orgs/<org>/issue-fields`, ranks them by their priority number, and treats the middle one as the default.
 5. **Workflows**, in the board's menu:
    - turn on **Auto-add to project**, for the repository, with the filter `is:issue`;
    - keep **Item closed** setting Done;
