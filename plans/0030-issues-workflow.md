@@ -198,6 +198,8 @@ From the Decision Log below, D1–D11:
 
   The suite went to 46 tests. Each fix was seen failing against a broken copy: no rerun path, a rerun allowed for any branch, no `OSError` catch.
 
+  No third pass. The fixes touch one branch of `done` and the launcher of `gh`, and each was seen failing against a broken copy. The second pass had already checked the rest of the logic.
+
 ## Progress
 
 - [x] (2026-10-29) `skills/task-board/board.py` and `test_board.py`: 33 tests, 43 after D18, OK on 3.9.6 and 3.14.9. Each target was seen failing against a broken copy (the blocker check, the earliest-claim rule, the ready check in `claim`, blank Status as Triage, `queue`'s state check, the claim author filter).
