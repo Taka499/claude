@@ -86,7 +86,7 @@ Codex works in a copy, so its ordinary relative-path commands land there. It is 
 snapshot=$(mktemp -d "$TMPDIR/codex-review.XXXXXX") || exit 1
 sha=$(git -C <repository> rev-parse --verify HEAD) ||
   { echo "no commit to snapshot: if git -C <repository> rev-list -n 1 --all prints nothing, review in place (below)"; exit 1; }
-git -c advice.detachedHead=false clone -q --revision="$sha" <repository> "$snapshot/repo" || exit 1
+GIT_ADVICE=0 git clone -q --revision="$sha" <repository> "$snapshot/repo" || exit 1
 git -C "$snapshot/repo" fetch -q origin "<base>:refs/remotes/origin/<base>" || exit 1
 ```
 
@@ -100,7 +100,7 @@ tar -C <repository> --null -T "$snapshot/untracked.list" -cf "$snapshot/untracke
 tar -C "$snapshot/repo" -xf "$snapshot/untracked.tar" || exit 1
 ```
 
-`--revision` (git 2.49 or later) clones straight to that commit, detached, and creates no remote-tracking branches, hence the `fetch` of the base. It fetches from `origin`, which the clone points at the repository, so that every word is literal: the `git_gate.py` hook passes a fetch into `refs/remotes/` silently only then, because a variable may expand to a refspec that writes a branch. Do not reach it with `git -C <snapshot> checkout` instead: this setup's permission rules deny every mutating `git -C` form, so that step would be refused. The snapshot is detached at `HEAD`, so its base branch is `origin/<base>`: the diff to review is `git diff origin/<base>...HEAD`, plus the uncommitted changes shown by `git diff HEAD` and `git status`. Give `mktemp -d` the `$TMPDIR` template: without one, macOS uses the per-user system temp directory, which the sandbox refuses, and a script that then changes into an empty path runs in the repository instead (measured on 2026-10-12: four stray commits). In the steps below, run Codex from `"$snapshot/repo"` and name that path in the prompt.
+`--revision` (git 2.49 or later) clones straight to that commit, detached, and creates no remote-tracking branches, hence the `fetch` of the base. It fetches from `origin`, which the clone points at the repository. `GIT_ADVICE=0` silences the detached-HEAD notice the clone would print; `-c advice.detachedHead=false` does the same, but this setup's `Bash(git -c *)` ask rule prompts for it. Do not reach it with `git -C <snapshot> checkout` instead: this setup's permission rules deny every mutating `git -C` form, so that step would be refused. The snapshot is detached at `HEAD`, so its base branch is `origin/<base>`: the diff to review is `git diff origin/<base>...HEAD`, plus the uncommitted changes shown by `git diff HEAD` and `git status`. Give `mktemp -d` the `$TMPDIR` template: without one, macOS uses the per-user system temp directory, which the sandbox refuses, and a script that then changes into an empty path runs in the repository instead (measured on 2026-10-12: four stray commits). In the steps below, run Codex from `"$snapshot/repo"` and name that path in the prompt.
 
 Then, with the snapshot complete and just before Codex runs, record the repository's refs and a start marker. They come last on purpose: cloning a local repository hard-links its object files, which updates their change time, so a marker taken earlier would list the clone's own work in step 4.
 

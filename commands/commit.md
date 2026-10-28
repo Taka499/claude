@@ -15,7 +15,7 @@ description: Commit the current changes on a feature branch, or propose the comm
 Global `CLAUDE.md` § Git Operations governs this command. What to do depends on the branch:
 
 - **On a feature branch**, running `/commit` is the user's permission: commit now. Run the checks for what changed first; if they fail, say so and do not commit. Report each commit made (short hash and message).
-- **On `main`, `master` or `develop`**, do not commit. Say so, propose a feature branch, and present the message and the exact file list for approval. The `git_gate.py` hook asks before any commit there anyway.
+- **On `main`, `master` or `develop`**, do not commit. Say so, propose a feature branch, and present the message and the exact file list for approval. In the user's own repositories, git's branch-protection hook refuses a direct commit there anyway.
 
 Either way:
 
