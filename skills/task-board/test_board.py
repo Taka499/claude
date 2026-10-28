@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -106,6 +107,8 @@ class FakeGh:
                 return "issue-fields-headers" if "-i" in args else "issue-fields"
             if path == "versions":
                 return "versions"
+            if path == "user":
+                return "user"
             if re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+", path):
                 return "issue-node"
         return {("api", "user"): "user", ("issue", "list"): "issue-list", ("issue", "view"): "comments",
@@ -242,14 +245,22 @@ class ConfigAndFields(unittest.TestCase):
     def test_an_issues_priority_is_read_from_its_field_values(self):
         values = [{"issue_field_id": 43924881, "single_select_option": {"name": "High"}},
                   {"issue_field_id": PRIORITY_FIELD_ID, "single_select_option": {"name": "Urgent"}}]
-        self.assertEqual(board.priority_value(json.dumps(values), PRIORITY_FIELD_ID), "Urgent")
-        self.assertEqual(board.priority_value("[]", PRIORITY_FIELD_ID), "")
+        field = board.parse_priority_field(json.dumps(ISSUE_FIELDS))
+        self.assertEqual(board.priority_value(json.dumps(values), field), "Urgent")
+        self.assertEqual(board.priority_value("[]", field), "")
 
     def test_a_priority_entry_without_an_option_name_stops_rather_than_counting_as_the_default(self):
+        field = board.parse_priority_field(json.dumps(ISSUE_FIELDS))
         for entry in ({"issue_field_id": PRIORITY_FIELD_ID, "single_select_option": None, "value": "High"},
                       {"issue_field_id": PRIORITY_FIELD_ID, "single_select_option": {"name": ""}}):
             with self.assertRaises(board.GhError):
-                board.priority_value(json.dumps([entry]), PRIORITY_FIELD_ID)
+                board.priority_value(json.dumps([entry]), field)
+
+    def test_a_priority_that_is_not_one_of_the_options_stops_rather_than_sorting_last(self):
+        field = board.parse_priority_field(json.dumps(ISSUE_FIELDS))
+        entry = {"issue_field_id": PRIORITY_FIELD_ID, "single_select_option": {"name": "Critical"}}
+        with self.assertRaisesRegex(board.GhError, "Critical"):
+            board.priority_value(json.dumps([entry]), field)
 
 
 class BoardPages(unittest.TestCase):
@@ -275,6 +286,19 @@ class BoardPages(unittest.TestCase):
                                (dict(STATUS_FIELD, options=STATUS_FIELD["options"][1:]), "Triage")):
             with self.assertRaisesRegex(board.BoardError, pattern):
                 board.parse_board_page(board_page([], None, field=field), 1)
+
+    def test_a_page_without_nodes_or_page_info_stops_rather_than_reading_as_empty(self):
+        good = json.loads(board_page([item(1, "Todo")], None))
+        breakages = [lambda page: page["items"].pop("nodes"), lambda page: page["items"].update(nodes=None),
+                     lambda page: page["items"].pop("pageInfo"),
+                     lambda page: page["items"]["pageInfo"].pop("hasNextPage"),
+                     lambda page: page["items"]["pageInfo"].update(hasNextPage=True, endCursor=None),
+                     lambda page: page.pop("items")]
+        for breakage in breakages:
+            page = json.loads(json.dumps(good))
+            breakage(page["data"]["organization"]["projectV2"])
+            with self.assertRaises(board.GhError):
+                board.parse_board_page(json.dumps(page), 1)
 
     def test_graphql_errors_and_a_missing_board_are_reported(self):
         with self.assertRaises(board.GhError):
@@ -378,7 +402,9 @@ class Ready(unittest.TestCase):
         gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)])
         make_board(gh).ready()
         make_board(gh).file("x", "", todo=True, priority=None, blocked_by=None)
-        rest = [args for args, _ in gh.calls if args[0] == "api" and args[1] not in ("graphql", "user")]
+        make_board(gh).check()
+        rest = [args for args, _ in gh.calls if args[0] == "api" and args[1] != "graphql"]
+        self.assertIn("user", [args[-1] for args in rest])
         self.assertTrue(rest)
         self.assertTrue(all(args[1:3] == ("-H", "X-GitHub-Api-Version: 2022-11-28") for args in rest), rest)
 
@@ -666,10 +692,28 @@ class CommandLine(unittest.TestCase):
             board.find_config(nested)
 
 
+def closed_local_port() -> int:
+    """A local port with nothing listening: one the system just handed out and took back, then confirmed refused,
+    so the replay's requests, dummy token included, reach no one."""
+    try:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+    except PermissionError:  # a sandbox that forbids local binding; the connect check below still decides
+        port = 9
+    with socket.socket() as check:
+        check.settimeout(2)
+        try:
+            check.connect(("127.0.0.1", port))
+        except OSError:  # refused, or not permitted inside a sandbox: either way, nothing will receive the requests
+            return port
+    raise unittest.SkipTest(f"something is listening on 127.0.0.1:{port}; not replaying commands into it")
+
+
 @unittest.skipUnless(shutil.which("gh"), "gh is not installed")
 class ZzRealGhAcceptsEveryCommand(unittest.TestCase):
-    """Runs the real gh on every distinct command the tests above produced, with its host pointed at a closed local
-    port and a dummy token. gh checks flags, argument combinations and --json field names before it opens a
+    """Runs the real gh on every distinct command the tests above produced, with its host pointed at a local port
+    confirmed closed and a dummy token. gh checks flags, argument combinations and --json field names before it opens a
     connection, so each command must get as far as dialling the port; a refusal before that fails here. Named Zz… to run
     last (unittest runs classes alphabetically), after the other tests have recorded their calls."""
 
@@ -677,7 +721,8 @@ class ZzRealGhAcceptsEveryCommand(unittest.TestCase):
         if not RECORDED:
             self.skipTest("no commands recorded")
         folder = tempfile.mkdtemp()
-        env = dict(os.environ, GH_HOST="127.0.0.1:9", GH_ENTERPRISE_TOKEN="dummy", GH_TOKEN="dummy",
+        port = closed_local_port()
+        env = dict(os.environ, GH_HOST=f"127.0.0.1:{port}", GH_ENTERPRISE_TOKEN="dummy", GH_TOKEN="dummy",
                    GH_CONFIG_DIR=folder, GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1")
         seen, failures = set(), []
         for args, given in RECORDED:

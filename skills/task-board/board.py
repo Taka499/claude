@@ -173,9 +173,15 @@ def parse_board_page(page_json: str, project: int):
     if missing:
         raise BoardError(f"the board's {STATUS_FIELD} field lacks the option(s) {', '.join(missing)}")
     status_field = StatusField(board["id"], field["id"], options)
-    page = board["items"]
+    page = board.get("items")
+    info = (page or {}).get("pageInfo")
+    if not isinstance(page, dict) or not isinstance(page.get("nodes"), list) or not isinstance(info, dict) \
+            or not isinstance(info.get("hasNextPage"), bool):
+        raise GhError("the board's items came back without nodes or pageInfo.hasNextPage")
+    if info["hasNextPage"] and not (isinstance(info.get("endCursor"), str) and info["endCursor"]):
+        raise GhError("the board says there are more items but gives no cursor for them")
     items = []
-    for node in page.get("nodes") or []:
+    for node in page["nodes"]:
         value = node.get("status")
         if value is None:
             status = ""
@@ -188,8 +194,7 @@ def parse_board_page(page_json: str, project: int):
                       "content": {"type": content.get("__typename", ""), "number": content.get("number"),
                                   "title": content.get("title", ""), "url": content.get("url", ""),
                                   "repository": (content.get("repository") or {}).get("nameWithOwner", "")}})
-    info = page.get("pageInfo") or {}
-    return status_field, items, (info.get("endCursor") if info.get("hasNextPage") else None)
+    return status_field, items, (info["endCursor"] if info["hasNextPage"] else None)
 
 
 def mutation_id(response_json: str, *path: str) -> str:
@@ -218,14 +223,18 @@ def parse_priority_field(issue_fields_json: str) -> PriorityField:
                      f" token needs Organization permissions: Issue Fields, read)")
 
 
-def priority_value(values_json: str, field_id: int) -> str:
+def priority_value(values_json: str, field: PriorityField) -> str:
     """An issue's Priority from `GET …/issues/{n}/issue-field-values`, or "" if it has none. An entry for the field
-    without an option name stops the run rather than counting as the default."""
+    without an option name, or with a name that is not one of the field's options, stops the run rather than
+    counting as the default or sorting last."""
     for entry in json.loads(values_json):
-        if entry.get("issue_field_id") == field_id:
+        if entry.get("issue_field_id") == field.field_id:
             name = (entry.get("single_select_option") or {}).get("name")
             if not isinstance(name, str) or not name:
                 raise GhError(f"the issue's {PRIORITY_FIELD} value has an unexpected shape: {entry!r}")
+            if name not in field.priorities:
+                raise GhError(f"the issue's {PRIORITY_FIELD} {name!r} is not one of the field's options"
+                              f" ({', '.join(field.priorities)})")
             return name
     return ""
 
@@ -412,7 +421,7 @@ class Board:
 
     def priority_of(self, number: int) -> str:
         return priority_value(self.rest(f"repos/{self.config.repo}/issues/{number}/issue-field-values"),
-                              self.priority_field().field_id)
+                              self.priority_field())
 
     def open_issues(self) -> list:
         return json.loads(self.gh.run("issue", "list", "--repo", self.config.repo, "--state", "open", "--limit",
@@ -421,7 +430,7 @@ class Board:
     def login(self) -> str:
         """The account the token belongs to: every session's comments are written as it."""
         if self._login is None:
-            self._login = self.gh.run("api", "user", "--jq", ".login").strip()
+            self._login = self.rest("user", "--jq", ".login").strip()
             if not self._login:
                 raise GhError("gh api user returned no login")
         return self._login

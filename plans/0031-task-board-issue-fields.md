@@ -102,6 +102,17 @@ Revised after the research, on the user's choice "All of it now", 2026-10-29. Th
 - **GraphQL for every board operation, REST pinned for issue fields, fail closed, `check`, and the real-`gh` test** (the user, "All of it now", after the research above). A rename or a shape change now stops the helper and names the cause, instead of quietly misreading the board.
 - **Not built: a weekly job outside the helper** that diffs GitHub's public GraphQL schema and REST description for the exact fields used. The schema was checked by hand on 2026-10-29, below. The user can watch GitHub's changelog feed and `gh`'s release feed.
 - **No ADR.** It is a fix to a helper, reversible.
+- **Codex review of the revision, pass 1 at 820f98a: CHANGES REQUESTED.** Four findings, all accepted, fixed in the commit after 820f98a:
+  - **Medium:** a missing `items`, `nodes`, `pageInfo` or `hasNextPage`, or `hasNextPage` without an `endCursor`, still read as an empty or shorter board. Now each stops the run.
+  - **Medium:** a Priority value that is not one of the field's options was accepted and sorted last. Now it stops the run; `priority_value` takes the whole field.
+  - **Low:** `gh api user` did not name the pinned REST version. Now it goes through the same REST call as the rest.
+  - **Low:** the real-`gh` replay assumed local port 9 was closed. Now it takes a port the system has just handed out and taken back, and confirms a connection there is refused before replaying. If something answers, it skips rather than send the dummy token there. Where the sandbox forbids binding, it checks port 9 the same way; inside the sandbox even the connection is not permitted.
+
+  68 tests, OK on 3.9.6 and 3.14.9; the replay ran, 25 shapes, nothing skipped. Each fix was seen failing against a broken copy:
+  - a malformed page accepted;
+  - more items without a cursor;
+  - a Priority outside the options;
+  - the login without the pinned version.
 - **Codex review, one pass on `origin/master...HEAD` at 5c7005e: LGTM, no findings.** It confirmed:
   - the GraphQL handling: null Status, items that are not issues, paging with the loop guard, GraphQL errors, a null board, and `-F number=1` passing an integer;
   - the Priority handling: selection, ranking, reading by field ID, the request body on stdin, validation before any change, and Priority before Status;
