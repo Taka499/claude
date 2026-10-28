@@ -88,6 +88,12 @@ On 2026-10-28 the user chose a counter at user level. That counts every project,
 
   No second pass. `async` only removes the hook's ability to wait or decide, as the docs quoted above state, and the added field is logged data. The repository check found no ref moved, and `.git/index` changed only its metadata, as in earlier reviews.
 
+- **Verified after the user pasted the entry** (2026-10-28, this session, in auto mode). The entry took effect in the running session without a restart.
+  - **A dialog:** an unsandboxed `true; echo …`, which the `Bash(dangerouslyDisableSandbox:true)` ask rule turns into a dialog, logged exactly one line: this session's id, `mode: "auto"`, `tool: "Bash"`, the command. The line is stamped 23:14:44 JST and the command ran at 23:14:56, so that dialog waited 12 s. Ask rules raise a dialog in auto mode too.
+  - **No dialog, no line:** an `ls` covered by an allow rule, and a sandboxed `python3 -I -c …` that no rule covers, which auto mode let through with no dialog. Neither logged a line, so silent approvals are not counted.
+  - **Interactive tools:** an `AskUserQuestion` logged a line, `tool: "AskUserQuestion"` with an empty `input`. A count of approval dialogs leaves those lines out, and they count separately as questions.
+  - **Not yet seen:** a line from another project's session, and one from a subagent.
+
 ## Verification
 
 After the user pastes the entry:

@@ -71,7 +71,12 @@ Note the accident of good fortune in ADR 0003, and its limit. Because `~/.claude
 
   No session log records these requests, so this is the only count of the approvals the user is asked for.
   - **Why `PermissionRequest`:** a `Notification` hook on `permission_prompt` fires only after a dialog has waited about six seconds, so quick approvals would go uncounted.
-  - **It counts requests, not exactly dialogs shown.** The event also fires where a call that can't prompt would be auto-denied, such as a background subagent or a non-interactive run. Whether it fires in auto mode before the classifier approves is not documented. A review filters on the logged fields, and checks doubtful lines against the transcript.
+  - **It counts requests, not exactly dialogs shown.**
+    - The event also fires where a call that can't prompt would be auto-denied, such as a background subagent or a non-interactive run.
+    - `AskUserQuestion` logs a line too, as `tool: "AskUserQuestion"`.
+    - A call that auto mode lets through with no dialog logs nothing.
+
+    Measured on 2026-10-28, except the auto-denial case, which is from the docs. A review counts approval dialogs by filtering on the logged fields, and checks doubtful lines against the transcript.
   - **Keep it async and silent.** Per the docs, an async hook's decision fields have no effect, and Claude Code doesn't wait for it, so it can neither decide nor delay a dialog. Run synchronously, a decision object on stdout would allow or deny the call, and a hung `jq` would delay the dialog. Its stdout goes to the log in any case.
   - **The one hook allowed to write,** and only to its own log. It is an inline command in this file, which no session can write, so there is no script to protect.
   - **Its log is safe from sessions:** they cannot write `~/.claude` itself.
