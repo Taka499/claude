@@ -58,10 +58,13 @@ class FakeGh:
             return json.dumps(self.issues)
         if key == ("issue", "comment"):
             body = args[args.index("--body") + 1]
-            self.comments.setdefault(int(args[2]), []).append({"body": body, "createdAt": "2026-10-29T12:00:00Z"})
+            self.comments.setdefault(int(args[2]), []).append({"body": body, "createdAt": "2026-10-29T12:00:00Z",
+                                                               "author": {"login": "me"}})
             return ""
         if key == ("issue", "view"):
             return json.dumps({"comments": self.comments.get(int(args[2]), [])})
+        if key == ("api", "user"):
+            return "me\n"
         if key == ("issue", "create"):
             return "https://github.com/o/r/issues/9\n"
         if key == ("project", "item-add"):
@@ -154,22 +157,37 @@ class Ready(unittest.TestCase):
         self.assertEqual(self.ready_numbers([item(1, "Todo")], nodes), [])
 
 
+def comment(body: str, at: str, login: str = "me") -> dict:
+    return {"body": body, "createdAt": f"2026-10-29T{at}:00Z", "author": {"login": login}}
+
+
 class ClaimHolder(unittest.TestCase):
     def test_the_earliest_claim_holds(self):
-        comments = [{"body": "task-board claim: feature/b", "createdAt": "2026-10-29T10:05:00Z"},
-                    {"body": "task-board claim: feature/a in ../r-a", "createdAt": "2026-10-29T10:00:00Z"}]
-        self.assertEqual(board.claim_holder(comments), "feature/a")
+        comments = [comment("task-board claim: feature/b", "10:05"),
+                    comment("task-board claim: feature/a in ../r-a", "10:00")]
+        self.assertEqual(board.claim_holder(comments, "me"), "feature/a")
 
     def test_a_release_or_done_ends_a_claim(self):
-        claim = {"body": "task-board claim: feature/a", "createdAt": "2026-10-29T10:00:00Z"}
+        claim = comment("task-board claim: feature/a", "10:00")
         for ending in ("task-board release: stopped", "task-board done: merged abc123"):
-            comments = [claim, {"body": ending, "createdAt": "2026-10-29T11:00:00Z"}]
-            self.assertIsNone(board.claim_holder(comments))
-        later = comments + [{"body": "task-board claim: feature/c", "createdAt": "2026-10-29T12:00:00Z"}]
-        self.assertEqual(board.claim_holder(later), "feature/c")
+            comments = [claim, comment(ending, "11:00")]
+            self.assertIsNone(board.claim_holder(comments, "me"))
+        later = comments + [comment("task-board claim: feature/c", "12:00")]
+        self.assertEqual(board.claim_holder(later, "me"), "feature/c")
 
     def test_ordinary_comments_are_ignored(self):
-        self.assertIsNone(board.claim_holder([{"body": "looks good", "createdAt": "2026-10-29T10:00:00Z"}]))
+        self.assertIsNone(board.claim_holder([comment("looks good", "10:00")], "me"))
+
+    def test_a_strangers_earlier_claim_does_not_count(self):
+        comments = [comment("task-board claim: feature/spoof", "09:00", login="stranger"),
+                    comment("task-board claim: feature/a", "10:00")]
+        self.assertEqual(board.claim_holder(comments, "me"), "feature/a")
+
+    def test_a_strangers_release_does_not_end_a_claim(self):
+        comments = [comment("task-board claim: feature/a", "10:00"),
+                    comment("task-board release: hijack", "11:00", login="stranger"),
+                    comment("task-board claim: feature/b", "12:00")]
+        self.assertEqual(board.claim_holder(comments, "me"), "feature/a")
 
 
 class Steps(unittest.TestCase):
@@ -180,10 +198,16 @@ class Steps(unittest.TestCase):
         self.assertEqual(gh.comments[1][-1]["body"], "task-board claim: feature/x in ../r-x")
 
     def test_claim_backs_off_when_another_session_claimed_first(self):
-        earlier = {"body": "task-board claim: feature/other", "createdAt": "2026-10-29T11:00:00Z"}
+        earlier = comment("task-board claim: feature/other", "11:00")
         gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)], comments={1: [earlier]})
         with self.assertRaisesRegex(board.Refused, "feature/other"):
             make_board(gh).claim(1, "feature/x", None)
+
+    def test_claim_is_not_blocked_by_a_strangers_claim_comment(self):
+        spoof = comment("task-board claim: feature/spoof", "11:00", login="stranger")
+        gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)], comments={1: [spoof]})
+        make_board(gh).claim(1, "feature/x", None)
+        self.assertEqual(gh.edits(), [("F_STATUS", "s_progress")])
 
     def test_claim_refuses_work_that_is_not_ready_and_changes_nothing(self):
         for status in (None, "Triage", "In Progress"):

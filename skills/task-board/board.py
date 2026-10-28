@@ -167,10 +167,14 @@ def ready(items: list, issues: list, repo: str) -> list:
                                              entry["number"]))
 
 
-def claim_holder(comments: list):
-    """The branch holding the claim: the earliest claim comment since the last release or done comment, or None."""
+def claim_holder(comments: list, login: str):
+    """The branch holding the claim: the earliest claim comment since the last release or done comment, or None.
+    Only comments written by `login`, the account every session acts as, count. On a public repository anyone can
+    comment, and a stranger's marker comment must not take, block or end a claim."""
     holder = None
     for comment in sorted(comments, key=lambda comment: comment.get("createdAt", "")):
+        if ((comment.get("author") or {}).get("login") or "") != login:
+            continue
         body = (comment.get("body") or "").strip()
         if body.startswith(RELEASE) or body.startswith(DONE_MARK):
             holder = None
@@ -193,6 +197,7 @@ class Board:
     def __init__(self, config: Config, gh: Gh):
         self.config, self.gh = config, gh
         self._fields = None
+        self._login = None
 
     def fields(self) -> Fields:
         if self._fields is None:
@@ -221,6 +226,14 @@ class Board:
 
     def comment(self, number: int, body: str) -> None:
         self.gh.run("issue", "comment", str(number), "--repo", self.config.repo, "--body", body)
+
+    def login(self) -> str:
+        """The account the token belongs to: every session's comments are written as it."""
+        if self._login is None:
+            self._login = self.gh.run("api", "user", "--jq", ".login").strip()
+            if not self._login:
+                raise GhError("gh api user returned no login")
+        return self._login
 
     def comments(self, number: int) -> list:
         return json.loads(self.gh.run("issue", "view", str(number), "--repo", self.config.repo, "--json",
@@ -268,7 +281,7 @@ class Board:
             raise Refused(f"issue #{number} is not ready work ({state}); only Todo with no open blocker can be claimed")
         self.set_status(self.item(number)["id"], IN_PROGRESS)
         self.comment(number, f"{CLAIM} {branch}" + (f" in {worktree}" if worktree else ""))
-        holder = claim_holder(self.comments(number))
+        holder = claim_holder(self.comments(number), self.login())
         if holder != branch:
             raise Refused(f"issue #{number} was claimed first by {holder!r}; this session backs off")
 
