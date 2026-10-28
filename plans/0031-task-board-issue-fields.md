@@ -189,8 +189,9 @@ Run by the user and a session in gmks-hif-final-stats, against `tia-tools` proje
   - the user set #1 to Todo, Priority High;
   - the session's `claim` wrote `task-board claim: feature/adopt-task-board in ~/Developer/gmks-hif-final-stats…` on #1, as `Taka499`, at 19:22:28Z;
   - it then opened PR #3, "Adopt the task board", into `develop`, with a body starting `Closes #1`. The PR added `.task-board.json` and the board line to the project's `CLAUDE.md`.
-- **The PR flow (D21 of plan 0030):** the user merged PR #3 into `develop`, the default branch (merge commit e3a266f), at 19:27:03Z. #1 closed as `completed` at 19:27:05Z. The board's Done column cannot be seen from this session; the "Item closed" workflow is what sets it.
+- **The PR flow (D21 of plan 0030):** the user merged PR #3 into `develop`, the default branch (merge commit e3a266f), at 19:27:03Z. #1 closed as `completed` at 19:27:05Z. The user then saw #1 in Done on the board, moved there by the "Item closed" workflow. The board itself cannot be seen from this session.
 - **Shapes the fixtures had assumed, now captured:**
   - **An issue's Priority value:** `{"issue_field_id": 43924878, "data_type": "single_select", "issue_field_name": "Priority", "value": 76872379, "single_select_option": {"id": 76872379, "name": "High", "color": "red"}}`. `value` is the option's numeric ID, not its name. The helper reads `single_select_option.name`, so it was right. It is now a fixture, with a test that fails if the helper reads `value` instead (seen failing).
   - **Comments from `gh issue view --json comments`:** `author.login`, `authorAssociation`, `body`, `createdAt`, as the helper expects.
 - 73 tests, OK on 3.9.6 and 3.14.9.
+- **Codex review of this follow-up, at 7c5cae0: LGTM, no findings.** The fixture matches the capture, the new test pins reading the option's name, and the plan separates what was observed from what was documented. The Done observation was added after the review; it is one sentence.
