@@ -56,6 +56,8 @@ Before the user changed the settings, the same deny was tried in a standalone `s
 - **No ADR.** Prose guidance plus a settings choice that is easy to reverse, so it fails the first gate.
 - **Close the keychain gap: `credentials.files` denies `~/Library/Keychains`.** The user added this to `~/.claude/settings.json`. Before the change, the login keychain was readable from inside the sandbox, so `sandbox.credentials.envVars` denying `GITHUB_TOKEN` and `credentials.files` denying `~/.claude/.credentials.json` protected nothing on macOS. See Evidence § The keychain. The cost is that git over HTTPS loses its credential inside the sandbox, so pushes and fetches from private repositories run outside it. That is accepted because the alternative exposes Claude Code's own login. The new README bullet records this entry as the deliberate exception to "do not deny a credential belonging to a tool you run sandboxed".
 
+> **Correction, 2026-10-28** (from `plans/0027-gh-sandboxed-per-project.md`): `enableWeakerNetworkIsolation` is not the only way past the TLS failure. With `SSL_CERT_FILE=/etc/ssl/cert.pem`, `gh` 2.103.0 verified GitHub's certificate inside the sandbox, and trustd stayed closed. So running `gh` sandboxed no longer takes that setting; it takes only a token the sandbox can read. Plan 0027 gives a project a narrow token of its own for that, and keeps the keychain deny. The rest of this plan stands.
+
 ## Verification
 
 - The three measurements above were made in this session. TLS was not re-tested with `enableWeakerNetworkIsolation` turned on, because the setting stays off. The trustd attribution rests on the schema text and on the keychain read succeeding.
