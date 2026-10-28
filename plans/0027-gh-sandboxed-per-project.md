@@ -37,7 +37,7 @@ The keychain deny stays.
 - **What the token can do,** and what every sandboxed command in the project can therefore do. Per GitHub's permission table:
   - **Issues write:** open, edit, close, reopen and lock issues, and edit or delete comments. A deleted comment cannot be restored.
   - **Pull requests write, if a project adds it:** open PRs, submit, approve, dismiss or delete reviews, and update a PR's branch from its base (`PUT …/update-branch`). The last one writes a merge commit on a branch, despite Contents being read-only.
-  - **Not:** push, merge, or reach a repository outside the token's scope, public or not.
+  - **Not:** push, merge, or write to a repository outside the token's scope. Public repositories it can read, as anyone can without a token.
 - **The folder sits outside every session's write area.** `gh` reads aliases from `config.yml` in that folder, and an alias starting with `!` runs a shell command. A session that could write the folder could plant one, and the next `gh` run outside the sandbox would execute it. `~/.config` is outside every `allowWrite` on this machine, the user's and gkms-contest-ai's. The same rule as `docs/claude-code.md` § Code that runs outside the sandbox.
 - **Inside an opted-in project, only sandboxed `gh` calls use that token.** A settings `env` applies to every command, so `GH_CONFIG_DIR` reaches unsandboxed `gh` too. But `gh auth login --insecure-storage` files the token under the account, and `gh` reads that after the keychain. So outside the sandbox `gh` still uses the user's login, as in every other project, and each call asks. That is where anything beyond the token goes: repository settings, deploy keys, a merge through `gh`. A token written at the top level of `hosts.yml` would come before the keychain instead (§ Evidence), so store it with the login command, not by hand.
 - **Every other project is unchanged:** `gh` runs outside the sandbox with the keychain login, and each call asks.
@@ -102,6 +102,17 @@ All `gh` runs used a dummy token, so no credential was sent.
 
   The login stays out of reach.
 
+- **The working setup, verified from the sandbox** with `GH_CONFIG_DIR` and `SSL_CERT_FILE` given on the command line, after the user replaced the first token (stored 21:10):
+  - `gh auth status`: "Logged in to github.com account Taka499 (…/gh-tia-tools/hosts.yml)";
+  - `gh api user`: `Taka499`;
+  - `gh issue list -R tia-tools/gkms-contest-ai`: exit 0, and the repository reports `private: true`, `has_issues: true`;
+  - reading `contents/README.md` there: 403, "Resource not accessible by personal access token";
+  - a title-less `POST …/issues`, which creates nothing whatever the outcome: 422 "title wasn't supplied" in `tia-tools/gkms-contest-ai`, so the write permission holds, and 403 in the public `tia-tools/releases`, outside the token;
+  - `gh repo list tia-tools` showed the selected private repository and the owner's two public ones, which any token can read;
+  - in this repository, with both variables unset, `gh api user` fails on TLS as before.
+
+  The settings ended as designed: `~/.claude/settings.json` `env` holds no `SSL_CERT_FILE`, and gkms-contest-ai's `.claude/settings.local.json` `env` holds both variables. A running session keeps a variable removed from the settings until it restarts: this one still had `SSL_CERT_FILE`.
+
 ## Decision Log (session 2026-10-28)
 
 - **Open `gh` in the sandbox, for gkms-contest-ai first.** The user's decision, after the assessment's recommendation of a structured task store.
@@ -124,7 +135,7 @@ All `gh` runs used a dummy token, so no credential was sent.
 - **Codex review, one pass on `origin/master...HEAD` at e42d826: CHANGES REQUESTED.** All six findings were accepted:
   - **Medium:** the token's exposure was understated. Pull requests write allows approving, dismissing and deleting reviews, and updating a PR's branch; Issues write allows deleting comments. Checked against GitHub's table. The texts now name these, Pull requests write is no longer in the default scope, and "can be undone" is gone.
   - **Medium:** a user-wide `SSL_CERT_FILE` changes trust for every program that honours it, outside the sandbox too. Moved to per project; see above.
-  - **Low:** "whatever a session posts stays private" was too absolute, since collaborators, integrations and GitHub can see it. The texts now say the token cannot reach a public repository or one outside its scope.
+  - **Low:** "whatever a session posts stays private" was too absolute, since collaborators, integrations and GitHub can see it. The texts now say the token writes only to its selected repositories.
   - **Low:** `scaffold-project` said `gh` "cannot run inside" the sandbox. It now says why that applies there: a new repository is in no project token's scope.
   - **Low:** the push, merge and alias claims are sound, with update-branch as the exception. Covered by the first finding.
   - **Low:** "per project" is not the only safe design. The per-command alternative is now recorded above.

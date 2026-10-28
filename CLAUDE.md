@@ -42,7 +42,7 @@ This is the user-level `~/.claude/CLAUDE.md`, applied to every project on this m
     - only the permissions its use needs (Issues write for an issue tracker);
     - never Contents write.
 
-    Every sandboxed command there can read the token, so its scope is the whole exposure. Issues write can open, edit, close and lock issues and delete comments. Pull requests write would add approving, dismissing or deleting reviews and updating a PR's branch. Neither can push, merge or reach a repository outside the scope. In such a project, run `gh` sandboxed.
+    Every sandboxed command there can read the token, so its scope is the whole exposure. Issues write can open, edit, close and lock issues and delete comments. Pull requests write would add approving, dismissing or deleting reviews and updating a PR's branch. Neither can push, merge, or write to a repository outside the scope; public repositories it can read, as anyone can. In such a project, run `gh` sandboxed.
 
     Store the token with `gh auth login --insecure-storage`, which files it under the account. `gh` reads such a token after the keychain, so outside the sandbox it still uses the user's login, and a command the token cannot do runs unsandboxed, as elsewhere. Never write a top-level `oauth_token:` into a `hosts.yml`, and never put a token in the default `~/.config/gh`: `gh` reads a top-level token before the keychain, so every `gh` call would use it.
   - **Everywhere else,** do GitHub reads sandboxed with `git` (`ls-remote`, `fetch`) or unauthenticated `curl` against `api.github.com`. Run each `gh` command that is genuinely needed (opening a PR, creating a repository, adding a deploy key) as a single command with `dangerouslyDisableSandbox: true`, saying so, or hand it to the user.
