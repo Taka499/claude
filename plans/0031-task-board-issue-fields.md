@@ -57,6 +57,12 @@ Captured by the session in gmks-hif-final-stats, sandboxed with the public token
 - **The organization's Priority field, read-only on the organization side** (the user chose the field; read-only follows least privilege). Writing values needs only the Issues permission the token already has. Issue Fields write would let any session in the project change the organization's field definitions.
 - **Rank by the options' `"priority"` number.** The captured options were listed out of order. Ranking by position would have made High the most urgent.
 - **No ADR.** It is a fix to a helper, reversible.
+- **Codex review, one pass on `origin/master...HEAD` at 5c7005e: LGTM, no findings.** It confirmed:
+  - the GraphQL handling: null Status, items that are not issues, paging with the loop guard, GraphQL errors, a null board, and `-F number=1` passing an integer;
+  - the Priority handling: selection, ranking, reading by field ID, the request body on stdin, validation before any change, and Priority before Status;
+  - that the unchanged safeguards and the texts still agree with the code.
+
+  All 57 tests passed. No ref moved. The new files in `.git` were the automatic security review's markers for the commit (`sg-reviewed-shas`, `sg-reviewed-diffs`), not Codex's.
 
 ## Verification
 
