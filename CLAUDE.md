@@ -97,7 +97,7 @@ Distilled cross-project lessons, extracted from real projects. MUST read the rel
 - Python (uv, pipelines, testing) → [`docs/python.md`](docs/python.md)
 - GitHub Actions (built-in token, schedules, automated PRs) → [`docs/github-actions.md`](docs/github-actions.md)
 - Cloudflare (R2, platform behaviour) → [`docs/cloudflare.md`](docs/cloudflare.md)
-- Claude Code itself (code run outside the sandbox, settings in worktrees, permission-rule matching, processes) → [`docs/claude-code.md`](docs/claude-code.md)
+- Claude Code itself (code run outside the sandbox, hooks that cannot run, settings in worktrees, permission-rule matching, processes) → [`docs/claude-code.md`](docs/claude-code.md)
 
 ## Continuous Learning
 
