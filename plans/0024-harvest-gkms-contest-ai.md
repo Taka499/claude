@@ -22,7 +22,7 @@ The user chose to land two sets of lessons. The first is the two captures approv
   - `lsof -d cwd` instead of `ps`/`pgrep`.
 - `docs/typescript.md` § Package manager for a repository worked on from several worktrees (new, added on the user's request of 2026-10-26 after the first review):
   - npm stays the default; a new repository worked on from several worktrees starts on pnpm, or on Bun if it runs on Bun;
-  - the two settings pnpm needs under the sandbox (`storeDir`, `XDG_RUNTIME_DIR`), as measured;
+  - under the sandbox, pnpm needs `XDG_RUNTIME_DIR` to install at all (measured) and should get an explicit `storeDir` to share its store (reasoned from pnpm's docs);
   - the global virtual store stays off;
   - `strictDepBuilds` and `allowBuilds`.
 
