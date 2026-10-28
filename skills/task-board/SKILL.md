@@ -82,7 +82,7 @@ Most of this happens in GitHub's web interface, by the user, once per project:
 3. **Status field.** Add the option `Triage` before `Todo`, and keep `Todo`, `In Progress` and `Done` exactly as GitHub names them.
 4. **Priority.** Nothing to create: every organization has the issue field `Priority`, and the board shows it. The helper reads its options from `GET /orgs/<org>/issue-fields`, ranks them by their priority number, and treats the middle one as the default.
 5. **Workflows**, in the board's menu:
-   - turn on **Auto-add to project**, for the repository, with the filter `is:issue`;
+   - turn on **Auto-add to project**, for **this** repository: check the repository selector, it is easy to leave on another one. Use the filter `is:issue`, and click **Save and turn on workflow**. Auto-add never adds issues that existed before it was enabled, so add those with **+ Add item**. To test it, open a new issue, see it arrive under No Status, and close it;
    - keep **Item closed** setting Done;
    - leave off any workflow that sets a Status when an item is added. An item with no Status already counts as Triage, and a Status set on adding would race with `file --todo`.
 6. **In the repository:**
