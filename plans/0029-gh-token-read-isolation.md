@@ -85,6 +85,20 @@ This plan:
   No second pass: each fix states a boundary or adds a deny rule and a check, in the direction its finding asked, and the measurements below test them.
 - **Did any Codex run read the token while it was exposed?** No. The four Codex logs written while gkms-contest-ai's token was readable from every session (2026-10-28 20:13 to 2026-10-29 00:42) mention its folder only in quoted diffs and docs. Codex's commands there were `rg` and `git diff` over repository files, and no log holds a token-shaped string (`github_pat_` and 20 or more characters).
 
+- **Verified after the user's changes** (2026-10-29). All three settings files held the planned entries, and `~/.config/gh-tia-tools` was gone.
+  - **From this repository,** which re-allows no folder, sandboxed:
+    - reading `~/.config/gh-tokens/tia-tools-private/hosts.yml` and listing `~/.config/gh-tokens/` both failed with "Operation not permitted";
+    - `gh` with that folder as `GH_CONFIG_DIR` failed to load its `config.yml`, with "operation not permitted".
+
+    This session's sandbox config listed `~/.config/gh-tokens` among the denied reads.
+  - **From this repository, with the Read tool:** reading the folder's `config.yml`, which holds no token, was refused: "File is in a directory that is denied by your permission settings". An unsandboxed `find … -exec stat` over the folder, for the link-count check, was refused too. So the link counts were left for the user to run in their own terminal.
+  - **gkms-coord, gkms-contest-ai's coordinating session,** sandboxed, with nothing on the command line:
+    - `gh auth status` logged in from `~/.config/gh-tokens/tia-tools-private/hosts.yml`, and `gh issue list -R tia-tools/gkms-contest-ai` exited 0;
+    - its sandbox config listed `~/.config/gh-tokens` among the denied reads, and `~/.config/gh-tokens/tia-tools-private` as allowed within that deny.
+
+    So the project's `allowRead` wins over the user-level deny, and the `Read` deny rule does not override it. The rule stays.
+  - **The other project's folder, from gkms-coord:** `ls ~/.config/gh-tokens/tia-tools-public` was refused by the auto-mode classifier ("[Credential Exploration]") before it ran. The sandbox's own refusal is therefore inferred from the session's config, which re-allows only the private folder, not measured.
+
 ## Verification
 
 After the user's changes:
