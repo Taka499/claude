@@ -4,7 +4,13 @@
 
 The first real use of the `task-board` helper (plan 0030), on `tia-tools/gmks-hif-final-stats` and its board `tia-tools` project 1, failed on 2026-10-29 in two ways, before a single item was on the board:
 
-1. **gh 2.103.3 refuses `--format` together with `--field`.** Its message: `cannot use --format with --field or --field-id`. The helper listed the board's items with `gh project item-list … --field Status --field Priority --format json`, a fix from plan 0030 D18, so every step that lists items exited 2: `ready`, `claim`, `queue`, `release` and `done`. The helper's tests ran on gh 2.103.0, before Homebrew moved to 2.103.3 on the evening of 2026-10-28. The project's session found the clash.
+1. **gh refuses `--format` together with `--field`.** Its message: `cannot use --format with --field or --field-id`. The helper listed the board's items with `gh project item-list … --field Status --field Priority --format json`, a fix from plan 0030 D18, so every step that lists items exited 2: `ready`, `claim`, `queue`, `release` and `done`. The project's session found the clash, on gh 2.103.3.
+
+   **Correction (research, 2026-10-29):** this plan first blamed the move to 2.103.3. That was wrong. gh's source has the refusal since `--field` was added: v2.96.0 has no `--field`, while v2.97.0 and v2.103.0 both carry the line `"cannot use --format with --field or --field-id"` (`pkg/cmd/project/item-list/item_list.go`, fetched 2026-10-29). D18's call never worked on any gh release. Two things let it through:
+   - Codex's first pass read `--field` in gh's help as what adds field values to JSON, and it only adds table columns;
+   - the test double accepted any arguments.
+
+   Running the real `gh` once with those exact arguments would have failed before any network call, without a token.
 2. **The board's Priority is the organization's issue field, not a field of the board.** On the board it shows as a single-select field with no options, so the helper's check found no Priority options. Its values live on each issue, and its options and their order come from the organization.
 
 The user chose to keep the organization's field (plan 0030 D20), and added the organization permission Issue Fields: Read-only to the public token. They also asked that the real responses be captured before the code changed. An assumption about `gh`'s output shape had just failed.
@@ -27,6 +33,26 @@ Captured by the session in gmks-hif-final-stats, sandboxed with the public token
   - **Repository permission Issues:** write for `POST`/`PUT`/`DELETE …/issues/{n}/issue-field-values`, and read for `GET`;
   - **Organization permission Issue Fields:** read for `GET /orgs/{org}/issue-fields`, and write for creating, changing or deleting fields.
 - **The REST reference for issue field values:** a single-select value is written by option name, `{"issue_field_values": [{"field_id": <id>, "value": "<name>"}]}`. A `GET` returns entries with `issue_field_id` and `single_select_option.name`.
+
+## Research on stability (2026-10-29)
+
+The user asked whether GraphQL could break as well. A research agent read GitHub's policies, changelogs, schemas and gh's source. Every point below is sourced, read 2026-10-29.
+- **GraphQL:**
+  - **Notice:** breaking changes come with at least three months' notice, and take effect only on 1 January, April, July or October (docs.github.com/en/graphql/overview/breaking-changes).
+  - **GA:** the ProjectsV2 API has been GA since 2022-07-27. No change is scheduled for `projectV2`, `items`, `fieldValueByName`, `ProjectV2ItemFieldSingleSelectValue` or `updateProjectV2ItemFieldValue`, and the public schema marks none of them preview or deprecated.
+  - **One silent case:** `fieldValueByName` returns the first field with that name, so a renamed Status field turns every value into null, which reads as Triage.
+- **REST:**
+  - **Versioned:** breaking changes ship only in a new `X-GitHub-Api-Version`, and the previous version is supported at least 24 months. `2022-11-28` ends on 2028-03-10.
+  - **Default:** gh sends `2022-11-28` itself, overridable with `-H`.
+  - **Previews:** GitHub "may change or discontinue Previews at any time without notice".
+- **Issue fields** are **GA since 2026-07-02** (github.blog changelog), not in preview, as this plan and the conversation first assumed. GitHub's published REST description shows additive changes only from April to now. GraphQL equivalents exist and are GA: `Issue.issueFieldValues`, `setIssueFieldValue`, `Organization.issueFields`.
+- **A REST API for Projects** has existed since 2025-09-11. GitHub states no stability phase for it, and its schema leaves an item's field values untyped (`additionalProperties: true`).
+- **The gh CLI** has no user-facing stability policy, and its `gh project` subcommands changed in v2.97.0 and v2.98.0. Their JSON is gh's own shape, and `item-edit` and `item-add` only wrap the GraphQL mutations. `gh api` passes the request through as written.
+- **The agent's recommendation:**
+  - use GraphQL through `gh api graphql` for everything on the board: list, set Status, add an issue, read the Status field and its options. That leaves one contract, with three months' notice;
+  - keep REST for issue fields, with `X-GitHub-Api-Version` passed explicitly;
+  - fail closed on every shape the helper reads;
+  - watch GitHub's changelog feed for Projects and Issues, and gh's releases feed.
 
 ## Design
 
