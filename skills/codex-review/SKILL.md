@@ -109,7 +109,7 @@ git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapsho
 touch "$snapshot/started" || exit 1
 ```
 
-**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, keep step 4 exactly as written, and say in the report that no snapshot was used.
+**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, writing `<repository>` wherever step 3 has `"$snapshot/repo"` (the `cd`, the prompt, and the stdin form's `grep`), keep step 4 exactly as written, and say in the report that no snapshot was used.
 
 ### 3. Run Codex
 
