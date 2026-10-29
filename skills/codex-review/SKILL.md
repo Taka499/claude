@@ -114,7 +114,7 @@ touch "$snapshot/started" || exit 1
 ### 3. Run Codex
 
 ```bash
-cd "$snapshot/repo" && codex exec --sandbox danger-full-access -c 'approval_policy="never"' "Review ONLY the change described below in this repository (<snapshot path>).
+cd "$snapshot/repo" && codex exec --sandbox danger-full-access -c 'approval_policy="never"' "Review ONLY the change described below in this repository (<the full path of "$snapshot/repo">).
 Run \`git diff <paths>\` to see it and read surrounding files for context. Do NOT modify anything, and do not commit.
 
 INTENT: <what this change is for, and what must stay true after it>
@@ -137,7 +137,7 @@ cd "$snapshot/repo" && codex exec --sandbox danger-full-access - < "$snapshot/pr
 
 `-` makes `codex exec` read the prompt from stdin, so the `< /dev/null` rule above is satisfied by the file itself; `codex exec` is non-interactive, so dropping the approval flag changes nothing. Measured 2026-09-27 (gakumas-supportcards): the inline form was refused three times with "names git in a form too complex to verify", the stdin form ran to a verdict twice.
 
-**Keep the prompt and the output inside this review's snapshot, never at a fixed path in `$TMPDIR`.** Every session on the machine shares `$TMPDIR`, so a fixed name such as `$TMPDIR/codex-prompt.txt` can hold another session's prompt, for another project. The Write tool refuses to overwrite a file it has not read this session. If the Codex command then runs anyway, it reviews that other prompt, in that other snapshot, and sends that project's diff to OpenAI. The `grep` above stops it: a prompt that does not name this snapshot's path is not this review's. A fresh `mktemp -d` per review gives each prompt a folder no one else writes. Never run Codex after a failed write of its prompt. Measured 2026-10-29 (gmks-hif-final-stats): a stale prompt from another session ran for a second, ran one `git diff` in that session's snapshot of a different project, and sent the diff out, before it was stopped.
+**Keep the prompt and the output inside this review's snapshot, never at a fixed path in `$TMPDIR`.** Every session on the machine shares `$TMPDIR`, so a fixed name such as `$TMPDIR/codex-prompt.txt` can hold another session's prompt, for another project. The Write tool refuses to overwrite a file it has not read this session. If the Codex command then runs anyway, it reviews that other prompt, in that other snapshot, and sends that project's diff to OpenAI. The `grep` above stops it: a prompt that does not name this snapshot's `repo` path in full, as the template above does, is not this review's. A fresh `mktemp -d` per review gives each prompt a folder no one else writes. Start Codex only once the Write has reported success, never in the same turn as the Write: a command issued alongside it runs before you can see whether the Write failed. Measured 2026-10-29 (gmks-hif-final-stats): the session started Codex in the same turn as a Write that was refused, so a stale prompt from another session ran for a second, ran one `git diff` in that session's snapshot of a different project, and sent the diff out, before it was stopped.
 
 Three things decide whether this call is worth anything:
 
