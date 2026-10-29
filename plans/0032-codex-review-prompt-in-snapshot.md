@@ -18,7 +18,7 @@ The session first saw the failure when the prompt's first line, read back, named
 - A `grep -qF "$snapshot/repo" "$snapshot/prompt.txt"` before `codex exec` refuses a prompt that does not name this snapshot.
 - A paragraph says why, gives the measured case, and adds: never run Codex after a failed write of its prompt.
 
-The inline form (the prompt in the command) is unchanged: it reads no file.
+The inline form (the prompt in the command) reads no file and keeps its command; only its placeholder changes, in the follow-up below.
 
 ## Verification
 
@@ -35,3 +35,12 @@ A review of the PR before merge found three more things. All are fixed on the sa
 - **The same mistake was in `scaffold-project`.** Its step 2 archived the template to the fixed `$TMPDIR/project-template.tar`, so two scaffolds at once could extract each other's archive. The risk is low: both archive the same template, possibly at different revisions, and nothing leaves the machine. The archive now goes into a folder of its own from `mktemp -d`.
 
 The guard was tried in four cases with a scratch folder under `$TMPDIR`: a prompt naming this snapshot runs; a prompt naming another snapshot, a prompt never written, and an empty `$snapshot` (each Bash call is a fresh shell) are all refused.
+
+## Codex review (2026-10-29)
+
+`/codex-review` on the branch's whole diff at `18446e0`, run through the stdin form and its `grep` guard as changed here: **CHANGES REQUESTED**. All three commands it ran ran in its snapshot, and the repository's refs did not move. The main checkout's `.git/index` was refreshed during the run, with no staged or modified file, by something other than Codex.
+
+- **HIGH, scaffold step 2 continues after a failure: accepted, fixed.** Run as one command, as the follow-up asked, a `mkdir` refused because the target exists went on to extract the template into it, and the command exited 0 (tried with a scratch directory). The follow-up's "run the four lines as one command" had turned an old weakness into the likely path. Each line now ends in `|| exit 1`, as the codex-review snapshot block does.
+- **HIGH, the guard with an empty `$snapshot`: partly rejected, hardened anyway.** Codex said the pattern becomes empty and matches every prompt. It does not: it becomes `/repo`, and the guard reads `/prompt.txt`, which does not exist, so it refuses. Codex was right that the refusal relied on `/prompt.txt` not existing. The guard now starts with `[ -n "$snapshot" ]`, and the paragraph says to set `$snapshot` again in the command. Its other point, a stale prompt naming this snapshot's path, is rejected: the path comes from a `mktemp -d` that has just created it.
+- **LOW, the plan contradicted the diff: accepted.** The Changes section said the inline form was unchanged; it now says only the placeholder changed. With `[ -n "$snapshot" ]` in place, the empty-variable refusal in the paragraph above is now designed, not incidental.
+- **INFO:** `prompt.txt` and `review.txt` beside `repo/` do not show up in step 4's `find`, which searches the real repository, nor in the snapshot's `git status`.
