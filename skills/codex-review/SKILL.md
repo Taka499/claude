@@ -109,12 +109,12 @@ git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapsho
 touch "$snapshot/started" || exit 1
 ```
 
-**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, keep step 4 exactly as written, and say in the report that no snapshot was used.
+**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, writing `<repository>` wherever step 3 has `"$snapshot/repo"` (the `cd`, the prompt, and the stdin form's `grep`), keep step 4 exactly as written, and say in the report that no snapshot was used.
 
 ### 3. Run Codex
 
 ```bash
-cd "$snapshot/repo" && codex exec --sandbox danger-full-access -c 'approval_policy="never"' "Review ONLY the change described below in this repository (<snapshot path>).
+cd "$snapshot/repo" && codex exec --sandbox danger-full-access -c 'approval_policy="never"' "Review ONLY the change described below in this repository (<the full path of "$snapshot/repo">).
 Run \`git diff <paths>\` to see it and read surrounding files for context. Do NOT modify anything, and do not commit.
 
 INTENT: <what this change is for, and what must stay true after it>
@@ -128,13 +128,16 @@ exactly one final line and nothing after it:
 'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'." < /dev/null
 ```
 
-**In a worktree-isolated session (EnterWorktree), feed the prompt through a file on stdin.** The harness there refuses any shell command whose quoted text mentions `git` — and this prompt does, in `git diff` — and the `-c 'approval_policy="never"'` flag trips the same check. Write the prompt to `$TMPDIR/codex-prompt.txt` with the Write tool and run
+**In a worktree-isolated session (EnterWorktree), feed the prompt through a file on stdin.** The harness there refuses any shell command whose quoted text mentions `git` — and this prompt does, in `git diff` — and the `-c 'approval_policy="never"'` flag trips the same check. Write the prompt to `"$snapshot/prompt.txt"` with the Write tool and run
 
 ```bash
-cd "$snapshot/repo" && codex exec --sandbox danger-full-access - < "$TMPDIR/codex-prompt.txt" > "$TMPDIR/codex-review.txt" 2>&1
+[ -n "$snapshot" ] && grep -qF "$snapshot/repo" "$snapshot/prompt.txt" || { echo "the prompt does not name this snapshot"; exit 1; }
+cd "$snapshot/repo" && codex exec --sandbox danger-full-access - < "$snapshot/prompt.txt" > "$snapshot/review.txt" 2>&1
 ```
 
 `-` makes `codex exec` read the prompt from stdin, so the `< /dev/null` rule above is satisfied by the file itself; `codex exec` is non-interactive, so dropping the approval flag changes nothing. Measured 2026-09-27 (gakumas-supportcards): the inline form was refused three times with "names git in a form too complex to verify", the stdin form ran to a verdict twice.
+
+**Keep the prompt and the output inside this review's snapshot, never at a fixed path in `$TMPDIR`.** Every session on the machine shares `$TMPDIR`, so a fixed name such as `$TMPDIR/codex-prompt.txt` can hold another session's prompt, for another project. The Write tool refuses to overwrite a file it has not read this session. If the Codex command then runs anyway, it reviews that other prompt, in that other snapshot, and sends that project's diff to OpenAI. The `grep` above stops it: a prompt that does not name this snapshot's `repo` path in full, as the template above does, is not this review's. Each Bash call is a fresh shell, so `$snapshot` is empty unless this command sets it again to the path step 2 created; the `[ -n "$snapshot" ]` refuses then, rather than relying on `/prompt.txt` not existing. A fresh `mktemp -d` per review gives each prompt a folder no one else writes. Start Codex only once the Write has reported success, never in the same turn as the Write: a command issued alongside it runs before you can see whether the Write failed. Measured 2026-10-29 (gmks-hif-final-stats): the session started Codex in the same turn as a Write that was refused, so a stale prompt from another session ran for a second, ran one `git diff` in that session's snapshot of a different project, and sent the diff out, before it was stopped.
 
 Three things decide whether this call is worth anything:
 
