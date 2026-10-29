@@ -24,10 +24,11 @@ Refuse if the target path exists; never merge into an existing directory. This s
 2. **Create the target, then extract the committed tree, not the working tree.** Run
 
        mkdir <target>
-       git -C <template> archive <revision> -o "$TMPDIR/project-template.tar"
-       tar -xf "$TMPDIR/project-template.tar" -C <target>
+       archive=$(mktemp -d "$TMPDIR/project-template.XXXXXX")
+       git -C <template> archive <revision> -o "$archive/template.tar"
+       tar -xf "$archive/template.tar" -C <target>
 
-   `mkdir` without `-p`, so an existing path fails instead of being merged into. Archive to a file rather than a pipe, so a failed `git archive` is an error you see instead of `tar` succeeding on empty input and leaving a hollow target for step 3 to initialise; then list `<target>` and confirm the expected files are there. The archive writes the revision's export contents, preserving paths, including placeholders such as `docs/plans/.gitkeep`; that is every tracked file unless the template ever adds a `.gitattributes` with `export-ignore`, which it does not have today. Do not copy files from the checkout, and do not hardcode the file list: a copy reads whatever is in the working tree, dirty edits included, and a fixed list silently ships a stale scaffold when the template grows. Record the revision (`git -C <template> rev-parse <revision>`) for the commit message. Today the tree is `CLAUDE.md`, `docs/PLANS.md`, `docs/adr/README.md`, `docs/plans/.gitkeep`.
+   `mkdir` without `-p`, so an existing path fails instead of being merged into. Archive to a file rather than a pipe, so a failed `git archive` is an error you see instead of `tar` succeeding on empty input and leaving a hollow target for step 3 to initialise; then list `<target>` and confirm the expected files are there. The file goes in a folder `mktemp -d` makes for this run, never at a fixed name in `$TMPDIR`: every session on the machine shares that folder, so two scaffolds at once could each extract the other's archive. Run the four lines as one command, because a shell variable does not outlive the command that set it. The archive writes the revision's export contents, preserving paths, including placeholders such as `docs/plans/.gitkeep`; that is every tracked file unless the template ever adds a `.gitattributes` with `export-ignore`, which it does not have today. Do not copy files from the checkout, and do not hardcode the file list: a copy reads whatever is in the working tree, dirty edits included, and a fixed list silently ships a stale scaffold when the template grows. Record the revision (`git -C <template> rev-parse <revision>`) for the commit message. Today the tree is `CLAUDE.md`, `docs/PLANS.md`, `docs/adr/README.md`, `docs/plans/.gitkeep`.
 3. **Initialise git on `main`, outside the sandbox.** Run
 
        git -C <target> init -b main
