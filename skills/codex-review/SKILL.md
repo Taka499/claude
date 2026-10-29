@@ -128,13 +128,16 @@ exactly one final line and nothing after it:
 'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'." < /dev/null
 ```
 
-**In a worktree-isolated session (EnterWorktree), feed the prompt through a file on stdin.** The harness there refuses any shell command whose quoted text mentions `git` — and this prompt does, in `git diff` — and the `-c 'approval_policy="never"'` flag trips the same check. Write the prompt to `$TMPDIR/codex-prompt.txt` with the Write tool and run
+**In a worktree-isolated session (EnterWorktree), feed the prompt through a file on stdin.** The harness there refuses any shell command whose quoted text mentions `git` — and this prompt does, in `git diff` — and the `-c 'approval_policy="never"'` flag trips the same check. Write the prompt to `"$snapshot/prompt.txt"` with the Write tool and run
 
 ```bash
-cd "$snapshot/repo" && codex exec --sandbox danger-full-access - < "$TMPDIR/codex-prompt.txt" > "$TMPDIR/codex-review.txt" 2>&1
+grep -qF "$snapshot/repo" "$snapshot/prompt.txt" || { echo "the prompt does not name this snapshot"; exit 1; }
+cd "$snapshot/repo" && codex exec --sandbox danger-full-access - < "$snapshot/prompt.txt" > "$snapshot/review.txt" 2>&1
 ```
 
 `-` makes `codex exec` read the prompt from stdin, so the `< /dev/null` rule above is satisfied by the file itself; `codex exec` is non-interactive, so dropping the approval flag changes nothing. Measured 2026-09-27 (gakumas-supportcards): the inline form was refused three times with "names git in a form too complex to verify", the stdin form ran to a verdict twice.
+
+**Keep the prompt and the output inside this review's snapshot, never at a fixed path in `$TMPDIR`.** Every session on the machine shares `$TMPDIR`, so a fixed name such as `$TMPDIR/codex-prompt.txt` can hold another session's prompt, for another project. The Write tool refuses to overwrite a file it has not read this session. If the Codex command then runs anyway, it reviews that other prompt, in that other snapshot, and sends that project's diff to OpenAI. The `grep` above stops it: a prompt that does not name this snapshot's path is not this review's. A fresh `mktemp -d` per review gives each prompt a folder no one else writes. Never run Codex after a failed write of its prompt. Measured 2026-10-29 (gmks-hif-final-stats): a stale prompt from another session ran for a second, ran one `git diff` in that session's snapshot of a different project, and sent the diff out, before it was stopped.
 
 Three things decide whether this call is worth anything:
 
