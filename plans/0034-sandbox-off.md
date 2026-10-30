@@ -4,7 +4,7 @@
 
 On 2026-10-30 the user asked to stop using Claude Code's Bash sandbox. Plan 0005 turned it on on 2026-08-25, and since then it had been in the way in many places. Measured across every session transcript on the machine (2026-06-13 to 2026-10-30; this repository's own transcripts before 2026-09-28 have already been deleted):
 
-- 36,999 Bash calls, 1,462 of them run outside the sandbox, in 95 sessions. Each was a prompt, because `Bash(dangerouslyDisableSandbox:true)` sat in `permissions.ask`.
+- 36,999 Bash calls, 1,462 of them run outside the sandbox, in 95 sessions. Each asked first, because `Bash(dangerouslyDisableSandbox:true)` sat in `permissions.ask` and an ask rule takes precedence over an allow rule. That part is inferred from the rule; no log recorded the dialogs before 2026-10-28.
 - The most frequent were `git fetch`, `push` and `merge`, `gh pr` and `gh run`, and gkms-contest-ai's worker scripts (`integrate.sh`, `spawn_worker.sh`).
 - 255 tool results reported `Operation not permitted`.
 
@@ -58,6 +58,21 @@ The deployed clone keeps the old skill until this branch is merged and the clone
 
 All on 2026-10-30, in the session that made the change; no restart was needed.
 
+- **The transcript counts in § Goal.** A `python3 -I` script read every `~/.claude/projects/*/*.jsonl` and counted:
+  - assistant `tool_use` blocks named `Bash`: 36,999, from 2026-06-13 to 2026-10-30;
+  - those with `input.dangerouslyDisableSandbox` true: 1,462, in 95 transcript files, grouped by their first word or two;
+  - `tool_result` blocks whose first 5,000 characters contain `Operation not permitted`: 255.
+
+  The total includes calls from before 2026-08-25, when there was no sandbox. The 255 counts every such result, whatever its cause.
 - **The setting took effect at once.** Inside the sandbox, `TMPDIR` is `/tmp/claude-501` and `ps` is refused (README, the `Bash(rm *)` bullet; `docs/claude-code.md` § Processes under the sandbox). Right after the change, `echo $TMPDIR` printed the login shell's `/var/folders/…/T/` and `ps -p $$` worked.
 - **`settings.json` parses**, with `sandbox.enabled` false and no `Bash(dangerouslyDisableSandbox:true)` in `permissions.ask` (checked with `python3 -c 'json.load(…)'`).
 - **Codex's read-only sandbox works unnested.** `codex exec --sandbox read-only -c 'approval_policy="never"'` (codex-cli 0.150.1), in a scratch git repository under `$TMPDIR`, ran three commands. `head -1 README.md` printed the line. `touch probe-write.txt` and `touch ~/codex-probe-write-outside.txt` both failed with `Operation not permitted`, and `ls` afterwards found neither file. In auto mode it ran with no prompt. Whether the new `autoMode.allow` entry or the classifier's own judgement passed it cannot be told from outside.
+
+## Codex review (2026-10-30)
+
+`/codex-review` on the branch's whole diff at `48fa748`, with Codex under `--sandbox read-only` as this branch's skill says. The deployed copy still said `danger-full-access`. Verdict: **CHANGES REQUESTED**. Codex ran four read-only commands, all in its snapshot. Nothing in the worktree or its git folder changed after the start marker, and no refs moved.
+
+- **HIGH, README said the permission-request hook and its log were safe from sessions: accepted, fixed.** Both claims rested on the sandbox. The same class covers every "no session can write" claim, so the README's first bullet now says all of them hold only while the sandbox is on. The hook bullets say so themselves too.
+- **MEDIUM, the transcript counts were not backed: accepted, fixed.** § Verification now gives the method. § Goal labels "each asked first" as inferred from the ask rule.
+- **Missed by Codex, fixed:** two sentences in the skill's unchanged text gave the sandbox as a reason. One was `mktemp -d`'s template ("which the sandbox refuses"), the other step 4's "nothing short of a separate sandbox for Codex".
+- **Deferred, pre-existing:** step 4's `find` covers a linked worktree's files but not the main repository's `.git`, where its index and refs live. The refs are compared separately. This review also checked the worktree's own folder under `.git/worktrees/`.
