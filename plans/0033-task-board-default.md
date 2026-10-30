@@ -161,11 +161,44 @@ Read 2026-10-30, by two research agents, from:
 
 The live run (§ Verification 3) happens on the next new repository, after the merge.
 
+## What the scratch test measured (2026-10-30)
+
+Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:org`, `repo`). The boards: `tia-tools` #2 and #3, linked to gkms-hif-final-stats; `Taka499` #4 to #7, linked to this repository. Every scratch board was deleted afterwards; a final listing shows only `tia-tools` #1 and the user's three earlier boards. The items were draft issues. One read-only query ran on the real board, `tia-tools` #1.
+
+- **The login suffices.** With the `project` scope, every call below succeeded on both kinds of owner.
+- **Visibility:** a new board is private (`public: false`) for both owners. `updateProjectV2(public: false)` also succeeds.
+- **The default workflows contradict the documentation and the research.**
+  - **On a new board, for both owners, six workflows are on:** "Auto-add sub-issues to project", "Auto-close issue", "Item added to project", "Item closed", "Pull request linked to issue" and "Pull request merged". There is no "Auto-add to project" and no "Item reopened".
+  - **"Item added to project" set Status Todo** on every draft item added, on both owners. Left on, it would move every issue `sync` adds past Triage.
+  - **`deleteProjectV2Workflow` removes it.** After deleting it, a new item had no Status 8 s later and 28 s later, and the workflow list no longer named it.
+- **Status options:** `updateProjectV2Field` on the built-in Status field accepts `[Triage (no id), Todo, In Progress, Done (with their ids)]`.
+  - **What comes back:** the options in the order sent, with Todo, In Progress and Done keeping their IDs. They are `f75ad846`, `47fc9ee4` and `98236657` on every board measured, including `tia-tools` #1. Triage gets a new ID.
+- **Priority on an organization's board:** `createProjectV2IssueField` with the issue field's node ID (from `organization.issueFields`) adds it.
+  - **The board's field:** `ProjectV2SingleSelectField` with `isIssueField: true` and no options.
+  - **An item's value**, on the real board: `ProjectV2ItemIssueFieldValue` where set, and null where not.
+- **Priority on a user's board:** `createProjectV2Field(SINGLE_SELECT, "Priority", [Urgent, High, Medium, Low])` keeps the order sent.
+  - **The field:** `isIssueField: false`.
+  - **An item's value:** `ProjectV2ItemFieldSingleSelectValue { name optionId }`.
+  - **Writing it:** `updateProjectV2ItemFieldValue` writes it the same way as Status.
+- **The Board view:** REST `POST orgs/{org}/projectsV2/{n}/views`, and for a user `POST users/{login}/projectsV2/{n}/views`, both under API version 2022-11-28.
+  - **The user path takes the login.** The documented `user_id` given as the numeric ID answered 404.
+  - **The body:** `{"name": "Board", "layout": "board", "vertical_group_by": [<Status field databaseId>]}` made a `BOARD_LAYOUT` view grouped by Status. The default table "View 1" stays.
+- **Linking:** `createProjectV2` with `repositoryId` links the board. The repository's `projectsV2` lists it at once, so a rerun can find the board it made.
+- **The new board query,** `repositoryOwner(login:) { __typename … on ProjectV2Owner { projectV2(number:) } }`, answers for both owners, with `__typename` saying which.
+- **New items show up late.** Immediately after `addProjectV2DraftIssue`, a board's `items` were empty; 8 s later they were there.
+- **A warning, not an error:** `createProjectV2` with the user's legacy node ID (`MDQ6…`, as `repositoryOwner` returns it) succeeded, with a deprecation warning in `extensions` that names the newer ID.
+
 ## Decision Log
 
 - **D3 (the user, 2026-10-30): O1 (a).** The script builds every board from scratch, for both kinds of owner; no template board.
 - **D4 (the user, 2026-10-30): O2 (a).** New boards get no auto-add. The helper's `sync` adds the repository's open issues that are missing from the board, as Triage.
 - **D5 (the user, 2026-10-30): the scratch test is approved:** two private scratch boards, created and deleted with the user's login.
+- **D6 (measured, 2026-10-30): setup deletes the "Item added to project" workflow,** and `check` fails while a board has it on. It is on by default, and sets Todo on every item added, which would skip the user's Triage gate (plan 0030 D8, D14).
+  - **No API can turn it off; deleting it is the only lever,** measured above.
+  - **The other default workflows stay:**
+    - "Item closed" and "Pull request merged" set Done;
+    - "Auto-close issue" closes an issue moved to Done;
+    - "Pull request linked to issue" and "Auto-add sub-issues to project" move nothing out of Triage on their own.
 
 ## Progress
 
@@ -180,3 +213,4 @@ The live run (§ Verification 3) happens on the next new repository, after the m
     - a rename not resolved, and another repository's URL accepted;
     - `check` ignoring a rename;
     - `sync` adding nothing, setting a Status, or matching issues of another repository by number alone.
+- [x] (2026-10-30) Milestone 3: the scratch test, § What the scratch test measured. It changed the design: D6.
