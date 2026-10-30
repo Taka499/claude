@@ -75,7 +75,7 @@ This is the user-level `~/.claude/CLAUDE.md`, applied to every project on this m
 
 ## UI Design
 
-- **UI copy:** don't add text the layout already says: subtitles restating a heading, a description under every field, captions announcing what a section shows. Let grouping, order and headings do the explaining. Keep what the layout cannot carry: units, empty and error states, a warning that prevents a misread, accessible names for icon-only controls. Applies to app UI, not to pages written to explain (`explainer`).
+- **UI copy:** SHOULD NOT add text the layout already says: subtitles restating a heading, a description under every field, captions announcing what a section shows. Let grouping, order and headings do the explaining. Keep what the layout cannot carry: units, empty and error states, a warning that prevents a misread, and the labels and accessible names assistive technology needs. Applies to app UI, not to pages written to explain (`explainer`).
 
 ## ExecPlans and ADRs (project layer)
 
