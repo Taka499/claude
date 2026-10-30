@@ -70,6 +70,10 @@ This is the user-level `~/.claude/CLAUDE.md`, applied to every project on this m
 - MUST verify the actual implementation before writing API or usage documentation — NEVER guess names, parameters, or behavior.
 - After changes that alter behavior or commands, MUST check the repo's README/docs and update them in the same change.
 
+## UI Design
+
+- **UI copy:** don't add text the layout already says: subtitles restating a heading, a description under every field, captions announcing what a section shows. Let grouping, order and headings do the explaining. Keep what the layout cannot carry: units, empty and error states, a warning that prevents a misread, accessible names for icon-only controls. Applies to app UI, not to pages written to explain (`explainer`).
+
 ## ExecPlans and ADRs (project layer)
 
 Projects persist cross-session knowledge in two layers: **ExecPlans** (immutable narrative logs of how a feature was built — the persistence layer for cross-session development) and **ADRs** (durable cross-plan decisions passing the three-gate test: hard to reverse, surprising without context, a real trade-off), with the project `CLAUDE.md` as an auditable index citing both.
