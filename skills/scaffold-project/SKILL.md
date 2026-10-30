@@ -1,6 +1,6 @@
 ---
 name: scaffold-project
-description: Create a new project directory from the Taka499/project-template scaffold — CLAUDE.md skeleton, docs/PLANS.md, docs/adr/README.md, docs/plans/ — initialise git on main (its branches protected by the global hook), fill the CLAUDE.md overview, propose the first commit, then create its GitHub repository (under Taka499 or tia-tools, public or private, as the user chooses) and push on the user's go. Use when an idea has no repository yet and needs one — "scaffold a new project", "start a new repo for this", "set this up from the template", or when /grill-me ends on a greenfield design with nowhere to write its captures.
+description: Create a new project directory from the Taka499/project-template scaffold — CLAUDE.md skeleton, docs/PLANS.md, docs/adr/README.md, docs/plans/ — initialise git on main (its branches protected by the global hook), fill the CLAUDE.md overview, create its GitHub repository (under Taka499 or tia-tools, public or private, as the user chooses) with its task board, propose the first commit, and push on the user's go. Use when an idea has no repository yet and needs one — "scaffold a new project", "start a new repo for this", "set this up from the template", or when /grill-me ends on a greenfield design with nowhere to write its captures.
 ---
 
 # Scaffold Project
@@ -14,7 +14,7 @@ Nothing is created until all four are settled with the user, one question at a t
 1. **Directory name.** If the user has not named it, propose three or four candidates and let them pick. Offer names in more than one register (a plain English word, a term of art, a short word in the user's own language) rather than assuming the style of neighbouring repos: in the session that produced this skill, the parent directory was full of short Japanese names and the user rejected every Japanese candidate. Repository name and directory name are the same thing.
 2. **Parent directory.** Default to the parent of the current repository when the session runs inside one, and to the current working directory otherwise. State the full target path (`<parent>/<name>`).
 3. **GitHub owner and visibility.** Every repository gets a GitHub remote (global `CLAUDE.md` § Git Operations). Ask where it lives, the user's account `Taka499` or the `tia-tools` organization, and whether it is public or private. Say what private costs on the free plans: GitHub enforces branch protection on public repositories only, so a private one is guarded by the local hook alone.
-4. **Create it now.** A separate yes/no naming the full path and the actions: "create `<parent>/<name>` from project-template and initialise git in it now?" This is the request the global rule "MUST only make changes that were explicitly requested" is satisfied by, and it is the explicit permission for the `git init` in step 3; the first three questions only describe what would be created. The GitHub repository is not created yet: that waits for step 7. If the user says no, stop; a design note in the conversation or in a file they name is the fallback.
+4. **Create it now.** A separate yes/no naming the full path and the actions: "create `<parent>/<name>` from project-template and initialise git in it now?" This is the request the global rule "MUST only make changes that were explicitly requested" is satisfied by, and it is the explicit permission for the `git init` in step 3; the first three questions only describe what would be created. The GitHub repository is not created yet: that waits for step 6. If the user says no, stop; a design note in the conversation or in a file they name is the fallback.
 
 Refuse if the target path exists; never merge into an existing directory. This skill creates repositories; it does not retrofit the scaffold into one that already exists. For that case, extract the template as in step 2 into a directory under `$TMPDIR` and copy in only the files the repository lacks, never overwriting, with none of the confirmations or the `git init` here.
 
@@ -38,18 +38,42 @@ Refuse if the target path exists; never merge into an existing directory. This s
    with the sandbox disabled, and say why in one line. Branch protection needs no step here when the machine has the global hook: run `<claude-clone>/git-hooks/install-global.sh --check`, which proves it with a scratch repository and prints `active`. If it fails, tell the user that `<claude-clone>/git-hooks/install-global.sh` (without `--check`) sets it up once for every repository, outside the sandbox; `<claude-clone>` is the `Taka499/claude` checkout that `~/.claude/skills/scaffold-project` links into. On a machine whose git ignores config-defined hooks, `<claude-clone>/git-hooks/protect-branches.sh <target>` protects this one repository instead. Either way the hook allows the first commit, which creates `main`, and refuses every later update of `main` that is not a merge, so work after the first commit happens on feature branches.
 4. **Fill what is known in `CLAUDE.md`.** Write the Project Overview in two to four sentences from what the session established, and cite the plan or ADR path for any non-obvious claim, per the template's own sync contract. If ADRs are being written in the same session, add their index lines under Durable Decisions. Leave Architecture, Setup and Development, Build and Test, and Code Style as the template's comments; they are filled when code exists, not guessed.
 5. **Write the session's captures**, if any, into their homes: ADRs under `docs/adr/` per `docs/adr/README.md`, the ExecPlan draft under `docs/plans/` per `docs/PLANS.md`. This step belongs to whichever skill invoked this one (`grill-me`, usually); do it here only when running standalone with captures in hand.
-6. **Propose the first commit; do not run it.** Message pattern: `docs: scaffold <name> from project-template@<short revision> — <what else is in it>`. List the files to be added individually (the archived tree plus anything written in steps 4 and 5). Because it is the repository's first commit, it lands on `main` directly; say so, since the global Git rules otherwise forbid committing to a default branch.
-7. **Create the GitHub repository and push, on the user's go.** Ask once, naming everything: "create `<owner>/<name>` (<public or private>) on GitHub, add it as `origin` and push `main`?" Then run each command on its own, outside the sandbox: a repository that does not exist yet is in no project token's scope, so `gh` needs the user's login from the keychain (global `CLAUDE.md` § Git Operations), and so does the push:
+6. **Create the GitHub repository and its task board, on the user's go.** Every new project keeps its tasks on a GitHub board (the `Taka499/claude` repo's `plans/0033-task-board-default.md`, D2), so the board comes with the repository.
+   - **Ask once, naming everything:** "create `<owner>/<name>` (<public or private>) on GitHub, add it as `origin`, and set up its task board?"
+   - **Then run each command on its own.** Where Claude Code's sandbox is on, run them outside it: a repository that does not exist yet is in no project token's scope, so `gh` needs the user's login from the keychain (global `CLAUDE.md` § Git Operations).
 
-       gh repo create <owner>/<name> --<public|private> --source <target> --remote origin
+         gh repo create <owner>/<name> --<public|private> --source <target> --remote origin
+         python3 -I ~/.claude/skills/task-board/setup_board.py <owner>/<name> --checkout <target>
+
+   - **Facts these commands rest on:**
+     - without `--push`, `gh repo create` accepts a repository with no commits yet (gh 2.103.3), and the board links to the empty repository;
+     - the setup needs the login's `project` scope (the `task-board` skill, § Running the helper);
+     - it writes `<target>/.task-board.json`.
+   - **Then add the Tasks section to `<target>/CLAUDE.md`,** as the `task-board` skill's § Setting up a project's board words it. It names the board and how the project merges: through PRs into `develop` by default, since the user prefers PR merges (plan 0030 D21), or by local merges if the user says so.
+   - **If the user declines:**
+     - **only the board:** the project keeps its tasks in `docs/BACKLOG.md`;
+     - **the repository as well:** say that the project has no remote yet, which the global rule requires, and leave it at that.
+7. **Propose the first commit; do not run it.**
+   - **Message pattern:** `docs: scaffold <name> from project-template@<short revision> — <what else is in it>`.
+   - **The files,** listed individually: the archived tree, `.task-board.json`, and anything written in steps 4 to 6.
+   - **Where it lands:** because it is the repository's first commit, it lands on `main` directly. Say so, since the global Git rules otherwise forbid committing to a default branch.
+8. **Push, on the user's go.** Ask once, naming everything: "push `main` to `origin`, then create and push `develop` and make it the default branch?" The second half applies to a project that merges through PRs. Then run each command on its own, outside the sandbox where it is on:
+
        git -C <target> push -u origin main
-       <claude-clone>/git-hooks/protect-github.sh <owner>/<name>      # public repositories only
+       git -C <target> branch develop main                                   # PR projects
+       git -C <target> push -u origin develop                                # PR projects
+       python3 -I ~/.claude/skills/task-board/setup_board.py <owner>/<name> --default-branch develop   # PR projects
+       <claude-clone>/git-hooks/protect-github.sh <owner>/<name>             # public repositories only
 
-   For a private repository skip the last line: on the free plans GitHub answers 403 there, and the local hook is the guard. If the user declines, say that the repository has no remote yet, which the global rule requires, and leave it at that.
-8. **Tell the user the directory is ready to launch a session from**, and what does not carry over: file-based memory is keyed by working directory, so the new project starts with none, and anything decided only in the current conversation is lost unless step 5 wrote it down.
+   - **Creating `develop` passes the branch hook.**
+   - **The rerun of `setup_board.py`** finds the board set up and only changes the default branch, so that `Closes #N` closes issues.
+   - **For a private repository, skip the last line:** on the free plans GitHub answers 403 there, and the local hook is the guard.
+9. **Tell the user the directory is ready to launch a session from,** and what does not carry over:
+   - file-based memory is keyed by working directory, so the new project starts with none;
+   - anything decided only in the current conversation is lost unless step 5 wrote it down.
 
 ## Rules
 
 - Never `git add .`; add the extracted and written files by name.
-- Never commit, push, or create the remote without the user's go for that step: the first commit in step 6, the repository and the push in step 7.
+- Never commit, push, or create the remote or its board without the user's go for that step: the repository and its board in step 6, the first commit in step 7, the push in step 8.
 - Do not "improve" the template while extracting it. A change to the scaffold is a PR to `Taka499/project-template`, not a local edit that drifts on the first project it ships in.

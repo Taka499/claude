@@ -255,3 +255,16 @@ Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:o
     - neither `--checkout` nor `--default-branch`, and no `sync`, so no real issue or repository setting was touched.
 
     Afterwards the board lists show only the boards from before, and `check` and `ready` on `tia-tools` #1 are all ok.
+- [x] (2026-10-30) Milestone 6: the texts.
+  - **The `task-board` skill:**
+    - step 0 is `check` then `sync`;
+    - Priority on a user's board;
+    - the login and its `project` scope;
+    - the setup section replaced by `setup_board.py`, with the token note kept for the sandbox being on.
+  - **`scaffold-project`:**
+    - step 6 creates the repository and its board before the first commit, since `gh repo create --source` without `--push` accepts a repository with no commits (gh 2.103.3, `pkg/cmd/repo/create/create.go`);
+    - step 7 is the first commit, now with `.task-board.json`;
+    - step 8 pushes, and for PR projects creates `develop` and makes it the default by rerunning the setup.
+  - **Global `CLAUDE.md`:** a new project gets a board by default, while the sandbox is off; an existing one keeps what it names.
+  - **`README.md`:** the two skill bullets.
+  - No `setup.sh` rerun: skills are linked as whole folders, and `~/.claude/skills/task-board` already shows `setup_board.py`.
