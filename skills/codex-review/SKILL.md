@@ -5,7 +5,7 @@ description: Get a second opinion on a local diff from Codex (OpenAI) before it 
 
 # Codex Review
 
-A pre-commit second opinion from a model that does not share this one's priors. Codex is told to read without changing anything, but nothing enforces that: it runs with the write access the sandbox gives this session, which includes the repository, and on 2026-10-12 a review made an empty commit on the branch it was reviewing. So Codex works in a snapshot (step 2), which keeps its ordinary commands out of the repository but does not confine it, and the repository is checked for writes afterwards (step 4). You evaluate what it says. Nothing is committed, pushed, or posted.
+A pre-commit second opinion from a model that does not share this one's priors. Codex is told to read without changing anything. Its own `--sandbox read-only` refuses writes, but that is Codex's configuration, which a CLI upgrade or a mistyped flag can silently drop, and on 2026-10-12 a review run with write access made an empty commit on the branch it was reviewing. So Codex works in a snapshot (step 2), which keeps its ordinary commands out of the repository, and the repository is checked for writes afterwards (step 4). You evaluate what it says. Nothing is committed, pushed, or posted.
 
 The point is **disagreement, not coverage**. Another pass by the same reviewer finds the same things — the value here is that Codex was trained differently and will object to things this agent considers settled. Treat a finding you immediately want to dismiss as the most interesting one on the list.
 
@@ -13,11 +13,11 @@ The point is **disagreement, not coverage**. Another pass by the same reviewer f
 
 `codex exec` sends the diff **and whatever files Codex reads for context** to OpenAI. That is the real cost of this skill. No setting prevents the diff itself from leaving — that is what you asked for. What a setting can change is how much else travels with it, which is the subject of the rest of this section.
 
-**The exposure is wider than the repository, and checking the diff does not bound it.** Codex's own `--sandbox read-only` mode stops it *writing*; it does not confine its *reading*, which is why this skill does not rely on it. Measured: from a workspace inside this repo, Codex read a decoy under `$TMPDIR` and counted 63 entries in `$HOME`, while a write was refused. Those probes establish that reads reach **beyond the workspace** — no more than that. That the practical boundary is **anything readable by your user account** is inferred from the documented design, whose filesystem controls govern writes only. Plan against the inference; it is what the design implies, but three probes did not prove it.
+**The exposure is wider than the repository, and checking the diff does not bound it.** Codex's own `--sandbox read-only` mode stops it *writing*; it does not confine its *reading*, so this skill relies on it for writes only. Measured: from a workspace inside this repo, Codex read a decoy under `$TMPDIR` and counted 63 entries in `$HOME`, while a write was refused. Those probes establish that reads reach **beyond the workspace** — no more than that. That the practical boundary is **anything readable by your user account** is inferred from the documented design, whose filesystem controls govern writes only. Plan against the inference; it is what the design implies, but three probes did not prove it.
 
-What narrows it is the *outer* sandbox: run inside Claude Code's, as the section below requires, `sandbox.filesystem.denyRead` and `sandbox.credentials.files` do bind the Codex process and its children. Codex's own read-only mode contributes nothing here.
+Only an *outer* sandbox narrows it: inside Claude Code's, `sandbox.filesystem.denyRead` and `sandbox.credentials.files` bind the Codex process and its children. This machine has run without Claude Code's sandbox since 2026-10-30 ([`plans/0034-sandbox-off.md`](../../plans/0034-sandbox-off.md)), so nothing narrows it here: `~/.ssh`, `.env` files and the login keychain are each one read away from OpenAI. Codex's own read-only mode contributes nothing to that.
 
-This is known upstream and closed without a fix ([openai/codex#4410](https://github.com/openai/codex/issues/4410)). Mitigations and the probes behind them are in [`plans/0008-codex-read-boundary.md`](../../plans/0008-codex-read-boundary.md); the strongest is to run Codex *inside* Claude Code's sandbox, which is what the next section requires and what this machine is now configured for.
+This is known upstream and closed without a fix ([openai/codex#4410](https://github.com/openai/codex/issues/4410)). Mitigations and the probes behind them are in [`plans/0008-codex-read-boundary.md`](../../plans/0008-codex-read-boundary.md). The strongest, running Codex inside Claude Code's sandbox, went with that sandbox. What is left is a prompt scoped to the diff, so the reviewer has no reason to wander.
 
 **And it may not stop at reading.** On individual ChatGPT plans, Codex content may be used for training unless opted out, reportedly under a Codex-specific control separate from ChatGPT's data settings. **Treat that as unverified** — it comes from secondary reporting, not a primary source that could be fetched — and confirm it in account settings rather than repeating it. Confirm it *before* reviewing anything private: of the exposures here it is the hardest to undo once it has gone wrong, and opting out still says nothing about what other retention applies.
 
@@ -30,7 +30,7 @@ So: never run this on a machine or in a repository where that is unacceptable �
 3. **Prove it can answer at all**, with a call that costs nothing:
 
    ```bash
-   codex exec --sandbox danger-full-access "Reply with exactly: PING-OK" < /dev/null
+   codex exec --sandbox read-only "Reply with exactly: PING-OK" < /dev/null
    ```
 
    **`< /dev/null` is not optional, here or below.** Without it `codex exec` can block reading stdin — it prints `Reading additional input from stdin...`, which a pipe into `tail` hides completely, so the call looks like a hang with no output. Two multi-minute stalls in this skill's own development were exactly that.
@@ -46,28 +46,23 @@ So: never run this on a machine or in a repository where that is unacceptable �
 
    Never let this step's failure become the review. A skill that cannot run reports that it could not run.
 
-## Sandboxing: this runs INSIDE the Claude Code sandbox
+## Sandboxing: Codex's own read-only sandbox
 
-Run `codex exec` as an ordinary sandboxed command. **Do not pass `dangerouslyDisableSandbox`** — that is the whole point of the arrangement. `sandbox.filesystem.denyRead` and `sandbox.credentials.files` are enforced by the OS on the Codex process *and its children*, so the read boundary above is narrowed by Claude Code rather than entrusted to Codex's own configuration, which a CLI upgrade or a typo can silently drop.
+**Run Codex with `--sandbox read-only`.** Codex then runs each command it generates under a Seatbelt profile of its own that refuses writes. Claude Code's sandbox is off on this machine (`plans/0034-sandbox-off.md`), so Codex's is the only one in force. That is also the only reason it can work at all. Two Seatbelt sandboxes cannot nest: inside Claude Code's, every command Codex runs fails with `sandbox-exec: sandbox_apply: Operation not permitted`.
 
-**Turn Codex's own sandbox off — `--sandbox danger-full-access` — and let Claude Code's be the only one.** The two cannot nest: Codex's `read-only` mode shells out through `sandbox-exec`, and inside Claude Code's Seatbelt every command it runs dies with `sandbox-exec: sandbox_apply: Operation not permitted`. A review whose reviewer cannot run `git diff` is worth nothing.
+It confines writes only. Reads go wherever your user account can read (§ Before running it, above).
 
-Nothing is lost by dropping it, because the outer sandbox already covers both directions. Measured, running this way:
+Measured on 2026-10-30 with codex-cli 0.150.1, in a scratch repository and with Claude Code's sandbox off:
 
 | Probe | Result |
 | --- | --- |
 | `head -1 README.md` in the workspace | works |
-| write to `~/should-not-be-writable.txt` | **REFUSED** |
-| read `~/.ssh/config` | **REFUSED** |
+| `touch probe-write.txt` in the workspace | **REFUSED** (`Operation not permitted`) |
+| `touch ~/codex-probe-write-outside.txt` | **REFUSED** (`Operation not permitted`) |
 
-Note the flag's name is actively misleading here: `danger-full-access` grants full access *relative to the inner sandbox*, which is itself inside the outer one that constrains it. This is the most protected configuration available, reached through the most alarming flag.
+`autoMode.allow` in `~/.claude/settings.json` names exactly this form: `codex exec --sandbox read-only`, approvals off. Run any other `--sandbox` value and the classifier judges it as an agent launched without isolation.
 
-It needs two entries in `~/.claude/settings.json` (untracked per ADR 0002 — the invariants live in `README.md`):
-
-- **`sandbox.network.allowedDomains`** — `chatgpt.com` and `auth.openai.com` for a ChatGPT-plan login; `api.openai.com` instead under API-key auth.
-- **`sandbox.filesystem.allowWrite`** — `~/.codex`. Without it Codex dies at startup, long before any network call, with `could not create PATH aliases` and `failed to initialize in-process app-server client: Operation not permitted`. That failure is filesystem, and it looks nothing like a blocked host — expect to misdiagnose it once.
-
-**Do not add `~/.codex/auth.json` to `credentials.files`.** It was tried and it makes Codex unable to read its own credential: `credentials.files` protects a credential *from* sandboxed commands, and here Codex is one. There is no per-command exemption, so protecting that token and running Codex sandboxed are mutually exclusive — and the token was never protected before, so declining to protect it costs nothing that was previously held.
+**If Claude Code's sandbox is ever turned back on**, `read-only` stops working, for the nesting reason above. The skill then has to go back to its previous form, and plan 0034 says what that was.
 
 ## Steps
 
@@ -80,7 +75,7 @@ It needs two entries in `~/.claude/settings.json` (untracked per ADR 0002 — th
 
 ### 2. Snapshot the repository, and record its state
 
-Codex works in a copy, so its ordinary relative-path commands land there. It is **not confined** to the copy: it runs under this session's sandbox, which can also write the real repository by its absolute path. Step 4 is what tells you whether it did. Each command below writes to a file rather than a pipe, so that every step's own exit status counts, and stops at the first failure:
+Codex works in a copy, so its ordinary relative-path commands land there. Its read-only sandbox refuses writes to the copy and to the real repository alike. The copy is for the day that sandbox is not in force: a CLI upgrade, a mistyped flag. Step 4 is what tells you whether anything was written. Each command below writes to a file rather than a pipe, so that every step's own exit status counts, and stops at the first failure:
 
 ```bash
 snapshot=$(mktemp -d "$TMPDIR/codex-review.XXXXXX") || exit 1
@@ -100,7 +95,7 @@ tar -C <repository> --null -T "$snapshot/untracked.list" -cf "$snapshot/untracke
 tar -C "$snapshot/repo" -xf "$snapshot/untracked.tar" || exit 1
 ```
 
-`--revision` (git 2.49 or later) clones straight to that commit, detached, and creates no remote-tracking branches, hence the `fetch` of the base. It fetches from `origin`, which the clone points at the repository. `GIT_ADVICE=0` silences the detached-HEAD notice the clone would print; `-c advice.detachedHead=false` does the same, but this setup's `Bash(git -c *)` ask rule prompts for it. Do not reach it with `git -C <snapshot> checkout` instead: this setup's permission rules deny every mutating `git -C` form, so that step would be refused. The snapshot is detached at `HEAD`, so its base branch is `origin/<base>`: the diff to review is `git diff origin/<base>...HEAD`, plus the uncommitted changes shown by `git diff HEAD` and `git status`. Give `mktemp -d` the `$TMPDIR` template: without one, macOS uses the per-user system temp directory, which the sandbox refuses, and a script that then changes into an empty path runs in the repository instead (measured on 2026-10-12: four stray commits). In the steps below, run Codex from `"$snapshot/repo"` and name that path in the prompt.
+`--revision` (git 2.49 or later) clones straight to that commit, detached, and creates no remote-tracking branches, hence the `fetch` of the base. It fetches from `origin`, which the clone points at the repository. `GIT_ADVICE=0` silences the detached-HEAD notice the clone would print; `-c advice.detachedHead=false` does the same, but this setup's `Bash(git -c *)` ask rule prompts for it. Do not reach it with `git -C <snapshot> checkout` instead: this setup's permission rules deny every mutating `git -C` form, so that step would be refused. The snapshot is detached at `HEAD`, so its base branch is `origin/<base>`: the diff to review is `git diff origin/<base>...HEAD`, plus the uncommitted changes shown by `git diff HEAD` and `git status`. Give `mktemp -d` the `$TMPDIR` template: without one, macOS uses the per-user system temp directory, which a session inside Claude Code's sandbox cannot write, and a script that then changes into an empty path runs in the repository instead (measured on 2026-10-12: four stray commits). In the steps below, run Codex from `"$snapshot/repo"` and name that path in the prompt.
 
 Then, with the snapshot complete and just before Codex runs, record the repository's refs and a start marker. They come last on purpose: cloning a local repository hard-links its object files, which updates their change time, so a marker taken earlier would list the clone's own work in step 4.
 
@@ -114,7 +109,7 @@ touch "$snapshot/started" || exit 1
 ### 3. Run Codex
 
 ```bash
-cd "$snapshot/repo" && codex exec --sandbox danger-full-access -c 'approval_policy="never"' "Review ONLY the change described below in this repository (<the full path of "$snapshot/repo">).
+cd "$snapshot/repo" && codex exec --sandbox read-only -c 'approval_policy="never"' "Review ONLY the change described below in this repository (<the full path of "$snapshot/repo">).
 Run \`git diff <paths>\` to see it and read surrounding files for context. Do NOT modify anything, and do not commit.
 
 INTENT: <what this change is for, and what must stay true after it>
@@ -132,7 +127,7 @@ exactly one final line and nothing after it:
 
 ```bash
 [ -n "$snapshot" ] && grep -qF "$snapshot/repo" "$snapshot/prompt.txt" || { echo "the prompt does not name this snapshot"; exit 1; }
-cd "$snapshot/repo" && codex exec --sandbox danger-full-access - < "$snapshot/prompt.txt" > "$snapshot/review.txt" 2>&1
+cd "$snapshot/repo" && codex exec --sandbox read-only - < "$snapshot/prompt.txt" > "$snapshot/review.txt" 2>&1
 ```
 
 `-` makes `codex exec` read the prompt from stdin, so the `< /dev/null` rule above is satisfied by the file itself; `codex exec` is non-interactive, so dropping the approval flag changes nothing. Measured 2026-09-27 (gakumas-supportcards): the inline form was refused three times with "names git in a form too complex to verify", the stdin form ran to a verdict twice.
@@ -157,7 +152,7 @@ git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapsho
 cat "$snapshot/written.txt"; diff "$snapshot/refs-before.txt" "$snapshot/refs-after.txt"
 ```
 
-`-cnewer` compares the inode change time, which every write and every permission change updates: a commit, a ref, an edited, new or `chmod`ed file, tracked, untracked or ignored. A deleted file shows as its directory. The file system here (APFS) keeps nanosecond times, so a write just after the marker is not lost to rounding. What it cannot catch is a process that sets times back deliberately; nothing short of a separate sandbox for Codex stops that.
+`-cnewer` compares the inode change time, which every write and every permission change updates: a commit, a ref, an edited, new or `chmod`ed file, tracked, untracked or ignored. A deleted file shows as its directory. The file system here (APFS) keeps nanosecond times, so a write just after the marker is not lost to rounding. What it cannot catch is a process that sets times back deliberately. Codex's read-only sandbox stops that too, but this step exists for the case where that sandbox is not in force.
 
 Some entries can be your own. A `git status` or `git diff` run in the repository during the review may refresh `.git/index`, and anything you edited there yourself shows up too. Anything listed that you did not write is Codex's. Stop and report it to the user as an incident, before any finding. Name what changed (a ref, a commit and its author, a file), and do not undo it on your own, because the global Git rules forbid rewriting history and deleting untracked files without the user's permission. A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
 
