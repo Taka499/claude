@@ -185,6 +185,7 @@ Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:o
   - **The body:** `{"name": "Board", "layout": "board", "vertical_group_by": [<Status field databaseId>]}` made a `BOARD_LAYOUT` view grouped by Status. The default table "View 1" stays.
 - **Linking:** `createProjectV2` with `repositoryId` links the board. The repository's `projectsV2` lists it at once, so a rerun can find the board it made.
 - **The new board query,** `repositoryOwner(login:) { __typename … on ProjectV2Owner { projectV2(number:) } }`, answers for both owners, with `__typename` saying which.
+- **`field(name:)` fails on a field the board lacks** (measured on a fifth scratch board). It answers `NOT_FOUND` as a GraphQL error, and gh exits 1. `fieldValueByName` answers null, and `fields(first: 50)` lists the fields. So both scripts list the fields and pick Status and Priority by name: a new board has no Priority, and an organization's board needs none of its own.
 - **New items show up late.** Immediately after `addProjectV2DraftIssue`, a board's `items` were empty; 8 s later they were there.
 - **A warning, not an error:** `createProjectV2` with the user's legacy node ID (`MDQ6…`, as `repositoryOwner` returns it) succeeded, with a deprecation warning in `extensions` that names the newer ID.
 
@@ -228,3 +229,28 @@ Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:o
     - `check` ignoring the workflow;
     - workflows read leniently.
   - **Live:** `check` and `ready` run read-only on `tia-tools` #1 with the user's login: every line ok, 0 ready.
+- [x] (2026-10-30) Milestone 5: `skills/task-board/setup_board.py` and `test_setup_board.py`.
+  - **The steps:** board found or created linked, private, the Status options, Priority, a Board view, "Item added to project" deleted, every step read back, then `--default-branch` and `--checkout`, then board.py's `check`.
+  - **Its first live run found a fault.** `field(name: "Priority")` errors on a board without one, which a new board is. Both scripts now list the board's fields instead, and a test pins that no query asks for a field by name.
+  - **Tests:** 113 in all, OK on 3.9.6 and 3.14, the replay through the real gh included. Each setup test was seen failing against a broken copy, 15 of them:
+    - the Status IDs dropped;
+    - other options dropped;
+    - the options rewritten every run;
+    - a board field accepted as the organization's;
+    - a workflow already off deleted, or one left on;
+    - a new board every run;
+    - any board reused;
+    - two candidates not refused;
+    - a public board left public;
+    - no read-back;
+    - the user's view path by ID;
+    - the branch checked late or always set;
+    - the config overwritten.
+
+    The field-list change was seen failing the same way: a query asking by name, and a field list read leniently.
+  - **Live, with the user's login,** through a throwaway wrapper that titles the board as a scratch so it can never find a real one:
+    - `tia-tools`, linked to gkms-hif-final-stats, and `Taka499`, linked to this repository;
+    - each set up in full, then run again with no change and `check` passing, then deleted;
+    - neither `--checkout` nor `--default-branch`, and no `sync`, so no real issue or repository setting was touched.
+
+    Afterwards the board lists show only the boards from before, and `check` and `ready` on `tia-tools` #1 are all ok.

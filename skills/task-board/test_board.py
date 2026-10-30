@@ -103,8 +103,10 @@ def board_page(items: list, cursor: str | None, field=STATUS_FIELD, owner_type: 
              for entry in items]
     if priority_field == "as captured":
         priority_field = USER_PRIORITY_FIELD if owner_type == "User" else ORG_PRIORITY_ON_BOARD
+    fields = [{"__typename": "ProjectV2Field", "name": "Title"}]  # the board lists every field; None leaves one out
+    fields += [dict(given, name=name) for name, given in (("Status", field), ("Priority", priority_field)) if given]
     return json.dumps({"data": {"repositoryOwner": {"__typename": owner_type, "projectV2": {
-        "id": PROJECT_ID, "field": field, "priority": priority_field, "items": {
+        "id": PROJECT_ID, "fields": {"nodes": fields}, "items": {
             "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor}, "nodes": nodes}}}}})
 
 
@@ -774,6 +776,15 @@ class UsersBoard(unittest.TestCase):
         page = board_page([item(1, "Todo")], None, priorities={1: "High"})
         field, items, _ = board.parse_board_page(page, 1)
         self.assertEqual((field.owner_type, field.board_priority, items[0]["priority"]), ("Organization", None, ""))
+
+    def test_an_organizations_board_needs_no_priority_field_of_its_own(self):
+        field, _, _ = board.parse_board_page(board_page([item(1, "Todo")], None, priority_field=None), 1)
+        self.assertEqual(field.owner_type, "Organization")
+
+    def test_no_query_asks_for_a_field_by_name(self):
+        # GitHub answers `field(name:)` for a field the board lacks with an error, not null (measured 2026-10-30)
+        for query in (board.BOARD_QUERY, board.WORKFLOWS_QUERY):
+            self.assertNotIn("field(name:", query.replace(" ", ""))
 
     def test_a_users_board_ranks_its_own_priority_options_in_board_order(self):
         field, items, _ = board.parse_board_page(board_page([item(1, "Todo")], None, owner_type="User",

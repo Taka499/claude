@@ -59,8 +59,10 @@ REST_HEADER = f"X-GitHub-Api-Version: {REST_VERSION}"
 ALREADY_ON_BOARD = "Content already exists in this project"
 ISSUE_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)\s*$")
 
-# The board's ID, its owner's kind, its Status and Priority fields with their options, and its items with their
-# Status and Priority, asked for by name. On an organization's board, the Priority values here are the issue field's
+# The board's ID, its owner's kind, its fields (Status and Priority are picked out by name), and its items with their
+# Status and Priority, asked for by name. The fields are listed rather than asked for with `field(name:)`, which
+# answers a field the board lacks with an error instead of null (measured 2026-10-30, plan 0033); `fieldValueByName`
+# answers null. On an organization's board, the Priority values here are the issue field's
 # (ProjectV2ItemIssueFieldValue) and are not used: those are read per issue through REST.
 BOARD_QUERY = """query($owner: String!, $number: Int!, $after: String) {
   repositoryOwner(login: $owner) {
@@ -68,13 +70,12 @@ BOARD_QUERY = """query($owner: String!, $number: Int!, $after: String) {
     ... on ProjectV2Owner {
       projectV2(number: $number) {
         id
-        field(name: "Status") {
-          __typename
-          ... on ProjectV2SingleSelectField { id options { id name } }
-        }
-        priority: field(name: "Priority") {
-          __typename
-          ... on ProjectV2SingleSelectField { id isIssueField options { id name } }
+        fields(first: 50) {
+          nodes {
+            __typename
+            ... on ProjectV2FieldCommon { name }
+            ... on ProjectV2SingleSelectField { id isIssueField options { id name } }
+          }
         }
         items(first: 100, after: $after) {
           pageInfo { hasNextPage endCursor }
@@ -183,9 +184,17 @@ def graphql_data(response_json: str) -> dict:
     return response["data"]
 
 
+def fields_by_name(board: dict) -> dict:
+    """The board's fields from BOARD_QUERY's `fields`, by name."""
+    nodes = (board.get("fields") or {}).get("nodes")
+    if not isinstance(nodes, list):
+        raise GhError("the board's fields came back without a list")
+    return {node["name"]: node for node in nodes if isinstance(node, dict) and isinstance(node.get("name"), str)}
+
+
 def parse_board_priority(field) -> PriorityField:
-    """A user's board's own Priority field, from BOARD_QUERY's `priority`: a single-select field that is not an
-    organization's issue field, its options ranked in the order they stand on the board, first most urgent."""
+    """A user's board's own Priority field: a single-select field that is not an organization's issue field, its
+    options ranked in the order they stand on the board, first most urgent."""
     if not field:
         raise BoardError(f"the board has no field named {PRIORITY_FIELD!r}; a user's board keeps Priority as a"
                          f" single-select field of its own (setup_board.py adds it)")
@@ -224,7 +233,8 @@ def parse_board_page(page_json: str, project: int):
     owner_type = owner.get("__typename")
     if owner_type not in (ORGANIZATION, USER):
         raise GhError(f"the board's owner is a {owner_type!r}, not an organization or a user")
-    field = board.get("field")
+    fields = fields_by_name(board)
+    field = fields.get(STATUS_FIELD)
     if not field:
         raise BoardError(f"the board has no field named {STATUS_FIELD!r}; was it renamed? (wanted options:"
                          f" {', '.join(STATUSES)})")
@@ -235,7 +245,7 @@ def parse_board_page(page_json: str, project: int):
     missing = [option for option in STATUSES if option not in options]
     if missing:
         raise BoardError(f"the board's {STATUS_FIELD} field lacks the option(s) {', '.join(missing)}")
-    board_priority = parse_board_priority(board.get("priority")) if owner_type == USER else None
+    board_priority = parse_board_priority(fields.get(PRIORITY_FIELD)) if owner_type == USER else None
     status_field = StatusField(board["id"], field["id"], options, owner_type, board_priority)
     page = board.get("items")
     info = (page or {}).get("pageInfo")
