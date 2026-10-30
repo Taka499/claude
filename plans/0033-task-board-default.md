@@ -214,3 +214,17 @@ Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:o
     - `check` ignoring a rename;
     - `sync` adding nothing, setting a Status, or matching issues of another repository by number alone.
 - [x] (2026-10-30) Milestone 3: the scratch test, § What the scratch test measured. It changed the design: D6.
+- [x] (2026-10-30) Milestone 4: the helper on both kinds of owner.
+  - **The board** is read through `repositoryOwner`. On a user's board, Priority comes from the board's own field, read from the items, ranked in board order and written with `SET_OPTION_MUTATION`, the mutation that sets Status. An organization's board keeps the issue field through REST, and ignores the captured `ProjectV2ItemIssueFieldValue` on its items.
+  - **`check`** fails while "Item added to project" is on (D6).
+  - **Fixtures:** the captures from Milestone 3.
+  - **Tests:** 91, OK on 3.9.6 and 3.14. Each new one was seen failing against a broken copy:
+    - an organization's board reading the board's Priority;
+    - ranking by name;
+    - an issue field accepted as the board's own;
+    - a Priority outside the options;
+    - any kind of owner;
+    - a user's Priority through REST, read or written;
+    - `check` ignoring the workflow;
+    - workflows read leniently.
+  - **Live:** `check` and `ready` run read-only on `tia-tools` #1 with the user's login: every line ok, 0 ready.

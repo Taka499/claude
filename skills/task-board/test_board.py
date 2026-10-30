@@ -1,8 +1,9 @@
 """Tests for board.py. Run: python3 -m unittest discover -s skills/task-board
 
-The fixtures marked "captured" are trimmed from real gh output against the tia-tools board on 2026-10-29 (plan 0031).
-The GraphQL shapes follow GitHub's public schema, checked the same day. The last class runs the real gh binary on
-every command the other tests produced, offline, so an argument gh refuses fails here and not on a real board."""
+The fixtures marked "captured" are trimmed from real gh output: against the tia-tools board on 2026-10-29 (plan 0031),
+and against scratch boards of both owners on 2026-10-30 (plan 0033). The GraphQL shapes follow GitHub's public schema.
+The last class runs the real gh binary on every command the other tests produced, offline, so an argument gh refuses
+fails here and not on a real board."""
 from __future__ import annotations
 
 import json
@@ -41,6 +42,21 @@ OPTION_IDS = {"Urgent": 76872378, "High": 76872379, "Medium": 76872380, "Low": 7
 FIELD_VALUES_CAPTURED = [{"issue_field_id": 43924878, "node_id": "IFSSV_kgDOAOdA_w", "data_type": "single_select",
                           "issue_field_name": "Priority", "value": 76872379,
                           "single_select_option": {"id": 76872379, "name": "High", "color": "red"}}]
+# captured (2026-10-30): BOARD_QUERY's `priority` on tia-tools #1, where Priority is the organization's issue field.
+# The board's field has no options, and an item's value names no option; both are ignored there.
+ORG_PRIORITY_ON_BOARD = {"__typename": "ProjectV2SingleSelectField", "id": "PVTSSF_lADOEfCcUc4BpKm6zhnnk50",
+                         "isIssueField": True, "options": []}
+ORG_ITEM_PRIORITY = {"__typename": "ProjectV2ItemIssueFieldValue"}
+# captured (2026-10-30): a user's scratch board with its own Priority field, made as setup_board.py makes it.
+USER_PRIORITY_FIELD_ID = "PVTSSF_lAHOANfZRs4Bpb6Hzhn3kgg"
+USER_PRIORITY_IDS = {"Urgent": "82c96254", "High": "4b573078", "Medium": "74cc6f2b", "Low": "0d90351d"}
+USER_PRIORITY_FIELD = {"__typename": "ProjectV2SingleSelectField", "id": USER_PRIORITY_FIELD_ID, "isIssueField": False,
+                       "options": [{"id": option_id, "name": name} for name, option_id in USER_PRIORITY_IDS.items()]}
+# captured (2026-10-30): the workflows of a new board, all on. "Item added to project" sets Todo on every item added.
+NEW_BOARD_WORKFLOWS = (("Auto-add sub-issues to project", True), ("Auto-close issue", True),
+                       ("Item added to project", True), ("Item closed", True), ("Pull request linked to issue", True),
+                       ("Pull request merged", True))
+SET_UP_WORKFLOWS = tuple(entry for entry in NEW_BOARD_WORKFLOWS if entry[0] != "Item added to project")
 
 
 def item(number: int, status: str | None, repo: str = REPO, kind: str = "Issue") -> dict:
@@ -62,17 +78,34 @@ def claimed(branch: str = "feature/x", at: str = "10:00") -> dict:
     return comment(f"task-board claim: {branch}", at)
 
 
-def board_page(items: list, cursor: str | None, field=STATUS_FIELD) -> str:
-    """A page of BOARD_QUERY's answer, shaped as GitHub's schema and the captured empty page give it."""
+def board_page(items: list, cursor: str | None, field=STATUS_FIELD, owner_type: str = "Organization",
+               priorities=None, priority_field="as captured") -> str:
+    """A page of BOARD_QUERY's answer, shaped as GitHub's schema and the captured pages give it. On a user's board,
+    `priorities` (issue number -> option name) fills each item's Priority; on an organization's, an item with a
+    Priority carries the issue field's value, as captured."""
+    priorities = priorities or {}
+
+    def priority(entry):
+        name = priorities.get(entry["content"]["number"])
+        if not name:
+            return None
+        if owner_type == "User":
+            return {"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": name}
+        return ORG_ITEM_PRIORITY
+
     nodes = [{"id": entry["id"],
               "status": {"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": entry["status"]}
               if entry["status"] else None,
+              "priority": priority(entry),
               "content": {"__typename": entry["content"]["type"], "number": entry["content"]["number"],
                           "title": entry["content"]["title"], "url": entry["content"]["url"],
                           "repository": {"nameWithOwner": entry["content"]["repository"]}}}
              for entry in items]
-    return json.dumps({"data": {"organization": {"projectV2": {"id": PROJECT_ID, "field": field, "items": {
-        "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor}, "nodes": nodes}}}}})
+    if priority_field == "as captured":
+        priority_field = USER_PRIORITY_FIELD if owner_type == "User" else ORG_PRIORITY_ON_BOARD
+    return json.dumps({"data": {"repositoryOwner": {"__typename": owner_type, "projectV2": {
+        "id": PROJECT_ID, "field": field, "priority": priority_field, "items": {
+            "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor}, "nodes": nodes}}}}})
 
 
 def variables(args: tuple) -> dict:
@@ -88,11 +121,12 @@ def variables(args: tuple) -> dict:
 class FakeGh:
     """Answers the gh calls Board makes, and records them. Each call is named by what it does (`kind`), and
     fail_on fails every call of that kind, fail_once_on only the first, to test a rerun. The board's items come
-    back through GraphQL in pages of `page_size`; Priorities live per issue, as the organization's field does."""
+    back through GraphQL in pages of `page_size`. On an organization's board (the default) Priorities live per
+    issue, as the organization's field does; with owner_type="User" they live on the board's items."""
 
     def __init__(self, items=(), issues=(), comments=None, priorities=None, fail_on=None, fail_once_on=None,
                  create_output=None, page_size=100, versions=("2022-11-28", "2026-03-10"), deprecated=False,
-                 canonical=REPO, add_conflict=False):
+                 canonical=REPO, add_conflict=False, owner_type="Organization", workflows=SET_UP_WORKFLOWS):
         self.items, self.issues = list(items), list(issues)
         self.comments = {number: list(entries) for number, entries in (comments or {}).items()}
         self.priorities = dict(priorities or {})
@@ -102,13 +136,16 @@ class FakeGh:
         # canonical: the repository's current name, as GitHub answers for the configured one (a rename changes it).
         # add_conflict: adding an issue fails with ALREADY_ON_BOARD, auto-add having placed it a moment before.
         self.canonical, self.add_conflict = canonical, add_conflict
+        self.owner_type, self.workflows = owner_type, list(workflows)
 
     @staticmethod
     def kind(args: tuple) -> str:
         if args[:2] == ("api", "graphql"):
-            query = variables(args)["query"]
-            return {board.BOARD_QUERY: "board", board.SET_STATUS_MUTATION: "set-status",
-                    board.ADD_ITEM_MUTATION: "add-item"}[query]
+            given = variables(args)
+            if given["query"] == board.SET_OPTION_MUTATION:
+                return "set-status" if given["field"] == STATUS_FIELD_ID else "set-priority"
+            return {board.BOARD_QUERY: "board", board.ADD_ITEM_MUTATION: "add-item",
+                    board.WORKFLOWS_QUERY: "workflows"}[given["query"]]
         if args[:3] == ("api", "-H", board.REST_HEADER):
             path = args[-1]
             if path.endswith("/issue-field-values"):
@@ -139,7 +176,17 @@ class FakeGh:
         if kind == "board":
             start = int(given.get("after", "0"))
             end = start + self.page_size
-            return board_page(self.items[start:end], str(end) if end < len(self.items) else None)
+            return board_page(self.items[start:end], str(end) if end < len(self.items) else None,
+                              owner_type=self.owner_type, priorities=self.priorities)
+        if kind == "workflows":
+            return json.dumps({"data": {"repositoryOwner": {"projectV2": {"workflows": {"nodes": [
+                {"name": name, "enabled": enabled} for name, enabled in self.workflows]}}}}})
+        if kind == "set-priority":
+            assert self.owner_type == "User", "a board-field Priority is written only on a user's board"
+            assert (given["project"], given["field"]) == (PROJECT_ID, USER_PRIORITY_FIELD_ID), given
+            names = {option_id: name for name, option_id in USER_PRIORITY_IDS.items()}
+            self.priorities[int(given["item"].split("_")[-1])] = names[given["option"]]
+            return json.dumps({"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": given["item"]}}}})
         if kind == "set-status":
             names = {option_id: name for name, option_id in STATUS_IDS.items()}
             assert (given["project"], given["field"]) == (PROJECT_ID, STATUS_FIELD_ID), given
@@ -170,6 +217,7 @@ class FakeGh:
         if kind == "versions":
             return json.dumps(self.versions)
         if kind == "priority-write":
+            assert self.owner_type == "Organization", "a user has no issue fields"
             number = int(args[-1].split("/")[-2])
             for value in json.loads(input)["issue_field_values"]:
                 assert value["field_id"] == PRIORITY_FIELD_ID, value
@@ -213,8 +261,15 @@ class FakeGh:
         return [names[variables(args)["option"]] for args, _ in self.calls if self.kind(args) == "set-status"]
 
     def priority_writes(self) -> list:
-        return [(int(args[-1].split("/")[-2]), json.loads(given)["issue_field_values"][0]["value"])
-                for args, given in self.calls if self.kind(args) == "priority-write"]
+        """(issue number, Priority) of each Priority written, through REST or on a user's board."""
+        names = {option_id: name for name, option_id in USER_PRIORITY_IDS.items()}
+        writes = []
+        for args, given in self.calls:
+            if self.kind(args) == "priority-write":
+                writes.append((int(args[-1].split("/")[-2]), json.loads(given)["issue_field_values"][0]["value"]))
+            elif self.kind(args) == "set-priority":
+                writes.append((int(variables(args)["item"].split("_")[-1]), names[variables(args)["option"]]))
+        return writes
 
     def first(self, kind: str) -> int:
         return self.kinds().index(kind)
@@ -311,7 +366,7 @@ class BoardPages(unittest.TestCase):
 
     def test_a_status_value_of_another_shape_stops_rather_than_reading_as_triage(self):
         page = json.loads(board_page([item(1, "Todo")], None))
-        node = page["data"]["organization"]["projectV2"]["items"]["nodes"][0]
+        node = page["data"]["repositoryOwner"]["projectV2"]["items"]["nodes"][0]
         for value in ({}, {"__typename": "ProjectV2ItemFieldTextValue", "text": "Todo"},
                       {"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": None}):
             node["status"] = value
@@ -333,7 +388,7 @@ class BoardPages(unittest.TestCase):
                      lambda page: page.pop("items")]
         for breakage in breakages:
             page = json.loads(json.dumps(good))
-            breakage(page["data"]["organization"]["projectV2"])
+            breakage(page["data"]["repositoryOwner"]["projectV2"])
             with self.assertRaises(board.GhError):
                 board.parse_board_page(json.dumps(page), 1)
 
@@ -341,7 +396,8 @@ class BoardPages(unittest.TestCase):
         with self.assertRaises(board.GhError):
             board.parse_board_page('{"errors": [{"message": "bad"}], "data": null}', 1)
         with self.assertRaises(board.BoardError):
-            board.parse_board_page('{"data": {"organization": {"projectV2": null}}}', 7)
+            board.parse_board_page(json.dumps({"data": {"repositoryOwner": {"__typename": "Organization",
+                                                                             "projectV2": None}}}), 7)
 
     def test_every_page_is_read(self):
         gh = FakeGh(items=[item(number, "Todo") for number in range(1, 6)], page_size=2)
@@ -707,6 +763,74 @@ class Steps(unittest.TestCase):
         self.assertEqual(board.status_of(gh.items[0]), "Todo")
 
 
+def users_board(**kwargs) -> board.Board:
+    return board.Board(board.Config(owner="me", project=1, repo=REPO), FakeGh(owner_type="User", **kwargs))
+
+
+class UsersBoard(unittest.TestCase):
+    """A user has no issue fields, so on a user's board Priority is the board's own field (plan 0033)."""
+
+    def test_an_organizations_board_ignores_the_issue_fields_value_on_its_items(self):
+        page = board_page([item(1, "Todo")], None, priorities={1: "High"})
+        field, items, _ = board.parse_board_page(page, 1)
+        self.assertEqual((field.owner_type, field.board_priority, items[0]["priority"]), ("Organization", None, ""))
+
+    def test_a_users_board_ranks_its_own_priority_options_in_board_order(self):
+        field, items, _ = board.parse_board_page(board_page([item(1, "Todo")], None, owner_type="User",
+                                                            priorities={1: "Low"}), 1)
+        self.assertEqual(field.board_priority.priorities, ("Urgent", "High", "Medium", "Low"))
+        self.assertEqual(field.board_priority.default_priority(), "Medium")
+        self.assertEqual(items[0]["priority"], "Low")
+
+    def test_a_users_board_without_its_own_priority_field_is_named(self):
+        for priority_field in (None, ORG_PRIORITY_ON_BOARD, dict(USER_PRIORITY_FIELD, options=[]),
+                               dict(USER_PRIORITY_FIELD, isIssueField=True),
+                               {"__typename": "ProjectV2Field", "id": "x", "isIssueField": False}):
+            with self.assertRaisesRegex(board.BoardError, "Priority"):
+                board.parse_board_page(board_page([], None, owner_type="User", priority_field=priority_field), 1)
+
+    def test_a_users_item_priority_of_another_shape_or_outside_the_options_stops(self):
+        page = json.loads(board_page([item(1, "Todo")], None, owner_type="User"))
+        node = page["data"]["repositoryOwner"]["projectV2"]["items"]["nodes"][0]
+        for value in ({"__typename": "ProjectV2ItemFieldTextValue", "text": "High"}, ORG_ITEM_PRIORITY,
+                      {"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "Critical"}):
+            node["priority"] = value
+            with self.assertRaises(board.GhError):
+                board.parse_board_page(json.dumps(page), 1)
+
+    def test_an_owner_that_is_neither_an_organization_nor_a_user_stops(self):
+        page = json.loads(board_page([], None))
+        page["data"]["repositoryOwner"]["__typename"] = "Enterprise"
+        with self.assertRaises(board.GhError):
+            board.parse_board_page(json.dumps(page), 1)
+
+    def test_ready_orders_by_the_boards_priority_without_the_rest_issue_fields(self):
+        work = users_board(items=[item(1, "Todo"), item(2, "Todo"), item(3, "Todo")],
+                           issues=[issue(1), issue(2), issue(3)], priorities={2: "Urgent", 3: "Low"})
+        self.assertEqual([entry["number"] for entry in work.ready()], [2, 1, 3])
+        self.assertEqual([entry["priority"] for entry in work.ready()], ["Urgent", "Medium", "Low"])
+        self.assertFalse({"issue-fields", "priority-read", "priority-write"} & set(work.gh.kinds()))
+
+    def test_file_writes_priority_on_the_boards_item_after_adding_it_and_before_the_status(self):
+        work = users_board()
+        work.file("x", "", todo=True, priority="High", blocked_by=None)
+        self.assertEqual(work.gh.priority_writes(), [(9, "High")])
+        self.assertLess(work.gh.first("add-item"), work.gh.first("set-priority"))
+        self.assertLess(work.gh.first("set-priority"), work.gh.first("set-status"))
+        self.assertEqual(work.gh.edits(), ["Todo"])
+
+    def test_queue_writes_priority_on_the_boards_item(self):
+        work = users_board(items=[item(5, None)], issues=[issue(5)])
+        work.queue(5, None)
+        self.assertEqual(work.gh.priority_writes(), [(5, "Medium")])
+        self.assertEqual(work.gh.edits(), ["Todo"])
+
+    def test_check_on_a_users_board_names_the_boards_own_field(self):
+        lines = users_board(items=[item(1, "Todo")], issues=[issue(1)]).check()
+        self.assertTrue(all(line.startswith("ok:") for line in lines), lines)
+        self.assertIn("the board's own field", "\n".join(lines))
+
+
 class Check(unittest.TestCase):
     def test_check_reads_everything_and_reports_ok(self):
         gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)], priorities={1: "High"})
@@ -724,6 +848,18 @@ class Check(unittest.TestCase):
     def test_check_fails_when_the_pinned_version_is_no_longer_listed(self):
         with self.assertRaisesRegex(board.GhError, "no longer lists"):
             make_board(FakeGh(versions=("2026-03-10",))).check()
+
+    def test_check_fails_while_a_workflow_sets_a_status_on_every_item_added(self):
+        with self.assertRaisesRegex(board.BoardError, "Item added to project"):
+            make_board(FakeGh(workflows=NEW_BOARD_WORKFLOWS)).check()
+        lines = make_board(FakeGh(workflows=[("Item added to project", False), ("Item closed", True)])).check()
+        self.assertTrue(all(line.startswith("ok:") for line in lines), lines)
+
+    def test_workflows_of_another_shape_stop_rather_than_reading_as_none(self):
+        for answer in ({"data": {"repositoryOwner": {"projectV2": None}}},
+                       {"data": {"repositoryOwner": {"projectV2": {"workflows": {"nodes": [{"name": "x"}]}}}}}):
+            with self.assertRaises(board.GhError):
+                board.enabled_workflows(json.dumps(answer))
 
     def test_check_fails_while_the_config_names_a_renamed_repository(self):
         with self.assertRaisesRegex(board.BoardError, "now calls o/renamed"):

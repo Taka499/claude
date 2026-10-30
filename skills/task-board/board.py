@@ -4,14 +4,16 @@
 The task-board skill (SKILL.md beside this file) describes the workflow; this script is its only way to change the
 board, so no session has to look up the board's internal IDs, and a wrong ID cannot set the wrong field. It reads
 `.task-board.json` at the repository root, for example
-    {"owner": "tia-tools", "project": 3, "repo": "tia-tools/gmks-hif-final-stats"}
-and calls `gh`, which takes its token from the project's GH_CONFIG_DIR (global CLAUDE.md § Git Operations).
+    {"owner": "tia-tools", "project": 3, "repo": "tia-tools/gkms-hif-final-stats"}
+and calls `gh` with whatever login gh has: the user's own while Claude Code's sandbox is off, or the project's token
+from GH_CONFIG_DIR where it is on (global CLAUDE.md § Git Operations). The owner may be an organization or a user.
 
-What it relies on, and why (plan 0031 in the Taka499/claude repo):
+What it relies on, and why (plans 0031 and 0033 in the Taka499/claude repo):
 - the board through GitHub's GraphQL API only, via `gh api graphql`: GA since 2022, breaking changes announced at
   least three months ahead. Not `gh project …`, whose commands and JSON are gh's own and have changed;
-- the organization's issue field "Priority" through the REST API, with the version pinned (REST_VERSION), so a
-  change of gh's default cannot move it;
+- Priority: on an organization's board, the organization's issue field "Priority", through the REST API with the
+  version pinned (REST_VERSION), so a change of gh's default cannot move it. A user has no issue fields, so on a
+  user's board Priority is the board's own single-select field, ranked in the board's order;
 - every shape it reads is checked, and anything unexpected stops with exit 2 instead of being read as a default.
 Standard library only; Python 3.9 or later.
 
@@ -35,11 +37,14 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field as dataclass_field, replace
 from pathlib import Path
 
 CONFIG_FILE = ".task-board.json"
 STATUS_FIELD, PRIORITY_FIELD = "Status", "Priority"
+ORGANIZATION, USER = "Organization", "User"
+# On by default on every new board, and sets Todo on every item added, so nothing would wait in Triage (plan 0033 D6).
+ITEM_ADDED_WORKFLOW = "Item added to project"
 TRIAGE, TODO, IN_PROGRESS, DONE = "Triage", "Todo", "In Progress", "Done"
 STATUSES = (TRIAGE, TODO, IN_PROGRESS, DONE)
 # Markers at the start of the comments this script writes, so a later run can read the claim history back.
@@ -54,30 +59,49 @@ REST_HEADER = f"X-GitHub-Api-Version: {REST_VERSION}"
 ALREADY_ON_BOARD = "Content already exists in this project"
 ISSUE_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)\s*$")
 
-# The board's ID, its Status field and options, and its items with their Status, asked for by name.
+# The board's ID, its owner's kind, its Status and Priority fields with their options, and its items with their
+# Status and Priority, asked for by name. On an organization's board, the Priority values here are the issue field's
+# (ProjectV2ItemIssueFieldValue) and are not used: those are read per issue through REST.
 BOARD_QUERY = """query($owner: String!, $number: Int!, $after: String) {
-  organization(login: $owner) {
-    projectV2(number: $number) {
-      id
-      field(name: "Status") {
-        __typename
-        ... on ProjectV2SingleSelectField { id options { id name } }
-      }
-      items(first: 100, after: $after) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          status: fieldValueByName(name: "Status") {
-            __typename
-            ... on ProjectV2ItemFieldSingleSelectValue { name }
+  repositoryOwner(login: $owner) {
+    __typename
+    ... on ProjectV2Owner {
+      projectV2(number: $number) {
+        id
+        field(name: "Status") {
+          __typename
+          ... on ProjectV2SingleSelectField { id options { id name } }
+        }
+        priority: field(name: "Priority") {
+          __typename
+          ... on ProjectV2SingleSelectField { id isIssueField options { id name } }
+        }
+        items(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            status: fieldValueByName(name: "Status") {
+              __typename
+              ... on ProjectV2ItemFieldSingleSelectValue { name }
+            }
+            priority: fieldValueByName(name: "Priority") {
+              __typename
+              ... on ProjectV2ItemFieldSingleSelectValue { name }
+            }
+            content { __typename ... on Issue { number title url repository { nameWithOwner } } }
           }
-          content { __typename ... on Issue { number title url repository { nameWithOwner } } }
         }
       }
     }
   }
 }"""
-SET_STATUS_MUTATION = """mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+WORKFLOWS_QUERY = """query($owner: String!, $number: Int!) {
+  repositoryOwner(login: $owner) {
+    ... on ProjectV2Owner { projectV2(number: $number) { workflows(first: 50) { nodes { name enabled } } } }
+  }
+}"""
+# Sets a single-select field of an item: Status on every board, and Priority on a user's board.
+SET_OPTION_MUTATION = """mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
   updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field,
                                         value: {singleSelectOptionId: $option}}) {
     projectV2Item { id }
@@ -108,16 +132,10 @@ class Config:
 
 
 @dataclass(frozen=True)
-class StatusField:
-    project_id: str
-    status_id: str
-    status_options: dict  # option name -> option id
-
-
-@dataclass(frozen=True)
 class PriorityField:
-    field_id: int
+    field_id: object  # the organization's issue field: its integer ID; a user's board field: its node ID
     priorities: tuple  # option names, most urgent first
+    option_ids: dict = dataclass_field(default_factory=dict)  # a board field's option name -> option id
 
     def default_priority(self) -> str:
         """The middle option (Medium of Urgent, High, Medium, Low): what an issue without a Priority counts as."""
@@ -129,6 +147,15 @@ class PriorityField:
         if name not in self.priorities:
             raise BoardError(f"there is no Priority {name!r}; the options are {', '.join(self.priorities)}")
         return name
+
+
+@dataclass(frozen=True)
+class StatusField:
+    project_id: str
+    status_id: str
+    status_options: dict  # option name -> option id
+    owner_type: str = ORGANIZATION
+    board_priority: PriorityField | None = None  # a user's board only: Priority as the board's own field
 
 
 # ---- pure functions -------------------------------------------------------------------------------------------------
@@ -156,16 +183,47 @@ def graphql_data(response_json: str) -> dict:
     return response["data"]
 
 
+def parse_board_priority(field) -> PriorityField:
+    """A user's board's own Priority field, from BOARD_QUERY's `priority`: a single-select field that is not an
+    organization's issue field, its options ranked in the order they stand on the board, first most urgent."""
+    if not field:
+        raise BoardError(f"the board has no field named {PRIORITY_FIELD!r}; a user's board keeps Priority as a"
+                         f" single-select field of its own (setup_board.py adds it)")
+    if field.get("__typename") != "ProjectV2SingleSelectField" or field.get("isIssueField") is not False \
+            or not field.get("options"):
+        raise BoardError(f"the board's {PRIORITY_FIELD!r} field is not a single-select field of the board with"
+                         f" options ({field.get('__typename')}, isIssueField {field.get('isIssueField')!r})")
+    names = [option.get("name") for option in field["options"]]
+    if not all(isinstance(name, str) and name for name in names) or len(set(names)) != len(names):
+        raise GhError(f"the board's {PRIORITY_FIELD} field has an option without a name, or two with one name")
+    return PriorityField(field["id"], tuple(names), {option["name"]: option["id"] for option in field["options"]})
+
+
+def option_value(value, what: str, node_id) -> str:
+    """A single-select value of an item: its option's name, or "" where the item has none. Any other shape stops
+    the run rather than reading as none."""
+    if value is None:
+        return ""
+    if value.get("__typename") == "ProjectV2ItemFieldSingleSelectValue" and value.get("name"):
+        return value["name"]
+    raise GhError(f"item {node_id!r} has a {what} of an unexpected shape: {value!r}")
+
+
 def parse_board_page(page_json: str, project: int):
     """One page of BOARD_QUERY: (the Status field, the page's items, the cursor of the next page or None).
 
-    Each item is {"id", "status", "content": {"type", "number", "title", "url", "repository"}}. "status" is the
-    name of the item's Status option, or "" where the item has none. Fails closed: a missing or renamed Status
-    field, a missing option, or a value that is not a named single-select option stops the run, so nothing is
-    silently read as Triage."""
-    board = (graphql_data(page_json).get("organization") or {}).get("projectV2")
+    Each item is {"id", "status", "priority", "content": {"type", "number", "title", "url", "repository"}}.
+    "status" is the name of the item's Status option, or "" where the item has none. "priority" is its Priority on
+    a user's board, or "" (none, or an organization's board, where Priority lives on the issue). Fails closed: a
+    missing or renamed Status field, a missing option, or a value that is not a named single-select option stops
+    the run, so nothing is silently read as Triage or as the default priority."""
+    owner = graphql_data(page_json).get("repositoryOwner") or {}
+    board = owner.get("projectV2")
     if board is None:
-        raise BoardError(f"no board number {project} for this owner, or the token cannot read it")
+        raise BoardError(f"no board number {project} for this owner, or the login cannot read it")
+    owner_type = owner.get("__typename")
+    if owner_type not in (ORGANIZATION, USER):
+        raise GhError(f"the board's owner is a {owner_type!r}, not an organization or a user")
     field = board.get("field")
     if not field:
         raise BoardError(f"the board has no field named {STATUS_FIELD!r}; was it renamed? (wanted options:"
@@ -177,7 +235,8 @@ def parse_board_page(page_json: str, project: int):
     missing = [option for option in STATUSES if option not in options]
     if missing:
         raise BoardError(f"the board's {STATUS_FIELD} field lacks the option(s) {', '.join(missing)}")
-    status_field = StatusField(board["id"], field["id"], options)
+    board_priority = parse_board_priority(board.get("priority")) if owner_type == USER else None
+    status_field = StatusField(board["id"], field["id"], options, owner_type, board_priority)
     page = board.get("items")
     info = (page or {}).get("pageInfo")
     if not isinstance(page, dict) or not isinstance(page.get("nodes"), list) or not isinstance(info, dict) \
@@ -187,15 +246,15 @@ def parse_board_page(page_json: str, project: int):
         raise GhError("the board says there are more items but gives no cursor for them")
     items = []
     for node in page["nodes"]:
-        value = node.get("status")
-        if value is None:
-            status = ""
-        elif value.get("__typename") == "ProjectV2ItemFieldSingleSelectValue" and value.get("name"):
-            status = value["name"]
-        else:
-            raise GhError(f"item {node.get('id')!r} has a Status of an unexpected shape: {value!r}")
+        status = option_value(node.get("status"), STATUS_FIELD, node.get("id"))
+        priority = ""
+        if board_priority is not None:
+            priority = option_value(node.get("priority"), PRIORITY_FIELD, node.get("id"))
+            if priority and priority not in board_priority.priorities:
+                raise GhError(f"item {node.get('id')!r} has the {PRIORITY_FIELD} {priority!r}, which is not one of"
+                              f" the board's options ({', '.join(board_priority.priorities)})")
         content = node.get("content") or {}
-        items.append({"id": node["id"], "status": status,
+        items.append({"id": node["id"], "status": status, "priority": priority,
                       "content": {"type": content.get("__typename", ""), "number": content.get("number"),
                                   "title": content.get("title", ""), "url": content.get("url", ""),
                                   "repository": (content.get("repository") or {}).get("nameWithOwner", "")}})
@@ -210,6 +269,16 @@ def mutation_id(response_json: str, *path: str) -> str:
     if not isinstance(value, str) or not value:
         raise GhError(f"GraphQL mutation answered without {'.'.join(path)}")
     return value
+
+
+def enabled_workflows(workflows_json: str) -> list:
+    """The names of the board's workflows that are on, from WORKFLOWS_QUERY."""
+    board = (graphql_data(workflows_json).get("repositoryOwner") or {}).get("projectV2")
+    nodes = ((board or {}).get("workflows") or {}).get("nodes")
+    if not isinstance(nodes, list) or not all(isinstance(node.get("name"), str) and
+                                              isinstance(node.get("enabled"), bool) for node in nodes):
+        raise GhError("the board's workflows came back without a list of names and enabled flags")
+    return [node["name"] for node in nodes if node["enabled"]]
 
 
 def parse_priority_field(issue_fields_json: str) -> PriorityField:
@@ -458,12 +527,23 @@ class Board:
     def items(self) -> list:
         return self.board()[1]
 
+    def on_users_board(self) -> bool:
+        return self.status_field().owner_type == USER
+
     def priority_field(self) -> PriorityField:
         if self._priority_field is None:
-            self._priority_field = parse_priority_field(self.rest(f"orgs/{self.config.owner}/issue-fields"))
+            if self.on_users_board():
+                self._priority_field = self.status_field().board_priority
+            else:
+                self._priority_field = parse_priority_field(self.rest(f"orgs/{self.config.owner}/issue-fields"))
         return self._priority_field
 
-    def priority_of(self, number: int) -> str:
+    def priority_of(self, number: int, items: list) -> str:
+        """An issue's Priority, or "" for none: from the board's items on a user's board, from the issue itself
+        on an organization's."""
+        if self.on_users_board():
+            found = item_for(items, number, self.config.repo)
+            return found["priority"] if found else ""
         return priority_value(self.rest(f"repos/{self.config.repo}/issues/{number}/issue-field-values"),
                               self.priority_field())
 
@@ -500,16 +580,23 @@ class Board:
 
     # -- writing --
 
-    def set_status(self, item_id: str, status: str) -> None:
-        field = self.status_field()
-        answered = mutation_id(self.graphql(SET_STATUS_MUTATION, f"project={field.project_id}", f"item={item_id}",
-                                            f"field={field.status_id}", f"option={field.status_options[status]}"),
+    def set_option(self, item_id: str, field_id: str, option_id: str, what: str) -> None:
+        answered = mutation_id(self.graphql(SET_OPTION_MUTATION, f"project={self.status_field().project_id}",
+                                            f"item={item_id}", f"field={field_id}", f"option={option_id}"),
                                "updateProjectV2ItemFieldValue", "projectV2Item", "id")
         if answered != item_id:
-            raise GhError(f"setting Status answered for item {answered!r}, not {item_id!r}")
+            raise GhError(f"setting {what} answered for item {answered!r}, not {item_id!r}")
 
-    def set_priority(self, number: int, name: str) -> None:
-        body = {"issue_field_values": [{"field_id": self.priority_field().field_id, "value": name}]}
+    def set_status(self, item_id: str, status: str) -> None:
+        field = self.status_field()
+        self.set_option(item_id, field.status_id, field.status_options[status], STATUS_FIELD)
+
+    def set_priority(self, number: int, name: str, item_id: str) -> None:
+        priority = self.priority_field()
+        if self.on_users_board():
+            self.set_option(item_id, priority.field_id, priority.option_ids[name], PRIORITY_FIELD)
+            return
+        body = {"issue_field_values": [{"field_id": priority.field_id, "value": name}]}
         self.rest(f"repos/{self.config.repo}/issues/{number}/issue-field-values", "--method", "POST", "--input", "-",
                   input=json.dumps(body))
 
@@ -551,14 +638,22 @@ class Board:
         lines.append(f"ok: board {self.config.owner} #{self.config.project}: {STATUS_FIELD} has"
                      f" {', '.join(field.status_options)}; {len(items)} item(s), every Status readable")
         priority = self.priority_field()
-        lines.append(f"ok: {PRIORITY_FIELD} options, most urgent first: {' > '.join(priority.priorities)}"
-                     f" (default {priority.default_priority()})")
+        where = "the board's own field" if self.on_users_board() else "the organization's issue field"
+        lines.append(f"ok: {PRIORITY_FIELD} is {where}; its options, most urgent first:"
+                     f" {' > '.join(priority.priorities)} (default {priority.default_priority()})")
+        added = [name for name in enabled_workflows(self.graphql(WORKFLOWS_QUERY, f"owner={self.config.owner}",
+                                                                  f"number={self.config.project}"))
+                 if name == ITEM_ADDED_WORKFLOW]
+        if added:
+            raise BoardError(f"the board's workflow {ITEM_ADDED_WORKFLOW!r} is on: it sets a Status on every item"
+                             f" added, so nothing waits in {TRIAGE}. Turn it off in the board's Workflows menu")
+        lines.append("ok: no workflow sets a Status on items as they are added")
         issues = self.open_issues()
         lines.append(f"ok: {len(issues)} open issue(s) in {self.config.repo}")
         on_board = [item["content"]["number"] for item in items
                     if item["content"]["type"] == "Issue" and repo_of(item["content"]) == self.config.repo]
         for number in on_board[:3]:
-            self.priority_of(number)
+            self.priority_of(number, items)
         lines.append(f"ok: {PRIORITY_FIELD} read for {len(on_board[:3])} issue(s) on the board")
         lines.append(f"ok: acting as {self.login()}")
         versions = json.loads(self.rest("versions"))
@@ -592,7 +687,7 @@ class Board:
         priorities = self.priority_field().priorities
         candidates = ready_candidates(items, issues, self.config.repo)
         return ready(items, issues, self.config.repo, priorities,
-                     {number: self.priority_of(number) for number in candidates})
+                     {number: self.priority_of(number, items) for number in candidates})
 
     def file(self, title: str, body: str, todo: bool, priority: str | None, blocked_by: str | None) -> int:
         self.status_field()  # check the board, and the priority, before creating anything on it
@@ -615,7 +710,7 @@ class Board:
             item_id = self.add_to_board(number)
             # Priority before Status: if setting Status fails, the item stays in Triage, the safe side.
             if todo:
-                self.set_priority(number, chosen)
+                self.set_priority(number, chosen, item_id)
             self.set_status(item_id, TODO if todo else TRIAGE)
         except (GhError, KeyError, ValueError, TypeError) as error:
             raise GhError(f"issue #{number} was created, but placing it on the board failed ({error}); it counts as"
@@ -635,7 +730,7 @@ class Board:
             raise Refused(f"issue #{number} has a live claim by {self.holder(number)!r}")
         chosen = self.priority_field().priority(priority)
         # Priority before Status: if setting Status fails, the item stays in Triage, and a rerun finishes it.
-        self.set_priority(number, chosen)
+        self.set_priority(number, chosen, item["id"])
         self.set_status(item["id"], TODO)
 
     def claim(self, number: int, branch: str, worktree: str | None) -> None:
