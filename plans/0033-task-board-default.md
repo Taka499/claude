@@ -50,7 +50,8 @@ Read 2026-10-30, by two research agents, from:
 - **User accounts have no issue fields.** In the GraphQL schema, `Organization` and `Repository` have `issueFields` and `User` does not. Every REST issue-field path is under `/orgs/{org}/` or a repository's issue. A board owned by `Taka499` therefore needs Priority as a single-select field of the board itself: plan 0030's first design, before D20.
 - **A Board view grouped by Status:** only REST `POST /orgs/{org}/projectsV2/{n}/views`, or `/users/{user_id}/projectsV2/{n}/views` for a user's board, can set the grouping (`layout: board`, `vertical_group_by`), and it can only create a view. GraphQL views take no grouping.
 - **Templates:** only boards owned by an organization can be marked as a template (`markProjectV2AsTemplate`).
-- **Workflows, read only:** `ProjectV2.workflows { name enabled }`. On a new board, "Item closed" and "Pull request merged" set Done, and "Item added" is off.
+- **Workflows, read only:** `ProjectV2.workflows { name enabled }`. The documentation names only "Item closed" and "Pull request merged", which set Done, as on for a new board.
+  - **The scratch test found more:** six workflows on, "Item added to project" among them, setting Todo on every item added (§ What the scratch test measured, D6).
 - **The default branch:** `gh repo edit --default-branch develop`. It needs repository admin, and `develop` must exist first.
 
 **Web UI only:**
@@ -194,12 +195,34 @@ Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:o
 - **D3 (the user, 2026-10-30): O1 (a).** The script builds every board from scratch, for both kinds of owner; no template board.
 - **D4 (the user, 2026-10-30): O2 (a).** New boards get no auto-add. The helper's `sync` adds the repository's open issues that are missing from the board, as Triage.
 - **D5 (the user, 2026-10-30): the scratch test is approved:** two private scratch boards, created and deleted with the user's login.
-- **D6 (measured, 2026-10-30): setup deletes the "Item added to project" workflow,** and `check` fails while a board has it on. It is on by default, and sets Todo on every item added, which would skip the user's Triage gate (plan 0030 D8, D14).
+- **D6 (measured, 2026-10-30): setup deletes the "Item added to project" workflow,** and `check` fails while a board has it on. So do `sync` and `file` before adding anything (D7). It is on by default, and sets Todo on every item added, which would skip the user's Triage gate (plan 0030 D8, D14).
   - **No API can turn it off; deleting it is the only lever,** measured above.
   - **The other default workflows stay:**
     - "Item closed" and "Pull request merged" set Done;
     - "Auto-close issue" closes an issue moved to Done;
     - "Pull request linked to issue" and "Auto-add sub-issues to project" move nothing out of Triage on their own.
+
+- **D7. Codex review, first pass on the branch's whole diff at aac6955: CHANGES REQUESTED.** Codex ran only in a snapshot; refs unchanged. The real repository showed `.git/index` refreshed and a transient `index.lock`, gone a few seconds later. That came from a periodic `git status` outside this session, not from Codex, whose every command ran in the snapshot. Its four findings, each checked against the code and accepted:
+  - **High:** `sync` added items without checking "Item added to project". Run directly, or after the workflow was turned back on, it would have sent every issue to Todo. The same held for `file`, which also adds items. Both now refuse before adding or creating anything, through the same check `check` uses.
+  - **Medium:** `fields_by_name` skipped a field without a name and let a second field of one name overwrite the first. Both now stop with exit 2.
+  - **Medium:** `parse_repository` read the linked boards leniently: a missing `closed` read as open. Every field the choice of board rests on is now checked, and the repository's own IDs too.
+  - **Medium:** setup trusted the Status options' shape. An option without an ID or a name, two options of one name, or a field without IDs now stop the run before any later step.
+
+  **Missed by Codex, fixed:**
+  - **`sync` did not see archived items.** GitHub's `items` returns only items that are not archived, unless `archivedStates` asks for more (schema). `sync` would have added an archived open issue's item again every session. The board query now asks for both states and reads `isArchived`, failing closed without it. `sync` counts archived items as on the board, and every other step works only with the rest, as before.
+  - **This plan's § Facts still said** "Item added" is off on a new board. It now says what was measured.
+
+  **Tests:** 120, OK on 3.9.6 and 3.14. Each fix was seen failing against a broken copy:
+  - `sync` or `file` ignoring the workflow;
+  - a nameless field skipped, or a duplicate overwriting;
+  - archived items missed by `sync`, or ready;
+  - the archived state guessed;
+  - `closed` guessed;
+  - the Status options' shape unchecked.
+
+  **Live,** with the user's login:
+  - `check` and `ready` on `tia-tools` #1: all ok, 17 items, 0 archived, 0 ready;
+  - `setup_board.py` through the scratch wrapper on both owners: set up, the second run unchanged, deleted.
 
 ## Progress
 

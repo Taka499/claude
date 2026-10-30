@@ -77,10 +77,11 @@ BOARD_QUERY = """query($owner: String!, $number: Int!, $after: String) {
             ... on ProjectV2SingleSelectField { id isIssueField options { id name } }
           }
         }
-        items(first: 100, after: $after) {
+        items(first: 100, after: $after, archivedStates: [ARCHIVED, NOT_ARCHIVED]) {
           pageInfo { hasNextPage endCursor }
           nodes {
             id
+            isArchived
             status: fieldValueByName(name: "Status") {
               __typename
               ... on ProjectV2ItemFieldSingleSelectValue { name }
@@ -189,7 +190,14 @@ def fields_by_name(board: dict) -> dict:
     nodes = (board.get("fields") or {}).get("nodes")
     if not isinstance(nodes, list):
         raise GhError("the board's fields came back without a list")
-    return {node["name"]: node for node in nodes if isinstance(node, dict) and isinstance(node.get("name"), str)}
+    fields = {}
+    for node in nodes:
+        if not isinstance(node, dict) or not isinstance(node.get("name"), str) or not node["name"]:
+            raise GhError(f"a field of the board came back without a name: {node!r}")
+        if node["name"] in fields:  # which one the steps meant could not be told
+            raise GhError(f"the board has two fields named {node['name']!r}")
+        fields[node["name"]] = node
+    return fields
 
 
 def parse_board_priority(field) -> PriorityField:
@@ -221,7 +229,8 @@ def option_value(value, what: str, node_id) -> str:
 def parse_board_page(page_json: str, project: int):
     """One page of BOARD_QUERY: (the Status field, the page's items, the cursor of the next page or None).
 
-    Each item is {"id", "status", "priority", "content": {"type", "number", "title", "url", "repository"}}.
+    Each item is {"id", "archived", "status", "priority", "content": {"type", "number", "title", "url",
+    "repository"}}. Archived items are listed too, so `sync` does not add their issues again.
     "status" is the name of the item's Status option, or "" where the item has none. "priority" is its Priority on
     a user's board, or "" (none, or an organization's board, where Priority lives on the issue). Fails closed: a
     missing or renamed Status field, a missing option, or a value that is not a named single-select option stops
@@ -263,8 +272,10 @@ def parse_board_page(page_json: str, project: int):
             if priority and priority not in board_priority.priorities:
                 raise GhError(f"item {node.get('id')!r} has the {PRIORITY_FIELD} {priority!r}, which is not one of"
                               f" the board's options ({', '.join(board_priority.priorities)})")
+        if not isinstance(node.get("isArchived"), bool):
+            raise GhError(f"item {node.get('id')!r} came back without isArchived")
         content = node.get("content") or {}
-        items.append({"id": node["id"], "status": status, "priority": priority,
+        items.append({"id": node["id"], "archived": node["isArchived"], "status": status, "priority": priority,
                       "content": {"type": content.get("__typename", ""), "number": content.get("number"),
                                   "title": content.get("title", ""), "url": content.get("url", ""),
                                   "repository": (content.get("repository") or {}).get("nameWithOwner", "")}})
@@ -535,7 +546,8 @@ class Board:
         return self._status_field
 
     def items(self) -> list:
-        return self.board()[1]
+        """The board's items that are not archived: the ones every step but `sync` works with."""
+        return [item for item in self.board()[1] if not item["archived"]]
 
     def on_users_board(self) -> bool:
         return self.status_field().owner_type == USER
@@ -629,6 +641,15 @@ class Board:
                               f" for it: {error}") from None
             return found["id"]
 
+    def refuse_while_item_added_is_on(self) -> None:
+        """Every step that adds items to the board checks this first: with the workflow on, GitHub sets Todo on
+        each item added, past the user's Triage gate."""
+        enabled = enabled_workflows(self.graphql(WORKFLOWS_QUERY, f"owner={self.config.owner}",
+                                                 f"number={self.config.project}"))
+        if ITEM_ADDED_WORKFLOW in enabled:
+            raise BoardError(f"the board's workflow {ITEM_ADDED_WORKFLOW!r} is on: it sets a Status on every item"
+                             f" added, so nothing waits in {TRIAGE}. Turn it off in the board's Workflows menu")
+
     def canonical_repo(self) -> str:
         """The repository's current owner/name, which differs from `.task-board.json`'s after a rename."""
         return full_name(self.rest(f"repos/{self.config.repo}"))
@@ -644,19 +665,16 @@ class Board:
         """Read-only: everything the other steps rely on, read once from the live board and API. Returns report
         lines; a shape the steps could not use raises, as it would there. A deprecated REST version only warns."""
         lines = []
-        field, items = self.board()
+        field, everything = self.board()
+        items = [item for item in everything if not item["archived"]]
         lines.append(f"ok: board {self.config.owner} #{self.config.project}: {STATUS_FIELD} has"
-                     f" {', '.join(field.status_options)}; {len(items)} item(s), every Status readable")
+                     f" {', '.join(field.status_options)}; {len(items)} item(s) and {len(everything) - len(items)}"
+                     f" archived, every Status readable")
         priority = self.priority_field()
         where = "the board's own field" if self.on_users_board() else "the organization's issue field"
         lines.append(f"ok: {PRIORITY_FIELD} is {where}; its options, most urgent first:"
                      f" {' > '.join(priority.priorities)} (default {priority.default_priority()})")
-        added = [name for name in enabled_workflows(self.graphql(WORKFLOWS_QUERY, f"owner={self.config.owner}",
-                                                                  f"number={self.config.project}"))
-                 if name == ITEM_ADDED_WORKFLOW]
-        if added:
-            raise BoardError(f"the board's workflow {ITEM_ADDED_WORKFLOW!r} is on: it sets a Status on every item"
-                             f" added, so nothing waits in {TRIAGE}. Turn it off in the board's Workflows menu")
+        self.refuse_while_item_added_is_on()
         lines.append("ok: no workflow sets a Status on items as they are added")
         issues = self.open_issues()
         lines.append(f"ok: {len(issues)} open issue(s) in {self.config.repo}")
@@ -687,7 +705,8 @@ class Board:
         """Put every open issue of this repository that is missing from the board on it, with no Status, so in
         Triage. This replaces GitHub's auto-add, which no API can turn on (plan 0033): an issue opened outside a
         session reaches the board the next time a session runs this. Returns the numbers added."""
-        missing = missing_from_board(self.items(), self.open_issues(), self.config.repo)
+        self.refuse_while_item_added_is_on()
+        missing = missing_from_board(self.board()[1], self.open_issues(), self.config.repo)  # archived count as there
         for number in missing:
             self.add_to_board(number)
         return missing
@@ -700,7 +719,8 @@ class Board:
                      {number: self.priority_of(number, items) for number in candidates})
 
     def file(self, title: str, body: str, todo: bool, priority: str | None, blocked_by: str | None) -> int:
-        self.status_field()  # check the board, and the priority, before creating anything on it
+        self.status_field()  # check the board, the workflows and the priority before creating anything on it
+        self.refuse_while_item_added_is_on()
         chosen = self.priority_field().priority(priority) if todo else None
         args = ["issue", "create", "--repo", self.config.repo, "--title", title, "--body", body]
         if blocked_by:

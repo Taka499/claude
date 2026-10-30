@@ -59,9 +59,9 @@ NEW_BOARD_WORKFLOWS = (("Auto-add sub-issues to project", True), ("Auto-close is
 SET_UP_WORKFLOWS = tuple(entry for entry in NEW_BOARD_WORKFLOWS if entry[0] != "Item added to project")
 
 
-def item(number: int, status: str | None, repo: str = REPO, kind: str = "Issue") -> dict:
+def item(number: int, status: str | None, repo: str = REPO, kind: str = "Issue", archived: bool = False) -> dict:
     """A board item as parse_board_page returns it."""
-    return {"id": f"PVTI_{number}", "status": status or "",
+    return {"id": f"PVTI_{number}", "archived": archived, "status": status or "",
             "content": {"type": kind, "number": number, "title": f"issue {number}",
                         "url": f"https://github.com/{repo}/issues/{number}", "repository": repo}}
 
@@ -93,7 +93,7 @@ def board_page(items: list, cursor: str | None, field=STATUS_FIELD, owner_type: 
             return {"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": name}
         return ORG_ITEM_PRIORITY
 
-    nodes = [{"id": entry["id"],
+    nodes = [{"id": entry["id"], "isArchived": entry.get("archived", False),
               "status": {"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": entry["status"]}
               if entry["status"] else None,
               "priority": priority(entry),
@@ -401,6 +401,19 @@ class BoardPages(unittest.TestCase):
             with self.assertRaisesRegex(board.GhError, "fields came back"):
                 board.parse_board_page(json.dumps(page), 1)
 
+    def test_a_field_without_a_name_or_two_of_one_name_stop(self):
+        for extra in ({"__typename": "ProjectV2Field"}, {"__typename": "ProjectV2Field", "name": "Status"}, "Status"):
+            page = json.loads(board_page([item(1, "Todo")], None))
+            page["data"]["repositoryOwner"]["projectV2"]["fields"]["nodes"].append(extra)
+            with self.assertRaises(board.GhError):
+                board.parse_board_page(json.dumps(page), 1)
+
+    def test_an_item_without_its_archived_state_stops(self):
+        page = json.loads(board_page([item(1, "Todo")], None))
+        del page["data"]["repositoryOwner"]["projectV2"]["items"]["nodes"][0]["isArchived"]
+        with self.assertRaisesRegex(board.GhError, "isArchived"):
+            board.parse_board_page(json.dumps(page), 1)
+
     def test_graphql_errors_and_a_missing_board_are_reported(self):
         with self.assertRaises(board.GhError):
             board.parse_board_page('{"errors": [{"message": "bad"}], "data": null}', 1)
@@ -680,6 +693,19 @@ class Steps(unittest.TestCase):
         gh = FakeGh(items=[item(1, "Todo"), item(2, "Done")], issues=[issue(1)])
         self.assertEqual(make_board(gh).sync(), [])
         self.assertNotIn("add-item", gh.kinds())
+
+    def test_sync_leaves_an_issue_whose_item_was_archived_and_ready_skips_it(self):
+        gh = FakeGh(items=[item(1, "Todo", archived=True)], issues=[issue(1)])
+        self.assertEqual(make_board(gh).sync(), [])
+        self.assertEqual(make_board(gh).ready(), [])
+
+    def test_steps_that_add_items_refuse_while_item_added_is_on_and_change_nothing(self):
+        gh = FakeGh(items=[], issues=[issue(1)], workflows=NEW_BOARD_WORKFLOWS)
+        with self.assertRaisesRegex(board.BoardError, "Item added to project"):
+            make_board(gh).sync()
+        with self.assertRaisesRegex(board.BoardError, "Item added to project"):
+            make_board(gh).file("x", "", todo=False, priority=None, blocked_by=None)
+        self.assertFalse({"add-item", "issue-create"} & set(gh.kinds()))
 
     def test_sync_survives_auto_add_placing_the_same_issue(self):
         gh = FakeGh(items=[], issues=[issue(4)], add_conflict=True)

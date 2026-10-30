@@ -218,6 +218,25 @@ class Pure(unittest.TestCase):
             if name.endswith(("_QUERY", "_MUTATION")):
                 self.assertNotIn("field(name:", getattr(setup_board, name).replace(" ", ""), name)
 
+    def test_linked_boards_of_another_shape_stop_before_anything_changes(self):
+        good = {"id": "PVT_1", "number": 1, "title": "r", "closed": False, "owner": {"login": "o"}}
+        for broken in ({k: v for k, v in good.items() if k != "closed"}, dict(good, closed="no"),
+                       dict(good, number="1"), dict(good, owner=None), dict(good, id="")):
+            answer = {"data": {"repository": {"id": "R_1", "nameWithOwner": "o/r", "defaultBranchRef": None,
+                                              "owner": {"__typename": "Organization", "id": "O_1", "login": "o"},
+                                              "projectsV2": {"nodes": [broken]}}}}
+            with self.assertRaises(board.GhError):
+                setup_board.parse_repository(json.dumps(answer))
+
+    def test_status_options_without_ids_or_with_two_of_one_name_stop(self):
+        for options in ([{"name": "Todo"}], [{"id": "a", "name": "Todo"}, {"id": "b", "name": "Todo"}],
+                        [{"id": "a", "name": ""}]):
+            status = dict(NEW_STATUS, name="Status", options=options)
+            answer = {"data": {"node": {"id": "PVT_1", "number": 1, "public": False, "fields": {"nodes": [status]},
+                                        "views": {"nodes": []}, "workflows": {"nodes": []}}}}
+            with self.assertRaises(board.GhError):
+                setup_board.parse_setup(json.dumps(answer))
+
     def test_only_an_item_added_workflow_that_is_on_is_deleted(self):
         self.assertEqual(setup_board.item_added_workflows(NEW_WORKFLOWS), ["PWF_6"])
         self.assertEqual(setup_board.item_added_workflows([("PWF_6", "Item added to project", False)]), [])

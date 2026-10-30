@@ -136,11 +136,20 @@ def parse_repository(response_json: str) -> Repository:
     owner = repository.get("owner") or {}
     if owner.get("__typename") not in (ORGANIZATION, USER):
         raise GhError(f"the repository's owner is a {owner.get('__typename')!r}, not an organization or a user")
+    if not all(isinstance(value, str) and value for value in (repository.get("id"), repository.get("nameWithOwner"),
+                                                              owner.get("id"), owner.get("login"))):
+        raise GhError("the repository came back without its ID, its name or its owner's ID and login")
     nodes = (repository.get("projectsV2") or {}).get("nodes")
     if not isinstance(nodes, list):
         raise GhError("the repository's boards came back without a list")
-    boards = tuple({"id": node["id"], "number": node["number"], "title": node.get("title"),
-                    "closed": node.get("closed"), "owner": (node.get("owner") or {}).get("login")} for node in nodes)
+    for node in nodes:  # which board to reuse rests on every one of these, so none may be guessed
+        if not (isinstance(node, dict) and isinstance(node.get("id"), str) and node["id"]
+                and isinstance(node.get("number"), int) and not isinstance(node["number"], bool)
+                and isinstance(node.get("title"), str) and isinstance(node.get("closed"), bool)
+                and isinstance((node.get("owner") or {}).get("login"), str)):
+            raise GhError(f"a board linked to the repository came back in an unexpected shape: {node!r}")
+    boards = tuple({"id": node["id"], "number": node["number"], "title": node["title"], "closed": node["closed"],
+                    "owner": node["owner"]["login"]} for node in nodes)
     return Repository(repository["id"], repository["nameWithOwner"], (repository.get("defaultBranchRef") or {})
                       .get("name", ""), owner["__typename"], owner["id"], owner["login"], boards)
 
@@ -164,6 +173,13 @@ def parse_setup(response_json: str) -> SetupState:
     status = fields.get(STATUS_FIELD)
     if not status or status.get("__typename") != "ProjectV2SingleSelectField" or not status.get("options"):
         raise BoardError(f"the board has no single-select field {STATUS_FIELD!r} with options; was it renamed?")
+    options = status["options"]
+    if not all(isinstance(option, dict) and isinstance(option.get("id"), str) and option["id"]
+               and isinstance(option.get("name"), str) and option["name"] for option in options) \
+            or len({option["name"] for option in options}) != len(options) \
+            or not isinstance(status.get("databaseId"), int) or not isinstance(status.get("id"), str):
+        raise GhError(f"the board's {STATUS_FIELD} field came back without IDs, or with an option without an ID or"
+                      f" a name, or two options of one name")
     for key, kind in (("views", "views"), ("workflows", "workflows")):
         if not isinstance((node.get(key) or {}).get("nodes"), list):
             raise GhError(f"the board's {kind} came back without a list")
