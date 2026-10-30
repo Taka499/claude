@@ -91,13 +91,17 @@ class FakeGh:
     back through GraphQL in pages of `page_size`; Priorities live per issue, as the organization's field does."""
 
     def __init__(self, items=(), issues=(), comments=None, priorities=None, fail_on=None, fail_once_on=None,
-                 create_output=None, page_size=100, versions=("2022-11-28", "2026-03-10"), deprecated=False):
+                 create_output=None, page_size=100, versions=("2022-11-28", "2026-03-10"), deprecated=False,
+                 canonical=REPO, add_conflict=False):
         self.items, self.issues = list(items), list(issues)
         self.comments = {number: list(entries) for number, entries in (comments or {}).items()}
         self.priorities = dict(priorities or {})
         self.fail_on, self.fail_once_on, self.page_size, self.calls = fail_on, fail_once_on, page_size, []
         self.create_output = "https://github.com/o/r/issues/9\n" if create_output is None else create_output
         self.versions, self.deprecated = list(versions), deprecated
+        # canonical: the repository's current name, as GitHub answers for the configured one (a rename changes it).
+        # add_conflict: adding an issue fails with ALREADY_ON_BOARD, auto-add having placed it a moment before.
+        self.canonical, self.add_conflict = canonical, add_conflict
 
     @staticmethod
     def kind(args: tuple) -> str:
@@ -117,6 +121,8 @@ class FakeGh:
                 return "user"
             if re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+", path):
                 return "issue-node"
+            if re.fullmatch(r"repos/[^/]+/[^/]+", path):
+                return "repo-headers" if "-i" in args else "repo"
         return {("api", "user"): "user", ("issue", "list"): "issue-list", ("issue", "view"): "comments",
                 ("issue", "comment"): "comment", ("issue", "create"): "issue-create",
                 ("issue", "close"): "issue-close"}[args[:2]]
@@ -143,15 +149,24 @@ class FakeGh:
             return json.dumps({"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": given["item"]}}}})
         if kind == "add-item":
             assert given["project"] == PROJECT_ID, given
-            return json.dumps({"data": {"addProjectV2ItemById": {"item": {"id": "PVTI_" + given["content"][2:]}}}})
+            number = int(given["content"][2:])
+            repo = self.canonical
+            if not any(entry["id"] == f"PVTI_{number}" for entry in self.items):
+                self.items.append(item(number, None, repo=repo))  # added with no Status, as GitHub does
+                if self.add_conflict:  # auto-add got there first: the item exists, and the mutation fails
+                    raise board.GhError(f"gh api graphql -f … failed: gh: {board.ALREADY_ON_BOARD}")
+            return json.dumps({"data": {"addProjectV2ItemById": {"item": {"id": f"PVTI_{number}"}}}})
         if kind == "issue-node":
             number = int(args[-1].split("/")[-1])
             return json.dumps({"number": number, "node_id": f"I_{number}"})
         if kind == "issue-fields":
             return json.dumps(ISSUE_FIELDS)
-        if kind == "issue-fields-headers":
+        if kind in ("repo", "repo-headers"):
+            body = json.dumps({"full_name": self.canonical, "node_id": "R_1"})
+            if kind == "repo":
+                return body
             extra = "Deprecation: @1830297600\nSunset: Fri, 10 Mar 2028 00:00:00 GMT\n" if self.deprecated else ""
-            return f"HTTP/2.0 200 OK\nContent-Type: application/json\n{extra}\n" + json.dumps(ISSUE_FIELDS)
+            return f"HTTP/2.0 200 OK\nContent-Type: application/json\n{extra}\n" + body
         if kind == "versions":
             return json.dumps(self.versions)
         if kind == "priority-write":
@@ -563,6 +578,48 @@ class Steps(unittest.TestCase):
                 make_board(gh).file("x", "", todo=False, priority=None, blocked_by=None)
             self.assertNotIn("add-item", gh.kinds())
 
+    def test_file_takes_the_existing_item_when_auto_add_placed_the_issue_first(self):
+        gh = FakeGh(add_conflict=True)
+        self.assertEqual(make_board(gh).file("x", "", todo=True, priority=None, blocked_by=None), 9)
+        self.assertEqual(gh.priority_writes(), [(9, "Medium")])
+        self.assertEqual(gh.edits(), ["Todo"])
+        self.assertEqual(board.status_of(gh.items[-1]), "Todo")
+
+    def test_already_on_the_board_with_no_item_there_is_still_an_error(self):
+        class Phantom(FakeGh):
+            def run(self, *args, input=None):
+                if self.kind(args) == "add-item":
+                    self.calls.append((args, input))
+                    raise board.GhError(f"gh: {board.ALREADY_ON_BOARD}")
+                return super().run(*args, input=input)
+
+        with self.assertRaisesRegex(board.GhError, "#9 was created.*no item for it"):
+            make_board(Phantom()).file("x", "", todo=False, priority=None, blocked_by=None)
+
+    def test_file_after_a_rename_places_the_issue_and_says_to_update_the_config(self):
+        gh = FakeGh(create_output="https://github.com/o/renamed/issues/9\n", canonical="o/renamed")
+        work = make_board(gh)
+        self.assertEqual(work.file("x", "", todo=False, priority=None, blocked_by=None), 9)
+        self.assertEqual(gh.edits(), ["Triage"])
+        self.assertEqual(work.config.repo, "o/renamed")
+        self.assertTrue(any("o/renamed" in warning for warning in work.warnings), work.warnings)
+
+    def test_sync_puts_open_issues_missing_from_the_board_in_triage(self):
+        gh = FakeGh(items=[item(1, "Todo"), item(2, None, repo="o/other")], issues=[issue(1), issue(2), issue(3)])
+        self.assertEqual(make_board(gh).sync(), [2, 3])
+        self.assertEqual(gh.edits(), [])
+        added = [entry for entry in gh.items if entry["id"] in ("PVTI_2", "PVTI_3")]
+        self.assertEqual([board.status_of(entry) for entry in added], ["Triage", "Triage"])
+
+    def test_sync_on_a_complete_board_changes_nothing(self):
+        gh = FakeGh(items=[item(1, "Todo"), item(2, "Done")], issues=[issue(1)])
+        self.assertEqual(make_board(gh).sync(), [])
+        self.assertNotIn("add-item", gh.kinds())
+
+    def test_sync_survives_auto_add_placing_the_same_issue(self):
+        gh = FakeGh(items=[], issues=[issue(4)], add_conflict=True)
+        self.assertEqual(make_board(gh).sync(), [4])
+
     def test_queue_accepts_a_triage_item_with_a_priority(self):
         for status in (None, "Triage"):
             gh = FakeGh(items=[item(1, status)], issues=[issue(1)])
@@ -668,6 +725,10 @@ class Check(unittest.TestCase):
         with self.assertRaisesRegex(board.GhError, "no longer lists"):
             make_board(FakeGh(versions=("2026-03-10",))).check()
 
+    def test_check_fails_while_the_config_names_a_renamed_repository(self):
+        with self.assertRaisesRegex(board.BoardError, "now calls o/renamed"):
+            make_board(FakeGh(canonical="o/renamed")).check()
+
     def test_check_fails_on_a_shape_the_steps_could_not_use(self):
         class Garbled(FakeGh):
             def run(self, *args, input=None):
@@ -693,6 +754,7 @@ class CommandLine(unittest.TestCase):
         gh = FakeGh(items=[item(1, "Todo")], issues=[issue(1)])
         self.assertEqual(board.main(["ready"], gh=gh, cwd=self.folder), 0)
         self.assertEqual(board.main(["check"], gh=gh, cwd=self.folder), 0)
+        self.assertEqual(board.main(["sync"], gh=gh, cwd=self.folder), 0)
         self.assertEqual(board.main(["done", "1", "--branch", "feature/x", "--evidence", "x"], gh=gh,
                                     cwd=self.folder), 3)
         self.assertEqual(board.main(["ready"], gh=FakeGh(fail_on="board"), cwd=self.folder), 2)

@@ -17,6 +17,7 @@ Standard library only; Python 3.9 or later.
 
 Usage:
     python3 -I board.py check                                   (read-only: is the board and the API as expected?)
+    python3 -I board.py sync                     (put the repository's open issues missing from the board in Triage)
     python3 -I board.py ready [--json]
     python3 -I board.py file (--triage | --todo [--priority NAME]) --title TITLE [--body BODY] [--blocked-by 3,7]
     python3 -I board.py queue N [--priority NAME]               (only when the user asks: Triage is their gate)
@@ -34,7 +35,7 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 CONFIG_FILE = ".task-board.json"
@@ -48,6 +49,10 @@ LIMIT = "1000"  # gh's list commands default to 30 items
 # deprecated or stops listing it.
 REST_VERSION = "2022-11-28"
 REST_HEADER = f"X-GitHub-Api-Version: {REST_VERSION}"
+# GitHub's answer when an issue is added to a board that already holds it. It documents the mutation as returning the
+# existing item instead, but measured 2026-10-29, while the board's auto-add was adding the same issue, it fails.
+ALREADY_ON_BOARD = "Content already exists in this project"
+ISSUE_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)\s*$")
 
 # The board's ID, its Status field and options, and its items with their Status, asked for by name.
 BOARD_QUERY = """query($owner: String!, $number: Int!, $after: String) {
@@ -254,6 +259,21 @@ def parse_headers(response: str) -> dict:
     return headers
 
 
+def response_body(response: str) -> str:
+    """The body of `gh api -i` output: everything after the first blank line."""
+    parts = response.replace("\r\n", "\n").split("\n\n", 1)
+    return parts[1] if len(parts) == 2 else ""
+
+
+def full_name(repo_json: str) -> str:
+    """A repository's current owner/name, from `GET /repos/{owner}/{repo}`. GitHub answers for a renamed
+    repository under its old name too, so this is how a stale `.task-board.json` is noticed."""
+    name = json.loads(repo_json).get("full_name")
+    if not isinstance(name, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", name):
+        raise GhError(f"the repository came back without a full_name: {name!r}")
+    return name
+
+
 def status_of(item: dict) -> str:
     """An item with no Status yet counts as Triage: the board's auto-add puts new issues there without one."""
     status = item.get("status")
@@ -302,6 +322,11 @@ def open_blockers(issue: dict, open_numbers: set, repo: str) -> list:
         if number is None or elsewhere or number in open_numbers:
             blockers.append(number)
     return blockers
+
+
+def missing_from_board(items: list, issues: list, repo: str) -> list:
+    """Numbers of this repository's open issues that have no item on the board, lowest first."""
+    return sorted(issue["number"] for issue in issues if item_for(items, issue["number"], repo) is None)
 
 
 def ready_candidates(items: list, issues: list, repo: str) -> list:
@@ -393,6 +418,7 @@ class Board:
         self._status_field = None
         self._priority_field = None
         self._login = None
+        self.warnings = []  # printed to stderr after the step, whatever its outcome
 
     # -- reading --
 
@@ -488,13 +514,27 @@ class Board:
                   input=json.dumps(body))
 
     def add_to_board(self, number: int) -> str:
-        """Add issue `number` to the board, and return its item ID. Adding an issue already on the board (auto-add
-        may have been first) returns the existing item."""
+        """Add issue `number` to the board, and return its item ID. GitHub documents adding an issue already on the
+        board as returning the existing item, but answers ALREADY_ON_BOARD when auto-add is adding it at the same
+        moment; then the item is read back from the board."""
         node = json.loads(self.rest(f"repos/{self.config.repo}/issues/{number}")).get("node_id")
         if not isinstance(node, str) or not node:
             raise GhError(f"issue #{number} came back without a node_id")
-        return mutation_id(self.graphql(ADD_ITEM_MUTATION, f"project={self.status_field().project_id}",
-                                        f"content={node}"), "addProjectV2ItemById", "item", "id")
+        try:
+            return mutation_id(self.graphql(ADD_ITEM_MUTATION, f"project={self.status_field().project_id}",
+                                            f"content={node}"), "addProjectV2ItemById", "item", "id")
+        except GhError as error:
+            if ALREADY_ON_BOARD not in str(error):
+                raise
+            found = item_for(self.items(), number, self.config.repo)
+            if found is None:
+                raise GhError(f"GitHub says issue #{number} is already on the board, but the board has no item"
+                              f" for it: {error}") from None
+            return found["id"]
+
+    def canonical_repo(self) -> str:
+        """The repository's current owner/name, which differs from `.task-board.json`'s after a rename."""
+        return full_name(self.rest(f"repos/{self.config.repo}"))
 
     def comment(self, number: int, body: str) -> None:
         self.gh.run("issue", "comment", str(number), "--repo", self.config.repo, "--body", body)
@@ -524,13 +564,28 @@ class Board:
         versions = json.loads(self.rest("versions"))
         if REST_VERSION not in versions:
             raise GhError(f"GitHub no longer lists REST version {REST_VERSION} (it lists {', '.join(versions)})")
-        headers = parse_headers(self.rest(f"orgs/{self.config.owner}/issue-fields", "-i"))
+        response = self.rest(f"repos/{self.config.repo}", "-i")
+        current = full_name(response_body(response))
+        if current != self.config.repo:
+            raise BoardError(f"{CONFIG_FILE} names {self.config.repo}, which GitHub now calls {current}: update"
+                             f" its repo (and the owner, if that changed)")
+        lines.append(f"ok: {CONFIG_FILE} names the repository by its current name")
+        headers = parse_headers(response)
         if "deprecation" in headers or "sunset" in headers:
             lines.append(f"warn: GitHub marks REST version {REST_VERSION} deprecated (Deprecation:"
                          f" {headers.get('deprecation', '-')}; Sunset: {headers.get('sunset', '-')}); move REST_VERSION")
         else:
             lines.append(f"ok: REST version {REST_VERSION} supported, not marked deprecated")
         return lines
+
+    def sync(self) -> list:
+        """Put every open issue of this repository that is missing from the board on it, with no Status, so in
+        Triage. This replaces GitHub's auto-add, which no API can turn on (plan 0033): an issue opened outside a
+        session reaches the board the next time a session runs this. Returns the numbers added."""
+        missing = missing_from_board(self.items(), self.open_issues(), self.config.repo)
+        for number in missing:
+            self.add_to_board(number)
+        return missing
 
     def ready(self) -> list:
         items, issues = self.items(), self.open_issues()
@@ -546,8 +601,13 @@ class Board:
         if blocked_by:
             args += ["--blocked-by", blocked_by]
         output = self.gh.run(*args).strip()
-        match = re.search(rf"(https://github\.com/{re.escape(self.config.repo)}/issues/(\d+))\s*$", output)
-        if not match:
+        match = ISSUE_URL.search(output)
+        if match and match.group(1) != self.config.repo and match.group(1) == self.canonical_repo():
+            # The repository was renamed: GitHub resolves the old name and files the issue under the new one.
+            self.warnings.append(f"{CONFIG_FILE} names {self.config.repo}, which GitHub now calls {match.group(1)}:"
+                                 f" update its repo")
+            self.config = replace(self.config, repo=match.group(1))
+        if not match or match.group(1) != self.config.repo:
             raise GhError(f"gh issue create gave no issue URL for {self.config.repo}; check the repository's issues"
                           f" for {title!r} before filing again. Output: {output[-200:]!r}")
         number = int(match.group(2))
@@ -626,6 +686,7 @@ def parse_args(argv: list) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="board.py", description="Run a project's GitHub board by name.")
     steps = parser.add_subparsers(dest="step", required=True)
     steps.add_parser("check")
+    steps.add_parser("sync")
     steps.add_parser("ready").add_argument("--json", action="store_true")
     file_ = steps.add_parser("file")
     where = file_.add_mutually_exclusive_group(required=True)
@@ -666,12 +727,18 @@ def find_config(start: Path) -> Path:
 
 
 def main(argv: list, gh: Gh | None = None, cwd: Path | None = None) -> int:
+    board = None
     try:
         args = parse_args(argv)
         board = Board(parse_config(find_config(cwd or Path.cwd()).read_text()), gh or Gh())
         if args.step == "check":
             for line in board.check():
                 print(line)
+        elif args.step == "sync":
+            added = board.sync()
+            for number in added:
+                print(f"added #{number} to the board in {TRIAGE}")
+            print(f"{len(added)} issue(s) added")
         elif args.step == "ready":
             entries = board.ready()
             if args.json:
@@ -709,6 +776,9 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None) -> int:
         # gh answered in a shape this script does not expect: report it as gh's failure, not a traceback.
         print(f"board.py: unexpected output from gh ({type(error).__name__}: {error})", file=sys.stderr)
         return 2
+    finally:
+        for warning in (board.warnings if board else []):
+            print(f"board.py: warn: {warning}", file=sys.stderr)
 
 
 if __name__ == "__main__":

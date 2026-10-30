@@ -170,3 +170,13 @@ The live run (§ Verification 3) happens on the next new repository, after the m
 ## Progress
 
 - [x] (2026-10-30) Milestone 1: D3–D5 and the milestones.
+- [x] (2026-10-30) Milestone 2:
+  - **`file` survives auto-add's race.** On `Content already exists in this project`, it reads the item back from the board. If the board has no item, that stays an error.
+  - **After a rename,** `file` places the issue when GitHub resolves the old name to the URL's repository, and warns to update `.task-board.json`. `check` fails while the file names the old repository; it now reads the REST deprecation headers from `GET /repos/{repo}`, which also works for a user's board.
+  - **The new step `sync`.**
+  - **Tests:** 80, OK on 3.9.6 and 3.14. Each new test was seen failing against a broken copy:
+    - the race not handled;
+    - a phantom item accepted;
+    - a rename not resolved, and another repository's URL accepted;
+    - `check` ignoring a rename;
+    - `sync` adding nothing, setting a Status, or matching issues of another repository by number alone.
