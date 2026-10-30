@@ -298,5 +298,4 @@ Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:o
   - **Global `CLAUDE.md`:** a new project gets a board by default, while the sandbox is off; an existing one keeps what it names.
   - **`README.md`:** the two skill bullets.
   - No `setup.sh` rerun: skills are linked as whole folders, and `~/.claude/skills/task-board` already shows `setup_board.py`.
-
 - [x] (2026-10-30) Milestone 7: Codex review, two passes (D7, D8), every finding fixed. The merge request follows.
