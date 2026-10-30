@@ -224,6 +224,13 @@ Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:o
   - `check` and `ready` on `tia-tools` #1: all ok, 17 items, 0 archived, 0 ready;
   - `setup_board.py` through the scratch wrapper on both owners: set up, the second run unchanged, deleted.
 
+- **D8. Codex review, second pass on the whole branch at 13ab0b5: CHANGES REQUESTED, one Medium, accepted.** Codex ran only in a snapshot; refs unchanged. The writes found in `.git` were `index`, from the periodic `git status`, and the automatic security review's `sg-reviewed-*` markers.
+  - **The finding:** board.py built the Status option map leniently, so two options of one name overwrote each other and an option without an ID raised an unhandled `KeyError`. Both now stop with exit 2, as setup's parser does.
+  - **The same class, fixed as well:** two options of one name in the organization's Priority field.
+  - **What the pass found nothing more in:** the first pass's fixes, the workflow check's place in `file`, and the archived-items change. It had been asked to check each of them.
+  - **Tests:** 122, OK on 3.9.6 and 3.14, both new ones seen failing against a broken copy. `check` on `tia-tools` #1 still passes.
+  - **No third pass:** the fix is one validation in each of two parsers, seen failing, and no other logic moved.
+
 ## Progress
 
 - [x] (2026-10-30) Milestone 1: D3–D5 and the milestones.
@@ -291,3 +298,5 @@ Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:o
   - **Global `CLAUDE.md`:** a new project gets a board by default, while the sandbox is off; an existing one keeps what it names.
   - **`README.md`:** the two skill bullets.
   - No `setup.sh` rerun: skills are linked as whole folders, and `~/.claude/skills/task-board` already shows `setup_board.py`.
+
+- [x] (2026-10-30) Milestone 7: Codex review, two passes (D7, D8), every finding fixed. The merge request follows.

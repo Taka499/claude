@@ -327,6 +327,12 @@ class ConfigAndFields(unittest.TestCase):
         with self.assertRaisesRegex(board.GhError, "Low"):
             board.parse_priority_field(json.dumps(fields))
 
+    def test_two_priority_options_of_one_name_stop(self):
+        fields = json.loads(json.dumps(ISSUE_FIELDS))
+        fields[0]["options"].append({"id": 1, "name": "High", "priority": 5})
+        with self.assertRaisesRegex(board.GhError, "two options"):
+            board.parse_priority_field(json.dumps(fields))
+
     def test_priority_is_the_field_named_priority_not_another_with_the_same_options(self):
         only_effort = [field for field in ISSUE_FIELDS if field["name"] != "Priority"]
         with self.assertRaisesRegex(board.BoardError, "Issue Fields"):
@@ -400,6 +406,12 @@ class BoardPages(unittest.TestCase):
             page["data"]["repositoryOwner"]["projectV2"]["fields"] = fields
             with self.assertRaisesRegex(board.GhError, "fields came back"):
                 board.parse_board_page(json.dumps(page), 1)
+
+    def test_status_options_without_an_id_or_two_of_one_name_stop(self):
+        for options in ([*STATUS_FIELD["options"], {"id": "x", "name": "Todo"}],
+                        [*STATUS_FIELD["options"], {"name": "Blocked"}], [*STATUS_FIELD["options"], {"id": "y"}]):
+            with self.assertRaises(board.GhError):
+                board.parse_board_page(board_page([], None, field=dict(STATUS_FIELD, options=options)), 1)
 
     def test_a_field_without_a_name_or_two_of_one_name_stop(self):
         for extra in ({"__typename": "ProjectV2Field"}, {"__typename": "ProjectV2Field", "name": "Status"}, "Status"):

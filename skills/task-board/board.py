@@ -250,7 +250,13 @@ def parse_board_page(page_json: str, project: int):
     if field.get("__typename") != "ProjectV2SingleSelectField" or not field.get("options"):
         raise BoardError(f"the board's {STATUS_FIELD!r} field is a {field.get('__typename')}, not a single-select"
                          f" field with options")
-    options = {option["name"]: option["id"] for option in field["options"]}
+    listed = field["options"]
+    if not all(isinstance(option, dict) and isinstance(option.get("id"), str) and option["id"]
+               and isinstance(option.get("name"), str) and option["name"] for option in listed) \
+            or len({option["name"] for option in listed}) != len(listed):
+        raise GhError(f"the board's {STATUS_FIELD} options came back with one without an ID or a name, or with two"
+                      f" of one name")
+    options = {option["name"]: option["id"] for option in listed}
     missing = [option for option in STATUSES if option not in options]
     if missing:
         raise BoardError(f"the board's {STATUS_FIELD} field lacks the option(s) {', '.join(missing)}")
@@ -312,6 +318,8 @@ def parse_priority_field(issue_fields_json: str) -> PriorityField:
             listed = list(enumerate(field["options"]))
             if not all(isinstance(option.get("name"), str) and option["name"] for _, option in listed):
                 raise GhError(f"the organization's {PRIORITY_FIELD} field has an option without a name")
+            if len({option["name"] for _, option in listed}) != len(listed):
+                raise GhError(f"the organization's {PRIORITY_FIELD} field has two options of one name")
             unranked = [option["name"] for _, option in listed
                         if not isinstance(option.get("priority"), int) or isinstance(option["priority"], bool)]
             if unranked:
