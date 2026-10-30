@@ -394,6 +394,13 @@ class BoardPages(unittest.TestCase):
             with self.assertRaises(board.GhError):
                 board.parse_board_page(json.dumps(page), 1)
 
+    def test_fields_that_are_not_a_list_stop_rather_than_reading_as_a_renamed_status(self):
+        for fields in (None, {"nodes": None}, {"nodes": "Status"}):
+            page = json.loads(board_page([item(1, "Todo")], None))
+            page["data"]["repositoryOwner"]["projectV2"]["fields"] = fields
+            with self.assertRaisesRegex(board.GhError, "fields came back"):
+                board.parse_board_page(json.dumps(page), 1)
+
     def test_graphql_errors_and_a_missing_board_are_reported(self):
         with self.assertRaises(board.GhError):
             board.parse_board_page('{"errors": [{"message": "bad"}], "data": null}', 1)

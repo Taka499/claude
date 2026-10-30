@@ -247,7 +247,8 @@ Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:o
     - the branch checked late or always set;
     - the config overwritten.
 
-    The field-list change was seen failing the same way: a query asking by name, and a field list read leniently.
+    The field-list change was seen failing the same way: a query asking by name.
+  - **A correction to 3cda9e5.** Its message and this entry also claimed that a field list read leniently was seen failing. It was not: run after that commit, the broken copy passed every test. The next commit adds the missing test (fields that are not a list stop with exit 2). It was then seen failing against that broken copy. 114 tests.
   - **Live, with the user's login,** through a throwaway wrapper that titles the board as a scratch so it can never find a real one:
     - `tia-tools`, linked to gkms-hif-final-stats, and `Taka499`, linked to this repository;
     - each set up in full, then run again with no change and `check` passing, then deleted;
