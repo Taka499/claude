@@ -1,6 +1,6 @@
 # Plan: the task board as the default for new projects, with its setup scripted
 
-Status: **draft**, 2026-10-30. Open choices O1 and O2 below wait for the user.
+Status: **in progress**, 2026-10-30. The user chose O1 (a) and O2 (a) and approved the scratch test (D3–D5, § Decision Log).
 
 ## Goal
 
@@ -69,12 +69,12 @@ Read 2026-10-30, by two research agents, from:
 - **`actions/add-to-project`** (v2.0.0, 2026-05) can replace auto-add. It needs a token with Projects write in a repository or org secret. On Free, an org secret reaches every public repository's workflows, and Projects write reaches every board of the organization.
 - **Agent bootstrap repositories** follow the same pattern as this plan: create or copy the board, link it, set fields and views by API, then print the workflow steps no API can do.
 
-## Proposed design
+## Design
 
 1. **A setup script beside the helper,** `skills/task-board/setup_board.py`: standard-library Python, tested like `board.py`, and sharing its GraphQL and REST code.
    - **It is idempotent:** it finds a board already linked to the repository before creating one. Each step reads its result back.
    - **It writes `.task-board.json`.** It prints each remaining manual step with its direct URL, then runs `board.py check`.
-2. **O1, how the board is made (the user's choice):**
+2. **O1, how the board is made: (a), the user's choice (D3).**
    - **(a) Built by the script (recommended):**
      1. `createProjectV2` with `repositoryId`;
      2. `updateProjectV2` private;
@@ -86,7 +86,7 @@ Read 2026-10-30, by two research agents, from:
    - **(b) Copied from a private template board,** then linked and set private. Fewer calls, and settings beyond the defaults come along.
      - **Against it:** the configuration then lives in GitHub's UI, outside review, and what a copy keeps (the Status options, the grouping, each workflow's state, the Priority column) is not documented.
      - **Under D2:** only an organization can mark a template. A `Taka499` board would need either a copy across owners, which is untested, or a second template board kept in step with the first.
-3. **O2, auto-add (the user's choice):**
+3. **O2, auto-add: (a), the user's choice (D4).**
    - **(a) Drop it, and let the helper reconcile (recommended).**
      - **How:** a step that adds every open issue of the repository that is not on the board, with no Status, so as Triage. It runs at the start of a session, next to `check`.
      - **Gains:** this removes the last web step on the board. It also removes the race behind the `Content already exists` failures.
@@ -121,19 +121,52 @@ Read 2026-10-30, by two research agents, from:
    - the REST Board view;
    - the default visibility;
    - the default workflows, read back;
-   - for O1 (b): what a copy keeps;
    - on the user's board: the board-level Priority field, written and read back.
 
    The responses are captured as fixtures, as plan 0031 did.
-2. **Tests:** the setup script's tests pass, and each is seen failing against a broken copy (global `CLAUDE.md` § Testing). The same goes for the two bug fixes, the user-owned board path and, under O2 (a), the reconcile step.
+2. **Tests:** the setup script's tests pass, and each is seen failing against a broken copy (global `CLAUDE.md` § Testing). The same goes for the two bug fixes, the user-owned board path and the reconcile step.
 3. **A live run** on the next new repository:
    - `scaffold-project` through to `board.py check` passing;
    - one issue filed and claimed, and closed: by a PR's `Closes #N`, or by `done` in a project that merges locally (that path has not yet run live);
-   - under O2 (a), an issue opened in the web UI appears in Triage at the next session.
+   - an issue opened in the web UI appears in Triage at the next session.
 
    The first project under `Taka499` gets the same run.
 4. **Not in this plan:**
-   - moving gkms-hif-final-stats onto O2 (a) by turning its auto-add off;
+   - turning gkms-hif-final-stats's auto-add off, to match O2 (a). With the race fixed, leaving it on does no harm;
    - adopting a board in gakumas-supportcards (no task list today, default branch `main`).
 
    Each is a separate ask.
+
+## Milestones
+
+1. **The plan:** D3–D5 recorded, the milestones laid out. No network.
+2. **The helper's fixes that need no new GitHub shapes,** each with tests seen failing against a broken copy:
+   - `file` treats `Content already exists in this project` as the issue being on the board, and finds its item;
+   - after a rename, `file` places the issue when GitHub resolves `.task-board.json`'s `repo` to the URL's repository, and says to update the file. `check` fails while the name is stale;
+   - the step `sync`: every open issue of the repository that is not on the board is added with no Status, so as Triage.
+3. **The scratch test,** with the user's login once it has the `project` scope. It runs the calls of the setup script and of the helper's user-board path against two private scratch boards: `tia-tools`, linked to gkms-hif-final-stats, and `Taka499`, linked to this repository.
+   - **The only item:** a draft issue, so no real issue gains a timeline event.
+   - **Afterwards:** both boards are deleted.
+   - **What it captures:** every response shape the code reads, as fixtures.
+4. **The helper reaches user-owned boards:**
+   - the board is read through `repositoryOwner(login:) { … on ProjectV2Owner { projectV2(number:) } }`, which serves both owners;
+   - on a user's board, Priority is the board's own single-select field, read from the items and written with `updateProjectV2ItemFieldValue`, ranked in the board's order.
+5. **`setup_board.py`,** with tests and the replay through the real `gh`.
+6. **The texts:**
+   - the `task-board` skill: step 0 runs `sync`, Priority on a user's board, the setup section replaced by the script;
+   - `scaffold-project` step 7;
+   - global `CLAUDE.md`'s line on where tasks live;
+   - the `README.md` layout.
+7. **Codex review of the branch's whole diff,** every finding fixed or answered, then the merge request with its evidence.
+
+The live run (§ Verification 3) happens on the next new repository, after the merge.
+
+## Decision Log
+
+- **D3 (the user, 2026-10-30): O1 (a).** The script builds every board from scratch, for both kinds of owner; no template board.
+- **D4 (the user, 2026-10-30): O2 (a).** New boards get no auto-add. The helper's `sync` adds the repository's open issues that are missing from the board, as Triage.
+- **D5 (the user, 2026-10-30): the scratch test is approved:** two private scratch boards, created and deleted with the user's login.
+
+## Progress
+
+- [x] (2026-10-30) Milestone 1: D3–D5 and the milestones.
