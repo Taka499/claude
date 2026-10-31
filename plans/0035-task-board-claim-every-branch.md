@@ -41,3 +41,4 @@ Global `CLAUDE.md`, the board bullet of § General: start no branch of work befo
 
 - **MEDIUM, "branch of work" undefined: accepted, fixed.** The rule said "every feature branch" while `CLAUDE.md` said "branch of work", and neither said what a release, a close-out or work continued on a branch needs. § Rules now defines it: any branch that will merge into the integration branch.
 - **MEDIUM, the plan called the new wording what D1 meant: accepted, fixed.** D1's own words are "Plan milestones are not issues". § Decision now records the revision as one.
+- **Second pass, at `233844a`:** **LGTM**. Both findings resolved; the Triage gate and the follow-up filing exception agree with the new rule.
