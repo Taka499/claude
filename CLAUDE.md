@@ -7,7 +7,7 @@ This is the user-level `~/.claude/CLAUDE.md`, applied to every project on this m
 ## General
 
 - MUST only make changes that were explicitly requested — NEVER autonomously add features, tools, packages, or content. If something additional seems needed, ask first. One exception: in a project that keeps its tasks on a GitHub board, filing a follow-up you found into its Triage column records work and builds nothing, so it needs no ask. Say in your reply that you filed it. Starting work on anything the user has not queued still does.
-- A project's `CLAUDE.md` says where its tasks live: `docs/BACKLOG.md`, or a GitHub board, with a `.task-board.json` at its root. Work a board only through the `task-board` skill. Its board is the record, so keep no second list beside it.
+- A project's `CLAUDE.md` says where its tasks live: `docs/BACKLOG.md`, or a GitHub board, with a `.task-board.json` at its root. Work a board only through the `task-board` skill. Its board is the record, so keep no second list beside it, and start no branch of work before claiming its issue there, filing one first if the user's ask has none.
   - **A new project gets a board by default,** whatever its owner and visibility. `scaffold-project` sets it up through the skill's `setup_board.py`.
   - **That default holds while Claude Code's sandbox is off** (the `Taka499/claude` repo's `plans/0033-task-board-default.md`). Turning the sandbox back on means revisiting it.
   - **An existing project keeps what its `CLAUDE.md` names.**
