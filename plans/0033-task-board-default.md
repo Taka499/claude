@@ -299,3 +299,4 @@ Run with the user's login (scopes `admin:public_key`, `gist`, `project`, `read:o
   - **`README.md`:** the two skill bullets.
   - No `setup.sh` rerun: skills are linked as whole folders, and `~/.claude/skills/task-board` already shows `setup_board.py`.
 - [x] (2026-10-30) Milestone 7: Codex review, two passes (D7, D8), every finding fixed. The merge request follows.
+- [x] (2026-10-31) **The documented `python3 -I …/setup_board.py` could not run.** A session in another project reported `ModuleNotFoundError: No module named 'board'`. `-I` leaves the script's folder off `sys.path`, and every earlier run had imported the script from a test or a wrapper, never run the documented command. The script now puts its own folder on `sys.path` before `import board`. A new test runs the documented command as a process, and was seen failing without that line. 123 tests, OK on 3.9.6 and 3.14.
