@@ -34,7 +34,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-import board  # beside this file
+# -I, as documented, leaves this file's folder off sys.path; board.py sits beside it.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import board
 from board import (CONFIG_FILE, ITEM_ADDED_WORKFLOW, ORGANIZATION, PRIORITY_FIELD, STATUS_FIELD, STATUSES, USER,
                    BoardError, Config, Gh, GhError, graphql_data, mutation_id)
 

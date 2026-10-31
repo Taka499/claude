@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -349,6 +350,13 @@ class CommandLine(unittest.TestCase):
     def test_the_repository_must_be_owner_slash_name(self):
         with self.assertRaises(SystemExit):
             setup_board.parse_args(["r"])
+
+    def test_the_documented_command_runs_in_isolated_mode(self):
+        # -I leaves the script's folder off sys.path, so `import board` needs the script's own help.
+        result = subprocess.run([sys.executable, "-I", setup_board.__file__, "--help"], capture_output=True,
+                                text=True, cwd=tempfile.mkdtemp(), timeout=30)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertIn("usage: setup_board.py", result.stdout)
 
 
 @unittest.skipUnless(shutil.which("gh"), "gh is not installed")
