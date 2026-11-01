@@ -77,11 +77,11 @@ On 3, read the message and do not force the step another way. A step that failed
      - **Check both** right after opening the PR, from the branch:
 
        ```sh
-       gh pr view <PR> --json closingIssuesReferences --jq '[.closingIssuesReferences[].number]'
+       gh pr view <PR> --json closingIssuesReferences --jq '[.closingIssuesReferences[] | "\(.repository.owner.login)/\(.repository.name)#\(.number)"]'
        git log --format=%B origin/<base>..HEAD | grep -inE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?[[:space:]]+([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+'
        ```
 
-       The first must print `[N]` alone, and the second nothing.
+       The first must print `["<owner>/<repo>#N"]` alone, this repository and the claimed issue, since a keyword can name another repository's issue too; the second must print nothing.
      - **If either fails,** fix it before asking for the merge: the description with `gh pr edit <PR> --body-file …`, a commit message by asking the user how, since rewriting a pushed commit needs their permission.
 
      If the user closes the PR without merging, `release` the issue.
