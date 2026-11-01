@@ -20,9 +20,12 @@ GitHub closes every issue that a closing keyword names in a pull request's descr
 
 ## Change
 
-`skills/task-board/SKILL.md` § Steps 6, *Through PRs*, gains a paragraph:
-- **The rule:** no issue but the claimed one may follow a closing keyword, in the description or in a commit message headed for the default branch. Other issues are named without a keyword before the number.
-- **The check:** right after opening the PR, `gh pr view <PR> --json closingIssuesReferences --jq '[.closingIssuesReferences[].number]'` must print `[N]` alone. If not, the description is edited before the merge is asked for.
+**The change:** `skills/task-board/SKILL.md` § Steps 6, *Through PRs*, gains a paragraph:
+- **The rule:** no issue but the claimed one may follow a closing keyword in the description. Commit messages carry none at all: they close issues once merged into the default branch too, but the PR does not list those among the issues it closes. Other issues are named without a keyword before the number.
+- **The checks,** right after opening the PR, from the branch:
+  - `gh pr view <PR> --json closingIssuesReferences --jq '[.closingIssuesReferences[].number]'` must print `[N]` alone;
+  - `git log --format=%B origin/<base>..HEAD | grep -inE '<keyword>:? [owner/repo]#N'` must print nothing.
+- **When a check fails:** the description is edited, or the user is asked how to reword a pushed commit, before the merge is asked for.
 
 **Why a check and not only the rule:** global `CLAUDE.md` § Quality Gates prefers a tool that checks a value over a rule a session must remember. A wording rule slips exactly when the text is written in a hurry, as this one was. `closingIssuesReferences` is GitHub's own reading of the description, so it catches what any re-reading would miss.
 
@@ -30,7 +33,12 @@ GitHub closes every issue that a closing keyword names in a pull request's descr
 
 ## Verification
 
-- **The check's command,** run against the real PRs:
+- **The first check's command,** run against the real PRs:
   - on `tia-tools/gkms-memomemo#23` it prints `[20,22]`;
   - on `#27`, opened after this lesson with only `Closes #26`, it prints `[26]`.
+- **The second check's pattern:**
+  - It matches `The run did not close #20.` and `Fixes: tia-tools/gkms-memomemo#22`.
+  - It does not match the house commit style `fix: the icons workflow finds its own open issue (#22)`.
+  - It finds nothing in any of gkms-memomemo's 195 lines of commit messages on `develop`.
+- **Codex's review** (codex-cli 0.150.1) found that the first version checked only the description, though the rule named commit messages as well: `closingIssuesReferences` does not list issues a commit message closes. Hence the second check.
 - **Additive:** the step's existing text is unchanged, and the paragraph adds a check after `gh pr create`. A project following the old text loses nothing, and the next PR it opens gets the check.
