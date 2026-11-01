@@ -1143,18 +1143,28 @@ class JobsAndPage(unittest.TestCase):
         gh = FakeGh(items=[item(3, "In Progress")], issues=[dict(issue(3), body="")],
                     comments={3: [claimed("feature/x")]}, create_output=JOB_URL)
         folder = Path(tempfile.mkdtemp())
-        (folder / ".task-board.json").write_text(json.dumps({"owner": "o", "project": 1, "repo": REPO}))
+        (folder / ".task-board.json").write_text(json.dumps({"owner": "o", "project": 1, "repo": REPO,
+                                                             "page": "coord/board.md"}))
+        config = folder / "claude-config"  # the transcript `answer` reads, found through CLAUDE_CONFIG_DIR
+        (config / "projects" / "-x").mkdir(parents=True)
+        (config / "projects" / "-x" / "s1.jsonl").write_text(json.dumps(typed("#9 approve")) + "\n")
+        environ = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_CONFIG_DIR": str(config)}
+        paths, now = (folder, folder / ".git" / "task-board"), board.jobs.utc("2026-11-01T03:00:00Z")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            codes = [board.main(argv, gh=gh, cwd=folder) for argv in (
+            codes = [board.main(argv, gh=gh, cwd=folder, environ=environ, now=now, paths=paths) for argv in (
                 ["progress", "3", "--branch", "feature/x", "--goal", "g", "--step", "2", "--of", "4", "--now", "n",
                  "--next", "x"],
                 ["ask", "--kind", "approve", "--title", "merge it", "--summary", "checks green"],
                 ["job-state", "9", "--json"],
-                ["note", "3", "--decided", "--text", "a call"])]
-        self.assertEqual(codes, [0, 0, 0, 0], out.getvalue())
+                ["note", "3", "--decided", "--text", "a call"],
+                ["answer", "9", "--quote", "#9 approve"],
+                ["page"])]
+        self.assertEqual(codes, [0, 0, 0, 0, 0, 0], out.getvalue())
         self.assertIn("#3: step 2 of 4", out.getvalue())
+        self.assertIn("answered #9: approve", out.getvalue())
         self.assertEqual(board.block_of(next(e for e in gh.issues if e["number"] == 3))[0]["step"], 2)
+        self.assertIn("## In progress (1)", (folder / "coord" / "board.md").read_text())
 
     def test_note_marks_a_comment_on_an_open_issue_only(self):
         gh = FakeGh(items=[item(3, "Todo")], issues=[issue(3)])
