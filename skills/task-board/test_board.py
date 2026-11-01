@@ -6,6 +6,8 @@ The last class runs the real gh binary on every command the other tests produced
 fails here and not on a real board."""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -14,6 +16,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 
 import board  # beside this file: discover -s and direct runs both put this folder on the import path
@@ -66,8 +69,9 @@ def item(number: int, status: str | None, repo: str = REPO, kind: str = "Issue",
                         "url": f"https://github.com/{repo}/issues/{number}", "repository": repo}}
 
 
-def issue(number: int, created: str = "2026-10-01T00:00:00Z", blocked_by=None) -> dict:
-    return {"number": number, "title": f"issue {number}", "createdAt": created, "blockedBy": blocked_by or []}
+def issue(number: int, created: str = "2026-10-01T00:00:00Z", blocked_by=None, author: str = "me") -> dict:
+    return {"number": number, "title": f"issue {number}", "createdAt": created, "blockedBy": blocked_by or [],
+            "author": {"login": author}}
 
 
 def comment(body: str, at: str, login: str = "me") -> dict:
@@ -139,6 +143,8 @@ class FakeGh:
         # add_conflict: adding an issue fails with ALREADY_ON_BOARD, auto-add having placed it a moment before.
         self.canonical, self.add_conflict = canonical, add_conflict
         self.owner_type, self.workflows = owner_type, list(workflows)
+        self.closed = []  # issues closed by a step, still readable by `gh issue view`
+        self.editors = {}  # issue number -> who last edited its text (GraphQL Issue.editor)
 
     @staticmethod
     def kind(args: tuple) -> str:
@@ -147,7 +153,7 @@ class FakeGh:
             if given["query"] == board.SET_OPTION_MUTATION:
                 return "set-status" if given["field"] == STATUS_FIELD_ID else "set-priority"
             return {board.BOARD_QUERY: "board", board.ADD_ITEM_MUTATION: "add-item",
-                    board.WORKFLOWS_QUERY: "workflows"}[given["query"]]
+                    board.WORKFLOWS_QUERY: "workflows", board.EDITOR_QUERY: "editor"}[given["query"]]
         if args[:3] == ("api", "-H", board.REST_HEADER):
             path = args[-1]
             if path.endswith("/issue-field-values"):
@@ -162,6 +168,12 @@ class FakeGh:
                 return "issue-node"
             if re.fullmatch(r"repos/[^/]+/[^/]+", path):
                 return "repo-headers" if "-i" in args else "repo"
+        if args[:2] == ("issue", "view"):
+            return "comments" if args[args.index("--json") + 1] == "comments" else "issue-view"
+        if args[:2] == ("issue", "list") and "--search" in args:
+            return "issue-search"
+        if args[:2] == ("issue", "edit"):
+            return "issue-edit"
         return {("api", "user"): "user", ("issue", "list"): "issue-list", ("issue", "view"): "comments",
                 ("issue", "comment"): "comment", ("issue", "create"): "issue-create",
                 ("issue", "close"): "issue-close"}[args[:2]]
@@ -180,6 +192,9 @@ class FakeGh:
             end = start + self.page_size
             return board_page(self.items[start:end], str(end) if end < len(self.items) else None,
                               owner_type=self.owner_type, priorities=self.priorities)
+        if kind == "editor":
+            editor = self.editors.get(int(given["number"]))
+            return json.dumps({"data": {"repository": {"issue": {"editor": {"login": editor} if editor else None}}}})
         if kind == "workflows":
             return json.dumps({"data": {"repositoryOwner": {"projectV2": {"workflows": {"nodes": [
                 {"name": name, "enabled": enabled} for name, enabled in self.workflows]}}}}})
@@ -244,13 +259,48 @@ class FakeGh:
         if kind == "user":
             return "me\n"
         if kind == "issue-create":
+            match = board.ISSUE_URL.search(self.create_output.strip())
+            if match and not any(entry["number"] == int(match.group(2)) for entry in self.issues):
+                self.issues.append({"number": int(match.group(2)), "title": args[args.index("--title") + 1],
+                                    "createdAt": "2026-11-01T00:00:00Z", "blockedBy": [],
+                                    "body": args[args.index("--body") + 1], "url": match.group(0).strip(),
+                                    "author": {"login": "me"}})
             return self.create_output
+        if kind == "issue-view":
+            number = int(args[2])
+            for state, pool in (("OPEN", self.issues), ("CLOSED", self.closed)):
+                for entry in pool:
+                    if entry["number"] == number:
+                        return json.dumps({"number": number, "title": entry.get("title", ""),
+                                           "body": entry.get("body", ""), "state": state,
+                                           "createdAt": entry.get("createdAt", ""), "url": entry.get("url", ""),
+                                           "author": entry.get("author", {"login": "me"})})
+            raise board.GhError(f"no issue #{number}")
+        if kind == "issue-edit":
+            number = int(args[2])
+            target = next(entry for entry in self.issues if entry["number"] == number)
+            if "--add-blocked-by" in args:
+                target.setdefault("blockedBy", []).append(
+                    {"number": int(args[args.index("--add-blocked-by") + 1]), "state": "OPEN"})
+            if "--body-file" in args:
+                target["body"] = input
+                self.editors[number] = "me"
+            return ""
+        if kind == "issue-search":
+            return json.dumps([{"number": entry["number"], "url": entry.get("url", ""),
+                                "comments": self.comments.get(entry["number"], [])}
+                               for entry in self.issues + self.closed])
         if kind == "issue-close":
             number = int(args[2])
             body = args[args.index("--comment") + 1]
             self.comments.setdefault(number, []).append({"body": body, "createdAt": "2026-10-29T13:00:00Z",
                                                           "author": {"login": "me"}})
+            self.closed += [entry for entry in self.issues if entry["number"] == number]
             self.issues = [entry for entry in self.issues if entry["number"] != number]
+            for entry in self.issues:  # GitHub reports a closed blocker as CLOSED
+                for blocker in entry.get("blockedBy") or []:
+                    if blocker.get("number") == number:
+                        blocker["state"] = "CLOSED"
             return ""
         raise AssertionError(f"unhandled gh call: {args}")
 
@@ -986,6 +1036,290 @@ class CommandLine(unittest.TestCase):
         (nested / ".git").mkdir(parents=True)
         with self.assertRaises(board.BoardError):
             board.find_config(nested)
+
+
+DECIDE_ARGS = (["A|fix the two rules first|about half a day", "B|predict now|140 of 900 moves left out"],
+               "A|the full logs exist to find such gaps")
+JOB_URL = "https://github.com/o/r/issues/9\n"
+
+
+def typed(text: str, at: str = "2026-11-01T01:00:00Z", kind: str = "human") -> dict:
+    """A transcript record of a message, as Claude Code writes it."""
+    return {"type": "user", "timestamp": at, "origin": {"kind": kind}, "message": {"content": text}}
+
+
+def job_body(data: dict) -> str:
+    import jobs
+    return jobs.render_body(data)
+
+
+class JobsAndPage(unittest.TestCase):
+    """The steps of plan 0036: ask, answer, job-state, progress, note, and the page they redraw."""
+
+    def asked(self, **given):
+        """A board with work #3 in Todo, and the decision job #9 filed holding it up."""
+        gh = FakeGh(items=[item(3, "Todo")], issues=[dict(issue(3), body="", url="https://github.com/o/r/issues/3")],
+                    create_output=JOB_URL, **given)
+        made = make_board(gh)
+        options, recommend = DECIDE_ARGS
+        self.assertEqual(made.ask("decide", "fix two engine rules first?", options, recommend, None, [3], ""), 9)
+        return gh, made
+
+    def test_ask_files_the_job_in_todo_and_holds_its_work_up(self):
+        gh, made = self.asked()
+        self.assertEqual(gh.edits(), ["Todo"])
+        self.assertEqual(gh.kinds().count("issue-edit"), 1)
+        job = next(entry for entry in gh.issues if entry["number"] == 9)
+        data, error = board.block_of(job)
+        self.assertEqual((data["kind"], error), ("decide", None))
+        self.assertEqual(made.ready(), [], "neither the job nor the work it holds up is ready work")
+
+    def test_ask_refuses_bad_lines_and_closed_holds_before_creating_anything(self):
+        options, recommend = DECIDE_ARGS
+        cases = ((("decide", "fix E193 first?", options, recommend, None, [3]), board.BoardError, "plain explanation"),
+                 (("decide", "t", options[:1], recommend, None, [3]), board.BoardError, "2 to 3 options"),
+                 (("decide", "t", options, recommend, "a summary", [3]), board.BoardError, "not --summary"),
+                 (("approve", "t", options, None, "s", [3]), board.BoardError, "not --option"),
+                 (("approve", "merge it", [], None, "checks green", [77]), board.Refused, "#77"))
+        for args, error, why in cases:
+            gh = FakeGh(items=[item(3, "Todo")], issues=[issue(3)], create_output=JOB_URL)
+            with self.subTest(why=why), self.assertRaisesRegex(error, why):
+                make_board(gh).ask(*args, "")
+            self.assertNotIn("issue-create", gh.kinds())
+
+    def test_answer_closes_the_job_on_the_users_typed_words_and_frees_the_work(self):
+        gh, made = self.asked()
+        self.assertEqual(made.answer(9, "#9 a", [typed("ok, #9 a")]), "A")
+        self.assertIn("issue-close", gh.kinds())
+        closing = [a for a, _ in gh.calls if gh.kind(a) == "issue-close"][0]
+        self.assertTrue(closing[closing.index("--comment") + 1].startswith(f"{board.ANSWER_MARK} A — the user's"))
+        self.assertEqual(gh.edits()[-1], "Done")
+        self.assertEqual([entry["number"] for entry in made.ready()], [3])
+        self.assertEqual(made.job_state(9), {"number": 9, "kind": "decide", "state": "closed", "answer": "A"})
+
+    def test_answer_refuses_words_that_are_not_the_users_and_changes_nothing(self):
+        for records, quote, why in (([typed("#9 A", kind="peer")], "#9 A", "not in any message"),
+                                    ([typed("#9 C")], "#9 C", "not an answer #9 declares"),
+                                    ([typed("#9 A", at="2026-10-31T23:00:00Z")], "#9 A", "not in any message")):
+            gh, made = self.asked()
+            with self.subTest(why=why), self.assertRaisesRegex(board.Refused, why):
+                made.answer(9, quote, records)
+            self.assertNotIn("issue-close", gh.kinds())
+
+    def test_answer_refuses_an_issue_that_is_not_a_job(self):
+        gh = FakeGh(items=[item(3, "Todo")], issues=[dict(issue(3), body="just work")])
+        with self.assertRaisesRegex(board.Refused, "not a job"):
+            make_board(gh).answer(3, "#3 A", [typed("#3 A")])
+        broken = FakeGh(items=[item(4, "Todo")], issues=[dict(issue(4), body=board.jobs.BLOCK_START + "\n{")])
+        with self.assertRaisesRegex(board.Refused, "not closed"):
+            make_board(broken).answer(4, "#4 A", [typed("#4 A")])
+
+    def test_answer_rerun_after_closing_finishes_and_a_job_closed_without_answer_is_refused(self):
+        gh, made = self.asked()
+        gh.fail_once_on = None
+        made.answer(9, "#9 A", [typed("#9 A")])
+        self.assertEqual(made.answer(9, "#9 A", []), "A")
+        gh2, made2 = self.asked()
+        gh2.closed += [entry for entry in gh2.issues if entry["number"] == 9]
+        gh2.issues = [entry for entry in gh2.issues if entry["number"] != 9]
+        with self.assertRaisesRegex(board.Refused, "no answer recorded"):
+            made2.answer(9, "#9 A", [typed("#9 A")])
+
+    def test_progress_is_the_claim_holders_and_checks_its_lines(self):
+        gh = FakeGh(items=[item(3, "In Progress")], issues=[dict(issue(3), body="The plan: x.md")],
+                    comments={3: [claimed("feature/x")]})
+        made = make_board(gh)
+        values = {"goal": "the simulator matches", "step": 2, "of": 4, "now": "fixing", "next": "predicting"}
+        made.progress(3, "feature/x", values)
+        body = next(entry for entry in gh.issues if entry["number"] == 3)["body"]
+        self.assertTrue(body.startswith("The plan: x.md"))
+        self.assertEqual(board.block_of({"body": body})[0]["step"], 2)
+        with self.assertRaisesRegex(board.Refused, "claimed by 'feature/x'"):
+            made.progress(3, "feature/y", values)
+        with self.assertRaisesRegex(board.BoardError, "whole numbers"):
+            made.progress(3, "feature/x", dict(values, step=5))
+
+    def test_every_new_step_runs_from_the_command_line(self):
+        gh = FakeGh(items=[item(3, "In Progress")], issues=[dict(issue(3), body="")],
+                    comments={3: [claimed("feature/x")]}, create_output=JOB_URL)
+        folder = Path(tempfile.mkdtemp())
+        (folder / ".task-board.json").write_text(json.dumps({"owner": "o", "project": 1, "repo": REPO,
+                                                             "page": "coord/board.md"}))
+        config = folder / "claude-config"  # the transcript `answer` reads, found through CLAUDE_CONFIG_DIR
+        (config / "projects" / "-x").mkdir(parents=True)
+        (config / "projects" / "-x" / "s1.jsonl").write_text(json.dumps(typed("#9 approve")) + "\n")
+        environ = {"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_CONFIG_DIR": str(config)}
+        paths, now = (folder, folder / ".git" / "task-board"), board.jobs.utc("2026-11-01T03:00:00Z")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            codes = [board.main(argv, gh=gh, cwd=folder, environ=environ, now=now, paths=paths) for argv in (
+                ["progress", "3", "--branch", "feature/x", "--goal", "g", "--step", "2", "--of", "4", "--now", "n",
+                 "--next", "x"],
+                ["ask", "--kind", "approve", "--title", "merge it", "--summary", "checks green"],
+                ["job-state", "9", "--json"],
+                ["note", "3", "--decided", "--text", "a call"],
+                ["answer", "9", "--quote", "#9 approve"],
+                ["page"])]
+        self.assertEqual(codes, [0, 0, 0, 0, 0, 0], out.getvalue())
+        self.assertIn("#3: step 2 of 4", out.getvalue())
+        self.assertIn("answered #9: approve", out.getvalue())
+        self.assertEqual(board.block_of(next(e for e in gh.issues if e["number"] == 3))[0]["step"], 2)
+        self.assertIn("## In progress (1)", (folder / "coord" / "board.md").read_text())
+
+    def test_note_marks_a_comment_on_an_open_issue_only(self):
+        gh = FakeGh(items=[item(3, "Todo")], issues=[issue(3)])
+        made = make_board(gh)
+        made.note(3, "decided", "left 10 one-move decisions out: they cannot tell models apart")
+        self.assertTrue(gh.comments[3][-1]["body"].startswith(board.NOTE_MARKS["decided"]))
+        for number, text, error in ((4, "x", board.Refused), (3, "see C290", board.BoardError)):
+            with self.subTest(text=text), self.assertRaises(error):
+                made.note(number, "finding", text)
+
+    def test_the_page_shows_jobs_work_and_what_happened_since(self):
+        gh, made = self.asked()
+        gh.items.append(item(5, "In Progress"))
+        work = {"kind": "work", "goal": "the simulator matches", "step": 2, "of": 4, "now": "fixing", "next": "x"}
+        gh.issues.append(dict(issue(5, blocked_by=[{"number": 9, "state": "OPEN"}]), body=job_body(work),
+                              url="https://github.com/o/r/issues/5"))
+        gh.comments[5] = [comment(f"{board.NOTE_MARKS['finding']} a rounding difference", "02:00"),
+                          comment(f"{board.NOTE_MARKS['finding']} old news", "00:30"),
+                          comment(f"{board.NOTE_MARKS['decided']} a stranger's", "02:00", login="stranger")]
+        since = board.jobs.utc("2026-10-29T01:00:00Z")
+        page = made.page_text(board.jobs.utc("2026-11-01T03:00:00Z"), since, ["## Goals", "- one goal"])
+        self.assertIn("## Needs you (1)", page)
+        self.assertIn("[#9](https://github.com/o/r/issues/9) **decide:** fix two engine rules first?", page)
+        self.assertIn("holds up [#3](https://github.com/o/r/issues/3)", page)
+        self.assertIn("step 2 of 4: fixing. Next: x. Turn: yours.", page)
+        self.assertIn("found: a rounding difference", page)
+        self.assertNotIn("old news", page)
+        self.assertNotIn("a stranger's", page)
+        self.assertIn("## Goals", page)
+
+    def test_a_step_redraws_the_page_and_a_failed_redraw_only_warns(self):
+        folder = Path(tempfile.mkdtemp())
+        root, state = folder / "repo", folder / "repo" / ".git" / "task-board"
+        root.mkdir()
+        (root / ".task-board.json").write_text(json.dumps({"owner": "o", "project": 1, "repo": REPO,
+                                                           "page": "coord/board.md"}))
+        gh = FakeGh(items=[item(3, "Todo")], issues=[issue(3)])
+        now = board.jobs.utc("2026-11-01T03:00:00Z")
+        code = board.main(["note", "3", "--finding", "--text", "a finding"], gh=gh, cwd=root, now=now,
+                          paths=(root, state))
+        self.assertEqual(code, 0)
+        drawn = (root / "coord" / "board.md").read_text()
+        self.assertEqual(drawn, (state / "page.md").read_text())
+        self.assertTrue(drawn.startswith("Updated "))
+        gh.fail_on = "issue-search"
+        code = board.main(["note", "3", "--finding", "--text", "another"], gh=gh, cwd=root, now=now,
+                          paths=(root, state))
+        self.assertEqual(code, 0)
+        self.assertTrue((root / "coord" / "board.md").read_text().startswith("Out of date since "))
+        self.assertEqual(board.main(["page"], gh=gh, cwd=root, now=now, paths=(root, state)), 2)
+
+    def test_check_warns_about_malformed_blocks_and_restored_pages(self):
+        gh = FakeGh(items=[item(3, "Todo")], issues=[dict(issue(3), body=board.jobs.BLOCK_START + "\n{")])
+        lines = make_board(gh).check()
+        self.assertTrue(any(line.startswith("warn: #3:") for line in lines), lines)
+        state = Path(tempfile.mkdtemp())
+        now = board.jobs.utc("2026-11-01T03:00:00Z")
+        (state / "restores.log").write_text(f"{(now - timedelta(days=9)).isoformat()}\tFileChanged\tx\n"
+                                            f"{(now - timedelta(hours=1)).isoformat()}\tPostToolUse\tx\n")
+        self.assertIn("restored 1 time(s)", board.restore_warnings(state, now)[0])
+        self.assertEqual(board.restore_warnings(Path(tempfile.mkdtemp()), now), [])
+
+    def test_ready_warns_about_an_issue_left_out_for_a_malformed_block(self):
+        gh = FakeGh(items=[item(3, "Todo"), item(4, "Todo")],
+                    issues=[issue(3), dict(issue(4), body=board.jobs.BLOCK_START + "\n{")])
+        made = make_board(gh)
+        self.assertEqual([entry["number"] for entry in made.ready()], [3])
+        self.assertTrue(any("#4 is left out" in warning for warning in made.warnings))
+
+    def test_config_takes_a_page_its_blocks_and_an_id_pattern(self):
+        config = board.parse_config(json.dumps({"owner": "o", "project": 1, "repo": REPO, "page": "coord/b.md",
+                                                "page_blocks": ["tools/goals.py"], "id_pattern": r"\bQ\d+\b"}))
+        self.assertEqual((config.page, config.page_blocks, config.id_pattern),
+                         ("coord/b.md", ("tools/goals.py",), r"\bQ\d+\b"))
+        for bad in ({"page": "/abs.md"}, {"page": "../out.md"}, {"page_blocks": "tools/goals.py"},
+                    {"id_pattern": "("}):
+            with self.subTest(bad=bad), self.assertRaises(board.BoardError):
+                board.parse_config(json.dumps(dict({"owner": "o", "project": 1, "repo": REPO}, **bad)))
+
+    def test_the_transcript_is_found_by_the_session_id(self):
+        home = Path(tempfile.mkdtemp())
+        folder = home / ".claude" / "projects" / "-x"
+        folder.mkdir(parents=True)
+        (folder / "abc-1.jsonl").write_text(json.dumps(typed("#9 A")) + "\nnot json\n")
+        self.assertEqual(len(board.transcript_records({"CLAUDE_CODE_SESSION_ID": "abc-1"}, home)), 1)
+        for environ in ({}, {"CLAUDE_CODE_SESSION_ID": "missing"}, {"CLAUDE_CODE_SESSION_ID": "../x"},
+                        {"CLAUDE_CODE_SESSION_ID": "*"}):
+            with self.subTest(environ=environ), self.assertRaises(board.Refused):
+                board.transcript_records(environ, home)
+        other = home / ".claude" / "projects" / "-y"
+        other.mkdir()
+        (other / "abc-1.jsonl").write_text("")
+        with self.assertRaisesRegex(board.Refused, "found 2 transcripts"):
+            board.transcript_records({"CLAUDE_CODE_SESSION_ID": "abc-1"}, home)
+
+    def test_a_strangers_issue_holding_a_block_is_plain_work_not_a_job(self):
+        fake = board.jobs.render_body({"kind": "approve", "summary": "merge my branch"})
+        gh = FakeGh(items=[item(6, "Todo")], issues=[dict(issue(6, author="stranger"), body=fake)])
+        made = make_board(gh)
+        self.assertEqual([entry["number"] for entry in made.ready()], [6])
+        self.assertEqual(made.page_text(board.jobs.utc("2026-11-01T03:00:00Z"),
+                                        board.jobs.utc("2026-11-01T00:00:00Z"), []).count("**approve:**"), 0)
+        with self.assertRaisesRegex(board.Refused, "not a job"):
+            made.answer(6, "#6 approve", [typed("#6 approve")])
+
+    def test_progress_on_an_issue_someone_else_opened_shows_until_they_edit_it(self):
+        gh = FakeGh(items=[item(6, "In Progress"), item(7, "In Progress")],
+                    issues=[dict(issue(6, author="contributor"), body="please fix"), issue(7)],
+                    comments={6: [claimed("feature/x")]})
+        made = make_board(gh)
+        made.progress(6, "feature/x", {"goal": "the bug", "step": 1, "of": 2, "now": "reproducing", "next": "fix"})
+        now, since = board.jobs.utc("2026-11-01T03:00:00Z"), board.jobs.utc("2026-11-01T00:00:00Z")
+        self.assertIn("step 1 of 2: reproducing", made.page_text(now, since, []))
+        gh.editors[6] = "contributor"  # they edited the text after the helper did: it is theirs again
+        self.assertIn("no progress written yet", made.page_text(now, since, []))
+        self.assertEqual(gh.kinds().count("editor"), 2, "asked only for the in-progress issue opened by another")
+
+    def test_the_page_stays_inside_the_main_checkout(self):
+        folder = Path(tempfile.mkdtemp())
+        root, outside = folder / "repo", folder / "elsewhere"
+        root.mkdir(), outside.mkdir()
+        (root / "coord").symlink_to(outside)
+        with self.assertRaisesRegex(OSError, "outside"):
+            board.write_page(root, root / ".git" / "task-board", "coord/board.md", "x")
+        self.assertFalse((outside / "board.md").exists())
+
+    def test_page_settings_come_from_the_main_checkouts_own_config(self):
+        root = Path(tempfile.mkdtemp())
+        (root / ".task-board.json").write_text(json.dumps({"owner": "o", "project": 1, "repo": REPO,
+                                                           "page": "coord/board.md"}))
+        branch = board.Config("o", 1, REPO, page="coord/board.md", page_blocks=("sh", "-c", "anything"))
+        mine = board.main_checkout_config(branch, root)
+        self.assertEqual((mine.page, mine.page_blocks), ("coord/board.md", ()))
+        self.assertIsNone(board.main_checkout_config(branch, None).page)
+
+    def test_a_worktrees_own_page_settings_are_not_used(self):
+        folder = Path(tempfile.mkdtemp())
+        root, worktree = folder / "main", folder / "wt"
+        for place, page in ((root, "coord/main.md"), (worktree, "coord/branch.md")):
+            place.mkdir()
+            (place / ".task-board.json").write_text(json.dumps({"owner": "o", "project": 1, "repo": REPO,
+                                                                "page": page}))
+        gh = FakeGh(items=[item(3, "Todo")], issues=[issue(3)])
+        board.main(["note", "3", "--finding", "--text", "a finding"], gh=gh, cwd=worktree,
+                   now=board.jobs.utc("2026-11-01T03:00:00Z"), paths=(root, root / ".git" / "task-board"))
+        self.assertTrue((root / "coord" / "main.md").exists())
+        self.assertFalse((root / "coord" / "branch.md").exists())
+
+    def test_page_blocks_print_lines_or_say_they_failed(self):
+        root = Path(tempfile.mkdtemp())
+        self.assertEqual(board.run_blocks(root, ("printf", "## Goals\\n- one\\n")), ["## Goals", "- one"])
+        self.assertIn("failed (exit 1)", board.run_blocks(root, ("false",))[0])
+        self.assertIn("could not run", board.run_blocks(root, ("/no/such/command",))[0])
+        many = board.run_blocks(root, ("seq", "40"))
+        self.assertEqual(len(many), board.BLOCKS_MAX_LINES + 1)
 
 
 def closed_local_port() -> int:
