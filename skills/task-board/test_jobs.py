@@ -215,6 +215,14 @@ class Page(unittest.TestCase):
         self.assertTrue(again.startswith(f"Out of date since {jobs.clock(T0 + timedelta(hours=3))}:"))
         self.assertEqual(stale.splitlines()[1:], page.splitlines()[1:])
 
+    def test_a_time_from_another_day_carries_its_date(self):
+        now = T0 + timedelta(hours=12)
+        self.assertEqual(jobs.clock(now - timedelta(minutes=5), now), jobs.clock(now - timedelta(minutes=5)))
+        yesterday = now - timedelta(days=1)
+        self.assertEqual(jobs.clock(yesterday, now), yesterday.astimezone().strftime("%m-%d %H:%M"))
+        page = self.page(now=now, since=yesterday)
+        self.assertIn(f"## Since you last looked ({yesterday.astimezone().strftime('%m-%d %H:%M')})", page)
+
     def test_waiting_times(self):
         self.assertEqual(jobs.waited(T0, T0 + timedelta(minutes=20)), "20 min")
         self.assertEqual(jobs.waited(T0, T0 + timedelta(hours=30)), "30 h")
