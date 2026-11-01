@@ -142,6 +142,7 @@ class FakeGh:
         self.canonical, self.add_conflict = canonical, add_conflict
         self.owner_type, self.workflows = owner_type, list(workflows)
         self.closed = []  # issues closed by a step, still readable by `gh issue view`
+        self.editors = {}  # issue number -> who last edited its text (GraphQL Issue.editor)
 
     @staticmethod
     def kind(args: tuple) -> str:
@@ -150,7 +151,7 @@ class FakeGh:
             if given["query"] == board.SET_OPTION_MUTATION:
                 return "set-status" if given["field"] == STATUS_FIELD_ID else "set-priority"
             return {board.BOARD_QUERY: "board", board.ADD_ITEM_MUTATION: "add-item",
-                    board.WORKFLOWS_QUERY: "workflows"}[given["query"]]
+                    board.WORKFLOWS_QUERY: "workflows", board.EDITOR_QUERY: "editor"}[given["query"]]
         if args[:3] == ("api", "-H", board.REST_HEADER):
             path = args[-1]
             if path.endswith("/issue-field-values"):
@@ -189,6 +190,9 @@ class FakeGh:
             end = start + self.page_size
             return board_page(self.items[start:end], str(end) if end < len(self.items) else None,
                               owner_type=self.owner_type, priorities=self.priorities)
+        if kind == "editor":
+            editor = self.editors.get(int(given["number"]))
+            return json.dumps({"data": {"repository": {"issue": {"editor": {"login": editor} if editor else None}}}})
         if kind == "workflows":
             return json.dumps({"data": {"repositoryOwner": {"projectV2": {"workflows": {"nodes": [
                 {"name": name, "enabled": enabled} for name, enabled in self.workflows]}}}}})
@@ -278,6 +282,7 @@ class FakeGh:
                     {"number": int(args[args.index("--add-blocked-by") + 1]), "state": "OPEN"})
             if "--body-file" in args:
                 target["body"] = input
+                self.editors[number] = "me"
             return ""
         if kind == "issue-search":
             return json.dumps([{"number": entry["number"], "url": entry.get("url", ""),
@@ -1235,6 +1240,17 @@ class JobsAndPage(unittest.TestCase):
                                         board.jobs.utc("2026-11-01T00:00:00Z"), []).count("**approve:**"), 0)
         with self.assertRaisesRegex(board.Refused, "not a job"):
             made.answer(6, "#6 approve", [typed("#6 approve")])
+
+    def test_progress_on_an_issue_someone_else_opened_shows_until_they_edit_it(self):
+        gh = FakeGh(items=[item(6, "In Progress")], issues=[dict(issue(6, author="contributor"), body="please fix")],
+                    comments={6: [claimed("feature/x")]})
+        made = make_board(gh)
+        made.progress(6, "feature/x", {"goal": "the bug", "step": 1, "of": 2, "now": "reproducing", "next": "fix"})
+        now, since = board.jobs.utc("2026-11-01T03:00:00Z"), board.jobs.utc("2026-11-01T00:00:00Z")
+        self.assertIn("step 1 of 2: reproducing", made.page_text(now, since, []))
+        gh.editors[6] = "contributor"  # they edited the text after the helper did: it is theirs again
+        self.assertIn("no progress written yet", made.page_text(now, since, []))
+        self.assertEqual(gh.kinds().count("editor"), 2, "asked only for the in-progress issue opened by another")
 
     def test_the_page_stays_inside_the_main_checkout(self):
         folder = Path(tempfile.mkdtemp())

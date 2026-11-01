@@ -30,7 +30,7 @@ A project that keeps its tasks on a GitHub board says so in its `CLAUDE.md`, and
 - **The task-board block.** A job, and a work issue with progress, carries its lines as JSON in an HTML comment at the end of its text, under a readable copy. The helper writes the block and checks it on every write and read.
   - **The lines:** each is one line of at most 120 characters, with no bare internal ID. An ID such as E193 needs a plain explanation in parentheses after it. A project may set its own ID pattern (§ Setting up a project's board).
   - **A block in a bad shape** is reported as malformed, never shown as content.
-  - **Only issues the board's login wrote count:** a block in anyone else's issue is ignored.
+  - **Only text the board's login wrote counts:** a block in an issue someone else opened is ignored, unless the helper's own `progress` was the last edit of its text.
 
 ## Running the helper
 
@@ -119,7 +119,7 @@ A project whose `.task-board.json` names a `page` gets one generated page that a
 - **The first line** reads `Updated HH:MM`, or `Out of date since HH:MM: …` when the board could not be read.
 - **Its settings** come from the main checkout's own `.task-board.json`.
 
-**The page is never the record:** it is drawn from the board, and the helper keeps the copy it drew in the main checkout's `.git/task-board/`. The hooks below put back any other change to the page, however it was made, and log it. `check` counts those catches, since each is a sign of a missing helper command.
+**The page is never the record:** it is drawn from the board, and the helper keeps the copy it drew in the main checkout's `.git/task-board/`. The hooks below put back any other change to the page, however it was made, and log it. `check` counts those catches, since each is a sign of a missing helper command. One change goes unlogged: one that lands in the instant between the helper's two writes (its copy, then the page) is overwritten by the helper's own write, so the page is still right, but nothing records the edit.
 
 **A project wires the hooks** in its `.claude/settings.json`:
 ```json

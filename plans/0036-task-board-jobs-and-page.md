@@ -248,6 +248,12 @@ Global `CLAUDE.md`, § General: the exception for filing a job for the user (abo
 - **A stranger's block:** a block counts only in an issue the board's login wrote. On a public repository a stranger's issue could otherwise show as a job, or hide work from `ready`.
 - **Whose settings:** the page's settings, including the `page_blocks` command, come from the main checkout's own `.task-board.json`, not from a worker's branch. The page's real path must stay inside the main checkout.
 
+**`/codex-review` of the build at `aec60ee`: CHANGES REQUESTED, two MEDIUMs, both accepted.**
+- **A progress block in an issue someone else opened was ignored,** although the helper wrote it. A work block now also counts when the board's login was the last to edit the issue's text, read from GraphQL's `Issue.editor` for in-progress issues opened by another account. When that account edits the text again, it is theirs again, and the block no longer counts.
+- **One hand edit can go unlogged:** one landing between the helper's two writes, copy and then page, is overwritten by the helper's own page write. The page ends right, but no line records the edit.
+  - **Decided:** the window is the time between two `os.replace` calls, so `SKILL.md` now says this, rather than adding machinery to catch it.
+  - **Correction:** the earlier claim that every change is logged was too strong.
+
 **Not done yet:**
 - **No live run.** Nothing here has run against a real board, and no Claude Code session has run the hooks wired: the end-to-end checks in § Verification need a scratch project and board.
 - **Not measured:** how long one GitHub read takes per redraw (§ To check during the build).

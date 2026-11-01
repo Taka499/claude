@@ -131,6 +131,10 @@ SET_OPTION_MUTATION = """mutation($project: ID!, $item: ID!, $field: ID!, $optio
     projectV2Item { id }
   }
 }"""
+# Who last edited an issue's text. `gh issue view --json` has no such field; GraphQL's Issue.editor does.
+EDITOR_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { issue(number: $number) { editor { login } } }
+}"""
 ADD_ITEM_MUTATION = """mutation($project: ID!, $content: ID!) {
   addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } }
 }"""
@@ -465,9 +469,11 @@ def missing_from_board(items: list, issues: list, repo: str) -> list:
 
 def block_of(issue: dict, pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None):
     """An issue's task-board block, as jobs.read_block gives it: (data, None), (None, None) or (None, reason).
-    With `login`, only an issue written by that account, the one every session acts as, can hold a block: on a
-    public repository anyone can open an issue, and a stranger's block must neither show as a job nor hide work."""
-    if login is not None and ((issue.get("author") or {}).get("login") or "") != login:
+    With `login`, only an issue whose text that account, the one every session acts as, opened or last edited can
+    hold a block: on a public repository anyone can open an issue, and a stranger's block must neither show as a
+    job nor hide work. "editor" is present only where it was asked for (Board.with_editors)."""
+    if login is not None and login not in (((issue.get("author") or {}).get("login") or ""),
+                                           issue.get("editor") or ""):
         return None, None
     return jobs.read_block(issue.get("body") or "", pattern)
 
@@ -1147,8 +1153,25 @@ class Board:
             raise Refused(f"#{number} is not an open issue")
         self.comment(number, f"{NOTE_MARKS[kind]} {text}")
 
+    def with_editors(self, issues: list, items: list) -> list:
+        """The open issues, those in progress and opened by another account carrying who last edited their text:
+        the helper's own `progress` write then still counts there."""
+        login, owner, name = self.login(), *self.config.repo.split("/", 1)
+        in_progress = {item["content"]["number"] for item in items if status_of(item) == IN_PROGRESS
+                       and item["content"]["type"] == "Issue" and repo_of(item["content"]) == self.config.repo}
+        enriched = []
+        for issue in issues:
+            if issue["number"] in in_progress and ((issue.get("author") or {}).get("login") or "") != login:
+                found = graphql_data(self.graphql(EDITOR_QUERY, f"owner={owner}", f"name={name}",
+                                                  f"number={issue['number']}"))
+                editor = (((found.get("repository") or {}).get("issue") or {}).get("editor") or {}).get("login")
+                issue = dict(issue, editor=editor or "")
+            enriched.append(issue)
+        return enriched
+
     def page_text(self, now: datetime, since: datetime, blocks: list) -> str:
-        items, issues = self.items(), self.open_issues()
+        items = self.items()
+        issues = self.with_editors(self.open_issues(), items)
         found_jobs, work = page_parts(items, issues, self.config.repo, self.config.id_pattern, self.login())
         happened = events(self.updated_since(since), self.login())
         more = f"https://github.com/{self.config.repo}/issues?q=sort%3Aupdated-desc"
