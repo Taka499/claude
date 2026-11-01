@@ -164,7 +164,7 @@ python3 -I ~/.claude/skills/codex-review/commands_check.py "$snapshot/review.txt
 
 It exits 0 when two things hold for every command Codex ran:
 - **where it ran:** in the snapshot;
-- **what it names:** every word, resolved as a path, lands inside the snapshot or under a system prefix such as `/usr/`. A bare variable such as `"$f"` is left out only when the script sets it itself, with `f=…`, `for f in`, `select` or `read`. Any other variable is flagged, and `$HOME` counts as home.
+- **what it names:** every word, resolved as a path, lands inside the snapshot or under a system prefix such as `/usr/`. A bare variable such as `"$f"` is left out only when it is the variable of a `for` or `select` loop over plain words, whose words are checked themselves. Any other variable is flagged, and `$HOME` counts as home.
 
 **How a word is resolved:** against the command's own working directory.
 - **Expanded first:** `~`, `~user` and `$HOME`, then a shell's brace patterns such as `{a,b}`.

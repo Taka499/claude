@@ -18,8 +18,9 @@ globs matched against the files there (every match checked), symlinks
 followed. So `../` out of the snapshot, a link into the repository (such as
 those under ~/.claude), or a bare name of such a link, is caught like the
 repository's own path. A `#` inside a script starts no comment here, so no
-word after it goes unread. A bare variable (`"$f"`) is left out only when the
-script sets it; any other variable, or `~` for an unknown user, fails.
+word after it goes unread. A bare variable (`"$f"`) is left out only when it
+is a `for`/`select` loop's over plain words; any other variable, or `~` for an
+unknown user, fails.
 
 It fails closed: a log with no records, a record with no status line after
 it, a record or script that will not split, or a brace it cannot expand, is
@@ -164,7 +165,7 @@ def path_tokens(script):
 
     Each word is brace-expanded, then kept whole and also split at `=` and
     `,` (`--file=/p`, `a,/p`). A bare variable such as `"$f"` is left out only
-    when the script sets it (assigned_names).
+    when it is a loop's over plain words (assigned_names).
     """
     found = words(script)
     if found is None:
@@ -184,27 +185,24 @@ def path_tokens(script):
 
 
 def assigned_names(found):
-    """Names the script itself sets: `name=…`, `for name in`, `select name in`, `read name…`.
+    """The variables of `for name in …` and `select name in …` loops whose lists are plain words.
 
-    A bare `$name` of one of these is left out, since its value was named, and
-    checked, where it was set. Any other bare variable is checked, which fails
-    it as a path through a variable; `$HOME` resolves to home, outside the
-    snapshot.
+    A bare `$name` of one of these is left out: each value is a word of the
+    list, and the list's words are checked themselves. Any other bare variable
+    is checked, which fails it as a path through a variable, since its value
+    comes from elsewhere (`name=…` can be any word, `read` fills one at run
+    time); `$HOME` resolves to home, outside the snapshot.
     """
     names = set()
     for i, w in enumerate(found):
-        m = re.match(r"^(\w+)=", w)
-        if m:
-            names.add(m.group(1))
-        if w in ("for", "select") and i + 1 < len(found):
-            names.add(found[i + 1])
-        if w == "read":
-            for x in found[i + 1:]:
-                if not re.fullmatch(r"\w+", x):
-                    if x.startswith("-"):
-                        continue
+        if w in ("for", "select") and i + 2 < len(found) and found[i + 2] == "in":
+            items = []
+            for x in found[i + 3:]:
+                if x in (";", "do", "\n") or x in ("&&", "||", "|", "&"):
                     break
-                names.add(x)
+                items.append(x)
+            if items and not any("$" in x or "`" in x for x in items):
+                names.add(found[i + 1])
     return names
 
 

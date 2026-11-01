@@ -138,12 +138,16 @@ class Check(unittest.TestCase):
                 self.assertEqual(why, [f"names the repository: {token}"])
 
     def test_bare_variables(self):
-        loop = record("/bin/zsh -lc 'for f in a.md b.md; do nl -ba \"$f\"; done; g=c.md; read -r h; cat $g $h'",
-                      self.snap)
+        loop = record("/bin/zsh -lc 'for f in a.md b.md; do nl -ba \"$f\"; done'", self.snap)
         self.assertEqual(self.bad(loop), [])
+        var = "a path through a variable or an unknown user's ~: "
+        for script, token in (("for f in $(ls); do cat \"$f\"; done", "$f"), ("g=c.md; cat $g", "$g"),
+                              ("read -r h; cat $h", "$h"), ("echo f=ok; touch $f", "$f")):
+            with self.subTest(script=script):
+                why = self.bad(record(f"/bin/zsh -lc '{script}'", self.snap))[0][1]
+                self.assertIn(var + token, why)
         why = self.bad(record("/bin/zsh -lc 'touch \"$OLDPWD\" $HOME'", self.snap))[0][1]
-        self.assertEqual(why, ["a path through a variable or an unknown user's ~: $OLDPWD",
-                               "a path outside the snapshot: $HOME"])
+        self.assertEqual(why, [var + "$OLDPWD", "a path outside the snapshot: $HOME"])
 
     def test_a_record_with_no_status_line_fails_closed(self):
         text = f'exec\n/bin/zsh -lc "git diff" in {self.snap}\n'

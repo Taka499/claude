@@ -158,6 +158,11 @@ Codex could not run the tests in its read-only sandbox, since `TemporaryDirector
   - **Why:** it would flag every search pattern holding `*`, such as `rg "foo.*bar"`.
   - **What is lost:** nothing that writes. A glob that matches nothing makes zsh stop, and bash passes it on as the literal path, which the check resolves.
 
+**Its third round, on `91fde17`: one finding, fixed.**
+- **The finding:** the exemption for variables the script sets could be fooled. `echo f=ok` counted as setting `f`, and `read` fills a variable at run time.
+- **The fix removes rules rather than adding one.** Only the variable of a `for` or `select` loop over plain words stays exempt, and any other bare variable is flagged.
+- **The cost:** a script like `g=c.md; cat $g` now needs a look by hand. None of this session's real logs had one; their loops were all `for f in <files>`.
+
 **Real logs:** of this session's ten, 23 commands in all, five pass. The other five are flagged:
 - three read-only searches;
 - the echoed example record;
