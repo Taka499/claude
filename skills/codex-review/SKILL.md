@@ -104,7 +104,7 @@ git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapsho
 touch "$snapshot/started" || exit 1
 ```
 
-**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, writing `<repository>` wherever step 3 has `"$snapshot/repo"` (the `cd`, the prompt, and the stdin form's `grep`), keep step 4 exactly as written, and say in the report that no snapshot was used.
+**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, writing `<repository>` wherever step 3 has `"$snapshot/repo"` (the `cd`, the prompt, and the stdin form's `grep`), and say in the report that no snapshot was used. In step 4, set `canaries=("$snapshot/codex-canary")` and run the canary from `"$snapshot"` instead of `"$snapshot/repo"`: never point a canary into the repository. The block then expects one refusal. The rest of step 4 is unchanged.
 
 ### 3. Run Codex
 
@@ -120,8 +120,10 @@ Answer these specifically:
 
 List one bullet per finding, each with a severity. Then end the ENTIRE response with
 exactly one final line and nothing after it:
-'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'." < /dev/null
+'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'." < /dev/null > "$snapshot/review.txt" 2>&1
 ```
+
+Either form saves Codex's whole log to `"$snapshot/review.txt"`; step 4 reads the run's sandbox mode from its header.
 
 **In a worktree-isolated session (EnterWorktree), feed the prompt through a file on stdin.** The harness there refuses any shell command whose quoted text mentions `git` — and this prompt does, in `git diff` — and the `-c 'approval_policy="never"'` flag trips the same check. Write the prompt to `"$snapshot/prompt.txt"` with the Write tool and run
 
@@ -130,7 +132,7 @@ exactly one final line and nothing after it:
 cd "$snapshot/repo" && codex exec --sandbox read-only - < "$snapshot/prompt.txt" > "$snapshot/review.txt" 2>&1
 ```
 
-`-` makes `codex exec` read the prompt from stdin, so the `< /dev/null` rule above is satisfied by the file itself; `codex exec` is non-interactive, so dropping the approval flag changes nothing. Measured 2026-09-27 (gakumas-supportcards): the inline form was refused three times with "names git in a form too complex to verify", the stdin form ran to a verdict twice.
+`-` makes `codex exec` read the prompt from stdin, so the `< /dev/null` rule above is satisfied by the file itself; the approval mode then comes from Codex's configuration, and step 4 reads the effective one from the run's header. Measured 2026-09-27 (gakumas-supportcards): the inline form was refused three times with "names git in a form too complex to verify", the stdin form ran to a verdict twice.
 
 **Keep the prompt and the output inside this review's snapshot, never at a fixed path in `$TMPDIR`.** Every session on the machine shares `$TMPDIR`, so a fixed name such as `$TMPDIR/codex-prompt.txt` can hold another session's prompt, for another project. The Write tool refuses to overwrite a file it has not read this session. If the Codex command then runs anyway, it reviews that other prompt, in that other snapshot, and sends that project's diff to OpenAI. The `grep` above stops it: a prompt that does not name this snapshot's `repo` path in full, as the template above does, is not this review's. Each Bash call is a fresh shell, so `$snapshot` is empty unless this command sets it again to the path step 2 created; the `[ -n "$snapshot" ]` refuses then, rather than relying on `/prompt.txt` not existing. A fresh `mktemp -d` per review gives each prompt a folder no one else writes. Start Codex only once the Write has reported success, never in the same turn as the Write: a command issued alongside it runs before you can see whether the Write failed. Measured 2026-10-29 (gmks-hif-final-stats): the session started Codex in the same turn as a Write that was refused, so a stale prompt from another session ran for a second, ran one `git diff` in that session's snapshot of a different project, and sent the diff out, before it was stopped.
 
@@ -144,7 +146,28 @@ Codex output is long — read the tail for the findings and the verdict. That is
 
 ### 4. Check the repository was not touched
 
-List every file in the repository whose content or metadata changed since the snapshot was taken, `.git` included, and compare its refs:
+First establish whether Codex could write at all. Step 4 exists for the day its read-only sandbox is not in force: a mistyped flag, or a CLI upgrade that stops enforcing it. Both are checked directly, with no need to read what Codex did:
+
+```bash
+canaries=("$snapshot/repo/.codex-canary" "$snapshot/codex-canary")
+awk 'NR == 1 && !/^OpenAI Codex v/ { exit 1 } /^--------$/ { n++; next } n == 1 { print } n == 2 { found = 1; exit } END { exit !found }' "$snapshot/review.txt" > "$snapshot/header.txt"; header=$?
+(cd "$snapshot/repo" && codex sandbox -c 'sandbox_mode="read-only"' -- touch "${canaries[@]}") > "$snapshot/canary.txt" 2>&1 < /dev/null
+held=yes
+[ "$header" -eq 0 ] && grep -qx 'sandbox: read-only' "$snapshot/header.txt" && grep -qx 'approval: never' "$snapshot/header.txt" || held=no
+[ "$(grep -c 'codex-canary: Operation not permitted' "$snapshot/canary.txt")" -eq "${#canaries[@]}" ] || held=no
+for c in "${canaries[@]}"; do [ ! -e "$c" ] || held=no; done
+[ "$held" = yes ] && echo "SANDBOX HELD" || echo "SANDBOX NOT SHOWN"
+```
+
+- **The run's own header** names the mode its commands ran under. A wrong `--sandbox` value, or an approval mode that could let a command out, shows there.
+  - **Which lines count:** only those between the log's first two `--------` lines, under its `OpenAI Codex v…` banner.
+  - **A missing header fails:** without that structure the header counts as absent, so lines the model writes later in the log cannot stand in for it.
+- **The canary** runs `touch` under the same CLI's read-only sandbox, with no model involved. It writes once inside the snapshot and once beside it. Both must be refused with `Operation not permitted`, and neither file may exist.
+  - **What was measured** on 2026-11-01 with codex-cli 0.150.1: read-only refused both writes, while `workspace-write` and `danger-full-access` made both files.
+  - **Why `cd` rather than `-C`:** in that version, `codex sandbox -C <dir>` refuses to run without a `--permission-profile`.
+  - **Why the CLI runs it, not Codex:** asked in a prompt to run the same `touch`, Codex answered "I'll run the exact command now" and then ran nothing. A canary that rests on the model's compliance proves nothing.
+
+Then list every file in the repository whose content or metadata changed since the snapshot was taken, `.git` included, and compare its refs:
 
 ```bash
 find <repository> -cnewer "$snapshot/started" -print > "$snapshot/written.txt" || exit 1
@@ -152,9 +175,32 @@ git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapsho
 cat "$snapshot/written.txt"; diff "$snapshot/refs-before.txt" "$snapshot/refs-after.txt"
 ```
 
-`-cnewer` compares the inode change time, which every write and every permission change updates: a commit, a ref, an edited, new or `chmod`ed file, tracked, untracked or ignored. A deleted file shows as its directory. The file system here (APFS) keeps nanosecond times, so a write just after the marker is not lost to rounding. What it cannot catch is a process that sets times back deliberately. Codex's read-only sandbox stops that too, but this step exists for the case where that sandbox is not in force.
+`-cnewer` compares the inode change time, which every write and every permission change updates: a commit, a ref, an edited, new or `chmod`ed file, tracked, untracked or ignored. A deleted file shows as its directory. The file system here (APFS) keeps nanosecond times, so a write just after the marker is not lost to rounding. What it cannot catch is a process that sets times back deliberately; the canary shows whether Codex could have.
 
-Some entries can be your own. A `git status` or `git diff` run in the repository during the review may refresh `.git/index`, and anything you edited there yourself shows up too. Anything listed that you did not write is Codex's. Stop and report it to the user as an incident, before any finding. Name what changed (a ref, a commit and its author, a file), and do not undo it on your own, because the global Git rules forbid rewriting history and deleting untracked files without the user's permission. A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
+**`SANDBOX HELD` is evidence, not proof.**
+- **What it shows:** the run was configured read-only with no approvals, and the same CLI's read-only sandbox refused writes when tested.
+- **What it cannot show:** that every command of that run was refused. The canary is a separate process, run afterwards.
+
+So it never excuses an entry by itself. Each listed entry is one of two cases:
+- **Explained:** on `SANDBOX HELD`, an entry that one of the kinds below explains, by its own evidence. Note it in the report with that evidence, for example "9 objects: the plugin's baseline, logged 14:59:57". It is not Codex's. A wrong excuse would then need two failures at once: the sandbox evidence wrong, and the write imitating a known writer.
+- **Not explained:** any other entry you did not write, and every such entry on `SANDBOX NOT SHOWN`. It is Codex's: stop and report it to the user as an incident, before any finding.
+
+On `SANDBOX NOT SHOWN`, also say that the review ran without a proven sandbox, and which check failed, even with nothing listed; `header.txt` or `canary.txt` shows which.
+
+Either way:
+- **Do not undo anything on your own.** Name what changed (a ref, a commit and its author, a file). The global Git rules forbid rewriting history and deleting untracked files without the user's permission.
+- **The findings still count.** A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
+
+The kinds of entry known to come from elsewhere:
+
+- **Your own.** A `git status` or `git diff` run in the repository during the review may refresh `.git/index`, and anything you edited there yourself shows up too.
+- **A process that polls the index.** An editor's git integration, or another session's `git status`, creates and removes `.git/index.lock` every few seconds. So `.git` itself, and sometimes `.git/index`, shows up with nothing else inside `.git` changed. (gakumas-supportcards, 2026-11-01: about 150 changes of `.git` in a 75-second watch, with only `index.lock` seen coming and going.)
+- **The `security-guidance` plugin.** Where it is installed with its review on, it writes loose objects under `.git/objects/`, all unreferenced, and logs each write in `~/.claude/security/log.txt`:
+  - **At each prompt** to the session, a background task's completion notice included, with uncommitted changes in the repository: its UserPromptSubmit hook runs `git stash create` on a copy of the index. That writes two commits titled "WIP on <branch>: …" and "index on <branch>: …", their trees and blobs, logged as `Captured git baseline: <the WIP commit's first 12 characters>`.
+  - **At a turn's end,** with untracked files: its Stop hook's `git add -N` writes the empty blob `e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`, at the time of a `Stop hook:` line.
+  - **After a commit or push it reviews:** it keeps its own state in `.git/sg-reviewed-shas` and `.git/sg-reviewed-diffs`.
+
+  (This repository, 2026-11-01, plugin 2.0.17.)
 
 ### 5. Evaluate every finding — this is the step that is not optional
 
@@ -179,6 +225,7 @@ Then report, in one message:
 
 - what was reviewed, and what was deliberately out of scope
 - the Codex verdict, verbatim
+- step 4's result: `SANDBOX HELD` or `NOT SHOWN`, and each listed entry with what explains it
 - your evaluation: accepted, rejected with reasons, and anything Codex missed
 - residual risk the change does *not* address
 - gate results
