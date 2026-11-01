@@ -26,6 +26,13 @@ Usage:
     python3 -I board.py claim N --branch BRANCH [--worktree PATH]
     python3 -I board.py release N --branch BRANCH --reason TEXT
     python3 -I board.py done N --branch BRANCH --evidence TEXT
+    python3 -I board.py ask --kind KIND --title TITLE [--option "A|text|cost" ...] [--recommend "A|why"]
+                            [--summary TEXT] [--holds-up 298,301] [--note TEXT]   (a job for the user: plan 0036)
+    python3 -I board.py answer N --quote "the user's own words"   (closes a job, only on the user's typed words)
+    python3 -I board.py job-state N [--json]
+    python3 -I board.py progress N --branch BRANCH --goal TEXT --step S --of M --now TEXT --next TEXT
+    python3 -I board.py note N (--decided | --finding) --text TEXT
+    python3 -I board.py page                                    (draw the attention page, where .task-board.json names one)
 Exit status: 0 done, 1 bad usage or configuration, 2 gh failed or answered in an unexpected shape, 3 refused (wrong
 state, or another session's claim).
 Tests: python3 -m unittest discover -s skills/task-board
@@ -33,12 +40,20 @@ Tests: python3 -m unittest discover -s skills/task-board
 from __future__ import annotations
 
 import argparse
+import glob
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field as dataclass_field, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# -I leaves this file's folder off sys.path; jobs.py sits beside it.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import jobs  # noqa: E402  (after the path line above)
 
 CONFIG_FILE = ".task-board.json"
 STATUS_FIELD, PRIORITY_FIELD = "Status", "Priority"
@@ -49,6 +64,13 @@ TRIAGE, TODO, IN_PROGRESS, DONE = "Triage", "Todo", "In Progress", "Done"
 STATUSES = (TRIAGE, TODO, IN_PROGRESS, DONE)
 # Markers at the start of the comments this script writes, so a later run can read the claim history back.
 CLAIM, RELEASE, DONE_MARK = "task-board claim:", "task-board release:", "task-board done:"
+ANSWER_MARK = "task-board answer:"
+NOTE_MARKS = {"decided": "task-board decided:", "finding": "task-board finding:"}
+# The comments the page's "Since you last looked" shows, and how it words each.
+EVENT_MARKS = ((ANSWER_MARK, "answered"), (DONE_MARK, "done"), (NOTE_MARKS["decided"], "coord decided"),
+               (NOTE_MARKS["finding"], "found"))
+STATE_DIR = "task-board"  # inside the main checkout's .git: the page's generated copy, the last-seen stamp, the log
+BLOCKS_TIMEOUT, BLOCKS_MAX_LINES = 30, 30
 LIMIT = "1000"  # gh's list commands default to 30 items
 # The REST version every REST call names. Supported until at least 2028-03-10; `check` warns when GitHub marks it
 # deprecated or stops listing it.
@@ -109,6 +131,10 @@ SET_OPTION_MUTATION = """mutation($project: ID!, $item: ID!, $field: ID!, $optio
     projectV2Item { id }
   }
 }"""
+# Who last edited an issue's text. `gh issue view --json` has no such field; GraphQL's Issue.editor does.
+EDITOR_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { issue(number: $number) { editor { login } } }
+}"""
 ADD_ITEM_MUTATION = """mutation($project: ID!, $content: ID!) {
   addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } }
 }"""
@@ -131,6 +157,9 @@ class Config:
     owner: str
     project: int
     repo: str
+    page: str | None = None  # the attention page, relative to the main checkout's root (plan 0036)
+    page_blocks: tuple = ()  # a command, run from that root, whose output the page shows after Needs you
+    id_pattern: str = jobs.DEFAULT_ID_PATTERN  # what counts as an internal ID that needs a plain explanation
 
 
 @dataclass(frozen=True)
@@ -170,7 +199,18 @@ def parse_config(text: str) -> Config:
         raise BoardError(f"{CONFIG_FILE} must hold owner, project (a number) and repo: {error}") from None
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", config.repo):
         raise BoardError(f"{CONFIG_FILE}: repo must be owner/name, not {config.repo!r}")
-    return config
+    page, blocks, pattern = data.get("page"), data.get("page_blocks", []), data.get("id_pattern")
+    if page is not None and (not isinstance(page, str) or not page or Path(page).is_absolute()
+                             or ".." in Path(page).parts):
+        raise BoardError(f"{CONFIG_FILE}: page must be a path inside the repository, not {page!r}")
+    if not isinstance(blocks, list) or not all(isinstance(word, str) and word for word in blocks):
+        raise BoardError(f"{CONFIG_FILE}: page_blocks must be a command as a list of words, not {blocks!r}")
+    if pattern is not None:
+        try:
+            re.compile(pattern)
+        except (re.error, TypeError) as error:
+            raise BoardError(f"{CONFIG_FILE}: id_pattern is not a regular expression: {error}") from None
+    return replace(config, page=page, page_blocks=tuple(blocks), id_pattern=pattern or jobs.DEFAULT_ID_PATTERN)
 
 
 def graphql_data(response_json: str) -> dict:
@@ -427,8 +467,31 @@ def missing_from_board(items: list, issues: list, repo: str) -> list:
     return sorted(issue["number"] for issue in issues if item_for(items, issue["number"], repo) is None)
 
 
-def ready_candidates(items: list, issues: list, repo: str) -> list:
-    """Numbers of the board's items for open issues of this repository with Status Todo and no open blocker."""
+def block_of(issue: dict, pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None):
+    """An issue's task-board block, as jobs.read_block gives it: (data, None), (None, None) or (None, reason).
+    With `login`, only an issue whose text that account, the one every session acts as, opened or last edited can
+    hold a block: on a public repository anyone can open an issue, and a stranger's block must neither show as a
+    job nor hide work. "editor" is present only where it was asked for (Board.with_editors)."""
+    if login is not None and login not in (((issue.get("author") or {}).get("login") or ""),
+                                           issue.get("editor") or ""):
+        return None, None
+    return jobs.read_block(issue.get("body") or "", pattern)
+
+
+def is_job(issue: dict, pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None) -> bool:
+    data, _ = block_of(issue, pattern, login)
+    return bool(data) and data["kind"] in jobs.JOB_KINDS
+
+
+def malformed(issues: list, pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None) -> list:
+    """(number, reason) of each open issue whose task-board block is malformed."""
+    return [(issue["number"], error) for issue in issues for _, error in [block_of(issue, pattern, login)] if error]
+
+
+def ready_candidates(items: list, issues: list, repo: str, pattern: str = jobs.DEFAULT_ID_PATTERN,
+                     login: str | None = None) -> list:
+    """Numbers of the board's items for open issues of this repository with Status Todo and no open blocker. A job
+    for the user is never ready work, and neither is an issue whose block is malformed: it might be one."""
     open_issues = {issue["number"]: issue for issue in issues}
     numbers = []
     for item in items:
@@ -436,12 +499,16 @@ def ready_candidates(items: list, issues: list, repo: str) -> list:
         number = content.get("number")
         if content.get("type") != "Issue" or repo_of(content) != repo or number not in open_issues:
             continue
+        data, error = block_of(open_issues[number], pattern, login)
+        if error or (data and data["kind"] in jobs.JOB_KINDS):
+            continue
         if status_of(item) == TODO and not open_blockers(open_issues[number], set(open_issues), repo):
             numbers.append(number)
     return numbers
 
 
-def ready(items: list, issues: list, repo: str, priorities, priority_of: dict) -> list:
+def ready(items: list, issues: list, repo: str, priorities, priority_of: dict,
+          pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None) -> list:
     """Ready work, ordered by Priority (most urgent first; an issue without one counts as the middle option), then
     oldest first. `priority_of` maps an issue number to its Priority, or "" for none. Each entry: number, title,
     priority, created."""
@@ -449,7 +516,7 @@ def ready(items: list, issues: list, repo: str, priorities, priority_of: dict) -
     rank = {priority: index for index, priority in enumerate(priorities)}
     default = priorities[len(priorities) // 2]
     result = []
-    for number in ready_candidates(items, issues, repo):
+    for number in ready_candidates(items, issues, repo, pattern, login):
         priority = priority_of.get(number) or default
         result.append({"number": number, "title": open_issues[number].get("title", ""), "priority": priority,
                        "created": open_issues[number].get("createdAt", "")})
@@ -492,6 +559,155 @@ def last_marker(comments: list, login: str):
                 words = body[len(marker):].replace(":", " ").split()
                 last = (kind, words[0] if words else "")
     return last
+
+
+def holds_up(job: int, issues: list, repo: str) -> list:
+    """(number, url) of each open issue that job `job` holds up: those it blocks, through GitHub's dependency."""
+    open_numbers = {issue["number"] for issue in issues}
+    return [(issue["number"], issue.get("url", "")) for issue in issues
+            if job in open_blockers(issue, open_numbers, repo)]
+
+
+def page_parts(items: list, issues: list, repo: str, pattern: str = jobs.DEFAULT_ID_PATTERN,
+               login: str | None = None):
+    """(the open jobs, oldest first; the In Progress work), shaped as jobs.render_page takes them. An open issue
+    whose block is malformed and that is not in progress is listed with the jobs, so it is seen, as malformed."""
+    open_issues = {issue["number"]: issue for issue in issues}
+    status = {item["content"]["number"]: status_of(item) for item in items
+              if item["content"]["type"] == "Issue" and repo_of(item["content"]) == repo}
+    job_numbers = {number for number, issue in open_issues.items() if is_job(issue, pattern, login)}
+    found_jobs, work = [], []
+    for number, issue in open_issues.items():
+        data, error = block_of(issue, pattern, login)
+        entry = {"number": number, "title": issue.get("title", ""), "url": issue.get("url", ""),
+                 "data": data, "malformed": error}
+        if number in job_numbers or (error and status.get(number) != IN_PROGRESS):
+            entry.update(created=jobs.utc(issue["createdAt"]), holds_up=holds_up(number, issues, repo))
+            found_jobs.append(entry)
+        elif status.get(number) == IN_PROGRESS:
+            blockers = open_blockers(issue, set(open_issues), repo)
+            entry.update(data=data if data and data["kind"] == jobs.WORK else None,
+                         waits_on_you=any(blocker in job_numbers for blocker in blockers))
+            work.append(entry)
+    return sorted(found_jobs, key=lambda e: (e["created"], e["number"])), sorted(work, key=lambda e: e["number"])
+
+
+def events(issues: list, login: str) -> list:
+    """(time, number, url, text) of this account's marked comments: answers, done, the coordinator's own calls and
+    findings. Each text is cut to one line of the page; the page keeps those since the user last looked."""
+    found = []
+    for issue in issues:
+        for comment in own_comments(issue.get("comments") or [], login):
+            at = jobs.utc(comment["createdAt"])
+            body = " ".join((comment.get("body") or "").split())
+            for mark, word in EVENT_MARKS:
+                if body.startswith(mark):
+                    text = f"{word}: {body[len(mark):].strip()}"
+                    cut = jobs.LINE_MAX - 20
+                    found.append((at, issue["number"], issue.get("url", ""),
+                                  text if len(text) <= cut else text[:cut - 1] + "…"))
+    return found
+
+
+def answer_of(comments: list, login: str):
+    """The answer that closed a job, from this account's latest answer comment, or None."""
+    answer = None
+    for comment in own_comments(comments, login):
+        body = (comment.get("body") or "").strip()
+        if body.startswith(ANSWER_MARK):
+            words = body[len(ANSWER_MARK):].split()
+            answer = words[0] if words else None
+    return answer
+
+
+def parse_option(text: str) -> dict:
+    """An --option of `ask`: "A|text|cost"."""
+    parts = text.split("|", 2)
+    if len(parts) != 3:
+        raise BoardError(f"--option takes \"KEY|text|cost\", not {text!r}")
+    return {"key": parts[0].strip(), "text": parts[1].strip(), "cost": parts[2].strip()}
+
+
+def last_seen(state: Path | None, now: datetime) -> datetime:
+    """When the user last looked: the stamp the coordinator's Stop hook writes, or a day ago without one."""
+    try:
+        return jobs.utc((state / "seen").read_text().strip())
+    except (OSError, ValueError, TypeError, AttributeError):
+        return now - timedelta(days=1)
+
+
+def write_atomically(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    with os.fdopen(handle, "w") as out:
+        out.write(text)
+    os.replace(temporary, path)
+
+
+def write_page(root: Path, state: Path, page: str, text: str) -> Path:
+    """The generated copy first, then the page: the hooks restore the page from the copy, and with the copy written
+    first, the page's own write never reads as a hand edit. The page's real path must stay inside the main
+    checkout, so a symlinked folder cannot send the write elsewhere."""
+    target = page_target(root, page)
+    write_atomically(state / "page.md", text)
+    write_atomically(target, text)
+    return target
+
+
+def page_target(root: Path, page: str) -> Path:
+    """The page's real path, which must stay inside the main checkout: OSError otherwise. Every write of the page,
+    the helper's and the restore hook's, goes through here."""
+    target = (root / page).resolve()
+    if not target.is_relative_to(root.resolve()):
+        raise OSError(f"the page {page} resolves to {target}, outside {root}")
+    return target
+
+
+def main_checkout_config(config: Config, root) -> Config:
+    """The page's settings, which can name a command (page_blocks), come from the main checkout's own
+    .task-board.json, not from whatever branch a worker's worktree has checked out."""
+    if root is None:
+        return replace(config, page=None, page_blocks=())
+    try:
+        own = parse_config((root / CONFIG_FILE).read_text())
+    except (OSError, BoardError):
+        return replace(config, page=None, page_blocks=())
+    return replace(config, page=own.page, page_blocks=own.page_blocks, id_pattern=own.id_pattern)
+
+
+def checkout_paths(cwd: Path):
+    """(the main checkout's root, its .git/task-board folder), from any worktree of it; (None, None) when git
+    cannot say, such as in a bare repository."""
+    try:
+        common = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd,
+                                capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    folder = Path(common.stdout.strip()) if common.returncode == 0 else None
+    if folder is None or folder.name != ".git":
+        return None, None
+    return folder.parent, folder / STATE_DIR
+
+
+def transcript_records(environ: dict, home: Path) -> list:
+    """The records of this session's own transcript: Claude Code names its session in CLAUDE_CODE_SESSION_ID, the
+    transcript's file name, under the projects folder of its configuration (CLAUDE_CONFIG_DIR, else ~/.claude)."""
+    session = environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not re.fullmatch(r"[\w-]+", session):
+        raise Refused("this is not a Claude Code session (no CLAUDE_CODE_SESSION_ID), so the user's words cannot be"
+                      " checked; answer from the session the user typed in")
+    config = Path(environ.get("CLAUDE_CONFIG_DIR") or home / ".claude")
+    found = glob.glob(str(config / "projects" / "*" / f"{session}.jsonl"))
+    if len(found) != 1:
+        raise Refused(f"found {len(found)} transcripts for this session under {config / 'projects'}, not one")
+    records = []
+    with open(found[0], errors="replace") as transcript:
+        for line in transcript:
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue
+    return records
 
 
 # ---- gh at the edge ---------------------------------------------------------------------------------------------
@@ -579,7 +795,17 @@ class Board:
 
     def open_issues(self) -> list:
         return json.loads(self.gh.run("issue", "list", "--repo", self.config.repo, "--state", "open", "--limit",
-                                      LIMIT, "--json", "number,title,createdAt,blockedBy"))
+                                      LIMIT, "--json", "number,title,createdAt,blockedBy,body,url,author"))
+
+    def issue(self, number: int) -> dict:
+        return json.loads(self.gh.run("issue", "view", str(number), "--repo", self.config.repo, "--json",
+                                      "number,title,body,state,createdAt,url,author"))
+
+    def updated_since(self, since: datetime) -> list:
+        """Issues of any state updated on or after `since`'s day, with their comments: what Since reads."""
+        day = since.astimezone(timezone.utc).strftime("%Y-%m-%d")
+        return json.loads(self.gh.run("issue", "list", "--repo", self.config.repo, "--state", "all", "--limit",
+                                      LIMIT, "--search", f"updated:>={day}", "--json", "number,url,comments"))
 
     def login(self) -> str:
         """The account the token belongs to: every session's comments are written as it."""
@@ -686,6 +912,8 @@ class Board:
         lines.append("ok: no workflow sets a Status on items as they are added")
         issues = self.open_issues()
         lines.append(f"ok: {len(issues)} open issue(s) in {self.config.repo}")
+        for number, error in malformed(issues, self.config.id_pattern, self.login()):
+            lines.append(f"warn: #{number}: {error}; fix it with the helper")
         on_board = [item["content"]["number"] for item in items
                     if item["content"]["type"] == "Issue" and repo_of(item["content"]) == self.config.repo]
         for number in on_board[:3]:
@@ -722,9 +950,12 @@ class Board:
     def ready(self) -> list:
         items, issues = self.items(), self.open_issues()
         priorities = self.priority_field().priorities
-        candidates = ready_candidates(items, issues, self.config.repo)
+        pattern, login = self.config.id_pattern, self.login()
+        for number, error in malformed(issues, pattern, login):
+            self.warnings.append(f"#{number} is left out of ready work: {error}")
+        candidates = ready_candidates(items, issues, self.config.repo, pattern, login)
         return ready(items, issues, self.config.repo, priorities,
-                     {number: self.priority_of(number, items) for number in candidates})
+                     {number: self.priority_of(number, items) for number in candidates}, pattern, login)
 
     def file(self, title: str, body: str, todo: bool, priority: str | None, blocked_by: str | None) -> int:
         self.status_field()  # check the board, the workflows and the priority before creating anything on it
@@ -812,6 +1043,140 @@ class Board:
                     f"{DONE_MARK} {branch}: {evidence}")
         self.set_status(item["id"], DONE)
 
+    # -- jobs for the user, progress and the page (plan 0036) --
+
+    def created_issue(self, output: str, title: str) -> int:
+        match = ISSUE_URL.search(output.strip())
+        if not match or match.group(1) != self.config.repo:
+            raise GhError(f"gh issue create gave no issue URL for {self.config.repo}; check the repository's issues"
+                          f" for {title!r} before filing again. Output: {output[-200:]!r}")
+        return int(match.group(2))
+
+    def ask(self, kind: str, title: str, options: list, recommend: str | None, summary: str | None,
+            holds_up_numbers: list, note: str) -> int:
+        """File a job for the user, straight into Todo: it is the user's own work, so the Triage gate, which keeps
+        sessions from starting unqueued work, does not apply (D6). Each issue it holds up is marked as blocked by
+        it, so `ready` skips that work. Any session may file one; a worker files its own questions (D20)."""
+        pattern = self.config.id_pattern
+        if kind == "decide":
+            if summary:
+                raise BoardError("a decision takes --option and --recommend, not --summary")
+            key, _, why = (recommend or "").partition("|")
+            data = {"kind": kind, "options": [parse_option(o) for o in options],
+                    "recommend": {"key": key.strip(), "why": why.strip()}}
+        else:
+            if options or recommend:
+                raise BoardError(f"a {kind} job takes --summary, not --option or --recommend")
+            data = {"kind": kind, "summary": summary}
+        try:
+            jobs.check_line("the title", title, pattern)
+            jobs.validate(data, pattern)
+        except jobs.Invalid as error:
+            raise BoardError(str(error)) from None
+        self.status_field()
+        self.refuse_while_item_added_is_on()
+        open_numbers = {issue["number"] for issue in self.open_issues()}
+        closed = [n for n in holds_up_numbers if n not in open_numbers]
+        if closed:
+            raise Refused(f"--holds-up names {', '.join(f'#{n}' for n in closed)}, which is not an open issue")
+        number = self.created_issue(self.gh.run("issue", "create", "--repo", self.config.repo, "--title", title,
+                                                "--body", jobs.render_body(data, note)), title)
+        try:
+            self.set_status(self.add_to_board(number), TODO)
+        except (GhError, KeyError, ValueError, TypeError) as error:
+            raise GhError(f"job #{number} was created, but placing it on the board failed ({error}); set it to"
+                          f" {TODO} on the board, and do not file it again") from None
+        for held in holds_up_numbers:
+            try:
+                self.gh.run("issue", "edit", str(held), "--repo", self.config.repo, "--add-blocked-by", str(number))
+            except GhError as error:
+                raise GhError(f"job #{number} was filed, but marking #{held} as blocked by it failed ({error}): run"
+                              f" `gh issue edit {held} --add-blocked-by {number}`") from None
+        return number
+
+    def job(self, number: int):
+        """(the issue, its job block); Refused for an issue that is not a job or whose block is malformed."""
+        issue = self.issue(number)
+        data, error = block_of(issue, self.config.id_pattern, self.login())
+        if error:
+            raise Refused(f"#{number}: {error}")
+        if not data or data["kind"] not in jobs.JOB_KINDS:
+            raise Refused(f"#{number} is not a job for the user")
+        return issue, data
+
+    def answer(self, number: int, quote: str, records: list) -> str:
+        """Close job `number` with the user's own words (D8). Any session that holds them may (D21): the check of
+        the words against this session's own transcript is the gate, not who filed the job. Returns the answer."""
+        issue, data = self.job(number)
+        if issue.get("state") != "OPEN":
+            answered = answer_of(self.comments(number), self.login())
+            if answered is None:
+                raise Refused(f"job #{number} is closed, with no answer recorded")
+            self.set_status(self.item(number)["id"], DONE)  # a rerun after setting Done failed
+            return answered
+        try:
+            chosen, at = jobs.match_answer(quote, number, jobs.answers(data), jobs.human_messages(records),
+                                           jobs.utc(issue["createdAt"]))
+        except jobs.Invalid as error:
+            raise Refused(str(error)) from None
+        typed = at.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        # Closing first, as `done` does: the board's "Item closed" workflow files a closed issue under Done anyway.
+        self.gh.run("issue", "close", str(number), "--repo", self.config.repo, "--comment",
+                    f"{ANSWER_MARK} {chosen} — the user's words, typed {typed}: {quote}")
+        self.set_status(self.item(number)["id"], DONE)
+        return chosen
+
+    def job_state(self, number: int) -> dict:
+        issue, data = self.job(number)
+        answered = answer_of(self.comments(number), self.login()) if issue.get("state") != "OPEN" else None
+        return {"number": number, "kind": data["kind"], "state": issue.get("state", "").lower(), "answer": answered}
+
+    def progress(self, number: int, branch: str, values: dict) -> None:
+        """Set a work issue's goal, step, now and next. Only the branch holding the claim may."""
+        self.require_holder(number, branch)
+        data = dict(values, kind=jobs.WORK)
+        try:
+            jobs.validate(data, self.config.id_pattern)
+        except jobs.Invalid as error:
+            raise BoardError(str(error)) from None
+        body = jobs.replace_block(self.issue(number).get("body") or "", data)
+        self.gh.run("issue", "edit", str(number), "--repo", self.config.repo, "--body-file", "-", input=body)
+
+    def note(self, number: int, kind: str, text: str) -> None:
+        """A coordinator's own call, or a finding, as a marked comment on the open issue it concerns. Any open
+        issue: a note adds a line and changes nothing of the issue (the revised own-issues rule)."""
+        try:
+            jobs.check_line("the note", text, self.config.id_pattern)
+        except jobs.Invalid as error:
+            raise BoardError(str(error)) from None
+        if number not in {issue["number"] for issue in self.open_issues()}:
+            raise Refused(f"#{number} is not an open issue")
+        self.comment(number, f"{NOTE_MARKS[kind]} {text}")
+
+    def with_editors(self, issues: list, items: list) -> list:
+        """The open issues, those in progress and opened by another account carrying who last edited their text:
+        the helper's own `progress` write then still counts there."""
+        login, owner, name = self.login(), *self.config.repo.split("/", 1)
+        in_progress = {item["content"]["number"] for item in items if status_of(item) == IN_PROGRESS
+                       and item["content"]["type"] == "Issue" and repo_of(item["content"]) == self.config.repo}
+        enriched = []
+        for issue in issues:
+            if issue["number"] in in_progress and ((issue.get("author") or {}).get("login") or "") != login:
+                found = graphql_data(self.graphql(EDITOR_QUERY, f"owner={owner}", f"name={name}",
+                                                  f"number={issue['number']}"))
+                editor = (((found.get("repository") or {}).get("issue") or {}).get("editor") or {}).get("login")
+                issue = dict(issue, editor=editor or "")
+            enriched.append(issue)
+        return enriched
+
+    def page_text(self, now: datetime, since: datetime, blocks: list) -> str:
+        items = self.items()
+        issues = self.with_editors(self.open_issues(), items)
+        found_jobs, work = page_parts(items, issues, self.config.repo, self.config.id_pattern, self.login())
+        happened = events(self.updated_since(since), self.login())
+        more = f"https://github.com/{self.config.repo}/issues?q=sort%3Aupdated-desc"
+        return jobs.render_page(now, found_jobs, work, happened, since, blocks, more)
+
 
 # ---- command line -----------------------------------------------------------------------------------------------
 
@@ -844,10 +1209,106 @@ def parse_args(argv: list) -> argparse.Namespace:
     done.add_argument("number", type=int)
     done.add_argument("--branch", required=True)
     done.add_argument("--evidence", required=True)
+    ask = steps.add_parser("ask")
+    ask.add_argument("--kind", required=True, choices=jobs.JOB_KINDS)
+    ask.add_argument("--title", required=True)
+    ask.add_argument("--option", action="append", default=[], help='a decision\'s option: "A|text|cost"')
+    ask.add_argument("--recommend", help='a decision\'s recommendation: "A|why"')
+    ask.add_argument("--summary", help="what an approve, capture or run job asks, in one line")
+    ask.add_argument("--holds-up", default="", help="the issues it holds up, as 298,301")
+    ask.add_argument("--note", default="", help="more for the issue's text; the page does not show it")
+    answer = steps.add_parser("answer")
+    answer.add_argument("number", type=int)
+    answer.add_argument("--quote", required=True, help="the user's own words, as typed in this session")
+    state = steps.add_parser("job-state")
+    state.add_argument("number", type=int)
+    state.add_argument("--json", action="store_true")
+    progress = steps.add_parser("progress")
+    progress.add_argument("number", type=int)
+    progress.add_argument("--branch", required=True)
+    for name in ("goal", "now", "next"):
+        progress.add_argument(f"--{name}", required=True)
+    progress.add_argument("--step", type=int, required=True)
+    progress.add_argument("--of", type=int, required=True)
+    note = steps.add_parser("note")
+    note.add_argument("number", type=int)
+    kind = note.add_mutually_exclusive_group(required=True)
+    kind.add_argument("--decided", action="store_true", help="a call the coordinator made itself, with its reason")
+    kind.add_argument("--finding", action="store_true")
+    note.add_argument("--text", required=True)
+    steps.add_parser("page")
     args = parser.parse_args(argv)
     if args.step == "file" and args.triage and args.priority:
         parser.error("--priority goes with --todo: the user sets Priority when accepting a Triage item")
     return args
+
+
+def numbers(text: str) -> list:
+    try:
+        return [int(part) for part in text.replace(" ", "").split(",") if part]
+    except ValueError:
+        raise BoardError(f"--holds-up takes issue numbers as 298,301, not {text!r}") from None
+
+
+def run_blocks(root: Path, command: tuple) -> list:
+    """The page lines a project's page_blocks command prints, run from the main checkout's root; a line saying it
+    failed, if it does."""
+    try:
+        result = subprocess.run(list(command), cwd=root, capture_output=True, text=True, timeout=BLOCKS_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as error:
+        return [f"_The project's page blocks could not run: {error}_"]
+    if result.returncode != 0:
+        return [f"_The project's page blocks failed (exit {result.returncode}):"
+                f" {(result.stderr.strip() or result.stdout.strip())[:200]}_"]
+    lines = result.stdout.rstrip("\n").split("\n") if result.stdout.strip() else []
+    if len(lines) > BLOCKS_MAX_LINES:
+        lines = lines[:BLOCKS_MAX_LINES] + [f"_… {len(lines) - BLOCKS_MAX_LINES} more lines cut_"]
+    return lines
+
+
+def draw(board: Board, root: Path, state: Path, now: datetime) -> Path:
+    blocks = run_blocks(root, board.config.page_blocks) if board.config.page_blocks else []
+    return write_page(root, state, board.config.page, board.page_text(now, last_seen(state, now), blocks))
+
+
+def redraw(board: Board, root, state, now: datetime) -> None:
+    """After a step that wrote to the board: draw the page again. A failure leaves the last page, marked out of
+    date, and warns; it never fails the step that already wrote."""
+    if not board.config.page:
+        return
+    if root is None:
+        board.warnings.append("the page was not drawn: git cannot name the main checkout here")
+        return
+    try:
+        draw(board, root, state, now)
+    except Exception as error:  # noqa: BLE001  (any failure here must leave the step's own result standing)
+        board.warnings.append(f"the page is out of date: {error}")
+        mark_page_stale(board, root, state, now)
+
+
+def mark_page_stale(board: Board, root: Path, state: Path, now: datetime) -> None:
+    """Keep the last page drawn, its first line saying since when it is out of date."""
+    try:
+        write_page(root, state, board.config.page, jobs.mark_stale((state / "page.md").read_text(), now,
+                                                                   "the board could not be read"))
+    except OSError:
+        pass
+
+
+def restore_warnings(state, now: datetime) -> list:
+    """Lines for `check`: how often the page hooks restored a hand-edited page in the last week."""
+    try:
+        lines = (state / "restores.log").read_text().splitlines()
+    except (OSError, TypeError):
+        return []
+    week = [line for line in lines if line.split("\t")[0] >= (now - timedelta(days=7)).isoformat()]
+    if not week:
+        return []
+    return [f"warn: the page was edited by hand and restored {len(week)} time(s) this week (see"
+            f" {state / 'restores.log'}): each is a sign of a missing helper command"]
+
+
+WRITE_STEPS = ("sync", "file", "queue", "claim", "release", "done", "ask", "answer", "progress", "note")
 
 
 def find_config(start: Path) -> Path:
@@ -859,13 +1320,20 @@ def find_config(start: Path) -> Path:
     raise BoardError(f"no {CONFIG_FILE} at the repository root: this project does not keep its tasks on a board")
 
 
-def main(argv: list, gh: Gh | None = None, cwd: Path | None = None) -> int:
+def main(argv: list, gh: Gh | None = None, cwd: Path | None = None, environ: dict | None = None,
+         now: datetime | None = None, paths=None) -> int:
     board = None
     try:
         args = parse_args(argv)
-        board = Board(parse_config(find_config(cwd or Path.cwd()).read_text()), gh or Gh())
+        here = cwd or Path.cwd()
+        board = Board(parse_config(find_config(here).read_text()), gh or Gh())
+        now = now or datetime.now(timezone.utc)
+        root, state = paths if paths is not None else \
+            (checkout_paths(here) if board.config.page else (None, None))
+        if board.config.page:
+            board.config = main_checkout_config(board.config, root)
         if args.step == "check":
-            for line in board.check():
+            for line in board.check() + (restore_warnings(state, now) if state else []):
                 print(line)
         elif args.step == "sync":
             added = board.sync()
@@ -892,9 +1360,40 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None) -> int:
         elif args.step == "release":
             board.release(args.number, args.branch, args.reason)
             print(f"released #{args.number} to {TODO}")
-        else:
+        elif args.step == "done":
             board.done(args.number, args.branch, args.evidence)
             print(f"closed #{args.number} as {DONE}")
+        elif args.step == "ask":
+            number = board.ask(args.kind, args.title, args.option, args.recommend, args.summary,
+                               numbers(args.holds_up), args.note)
+            print(f"filed job #{number} in {TODO}")
+        elif args.step == "answer":
+            chosen = board.answer(args.number, args.quote, transcript_records(environ or os.environ, Path.home()))
+            print(f"answered #{args.number}: {chosen}")
+        elif args.step == "job-state":
+            found = board.job_state(args.number)
+            print(json.dumps(found) if args.json else
+                  f"#{found['number']} {found['kind']}: {found['state']}"
+                  + (f", answered {found['answer']}" if found["answer"] else ""))
+        elif args.step == "progress":
+            board.progress(args.number, args.branch, {"goal": args.goal, "step": args.step, "of": args.of,
+                                                      "now": args.now, "next": args.next})
+            print(f"#{args.number}: step {args.step} of {args.of}")
+        elif args.step == "note":
+            board.note(args.number, "decided" if args.decided else "finding", args.text)
+            print(f"noted on #{args.number}")
+        else:
+            if not board.config.page:
+                raise BoardError(f"{CONFIG_FILE} names no page")
+            if root is None:
+                raise BoardError("git cannot name the main checkout here, so the page has nowhere to go")
+            try:
+                print(f"drew {draw(board, root, state, now)}")
+            except (GhError, OSError, KeyError, ValueError, TypeError):
+                mark_page_stale(board, root, state, now)
+                raise
+        if args.step in WRITE_STEPS:
+            redraw(board, root, state, now)
         return 0
     except BoardError as error:
         print(f"board.py: {error}", file=sys.stderr)

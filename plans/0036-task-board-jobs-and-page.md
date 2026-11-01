@@ -226,3 +226,42 @@ Global `CLAUDE.md`, § General: the exception for filing a job for the user (abo
 - **Found on this session's own reading:**
   - whose turn is derived, now written in Bounds;
   - D13 now uses the Stop hook's transcript, not a hook on sending.
+
+## Build (2026-11-01)
+
+**Built on `feat/task-board-jobs-and-page-build`:**
+- **`skills/task-board/jobs.py`:** the pure rules (the block and its schema, the line and ID rules, the quote match, the page's layout).
+- **`board.py`:** the steps `ask`, `answer`, `job-state`, `progress`, `note` and `page`. `ready` and `claim` leave jobs out, and every write step redraws the page.
+- **`skills/task-board/page_hook.py`:** the four hooks.
+- **Tests:** `test_jobs.py`, `test_page_hook.py`, and new cases in `test_board.py`.
+  - **Mutations:** each new rule was removed in turn, with bytecode caching off, and every one of those versions failed a test.
+  - **The real-`gh` replay** accepted every new command shape, among them `issue edit --add-blocked-by`, `--body-file -` and `issue list --search`.
+
+**Where the build settled what the decisions left open:**
+- **The page's local state:** the generated copy, the last-seen stamp and the restore log live in the main checkout's `.git/task-board/`, not beside the page. They stay local and untracked, and away from the files sessions edit.
+- **Declared answers:** a decision's option letters; `approve` or `decline`; `done` for a capture or a run.
+- **Lines:** at most 120 characters. The default ID pattern is letters then digits (E193, S54-4), or a raw record ID with an underscore and a digit; a project may set its own in `id_pattern`.
+- **D8, tightened:** the whole message the quote comes from must name the job once, with that answer, so a quote cut from "#312 A #312 B" cannot pick one. A clear later message still counts.
+- **The answer comment** records the message's time.
+
+**The security-guidance plugin's automated review of the first build commit found two points, both fixed:**
+- **A stranger's block:** a block counts only in an issue the board's login wrote. On a public repository a stranger's issue could otherwise show as a job, or hide work from `ready`.
+- **Whose settings:** the page's settings, including the `page_blocks` command, come from the main checkout's own `.task-board.json`, not from a worker's branch. The page's real path must stay inside the main checkout.
+
+**`/codex-review` of the build at `aec60ee`: CHANGES REQUESTED, two MEDIUMs, both accepted.**
+- **A progress block in an issue someone else opened was ignored,** although the helper wrote it. A work block now also counts when the board's login was the last to edit the issue's text, read from GraphQL's `Issue.editor` for in-progress issues opened by another account. When that account edits the text again, it is theirs again, and the block no longer counts.
+- **One hand edit can go unlogged:** one landing between the helper's two writes, copy and then page, is overwritten by the helper's own page write. The page ends right, but no line records the edit.
+  - **Decided:** the window is the time between two `os.replace` calls, so `SKILL.md` now says this, rather than adding machinery to catch it.
+  - **Correction:** the earlier claim that every change is logged was too strong.
+
+**Second pass at `2f046e7`: CHANGES REQUESTED, one MEDIUM, not changed.**
+- **The finding:** another account editing an issue the board's login opened would still have its block trusted, since the author check passes.
+- **Why it does not reach a stranger:** GitHub lets an issue's text be edited only by its author and by accounts with write access to the repository.
+- **Why those accounts are out of scope:** they can already change the repository's code and its `.task-board.json`, so they are inside the boundary this rule does not police. The rule exists for a stranger on a public repository, who can open issues but cannot edit the user's.
+- **What fixing it would cost:** asking for every open issue's editor on every read, to guard against accounts that hold more power anyway.
+- **Otherwise:** Codex found no other break in the invariants it was asked about.
+
+**Not done yet:**
+- **No live run.** Nothing here has run against a real board, and no Claude Code session has run the hooks wired: the end-to-end checks in § Verification need a scratch project and board.
+- **Not measured:** how long one GitHub read takes per redraw (§ To check during the build).
+- **gkms's side,** including reading a worker's context share for D18, is its own ExecPlan.
