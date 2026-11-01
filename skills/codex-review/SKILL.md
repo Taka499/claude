@@ -104,7 +104,7 @@ git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapsho
 touch "$snapshot/started" || exit 1
 ```
 
-**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, writing `<repository>` wherever step 3 has `"$snapshot/repo"` (the `cd`, the prompt, and the stdin form's `grep`), and say in the report that no snapshot was used. In step 4, keep the file list and the refs check, but skip the command check. Codex then works in the repository itself, so the check cannot tell its commands from a write, and every listed entry you did not write is Codex's.
+**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, writing `<repository>` wherever step 3 has `"$snapshot/repo"` (the `cd`, the prompt, and the stdin form's `grep`), and say in the report that no snapshot was used. In step 4, run the canary from `"$snapshot"`, point it only at `"$snapshot/codex-canary"`, and expect one refusal, not two: never write a canary into the repository. The rest of step 4 is unchanged.
 
 ### 3. Run Codex
 
@@ -123,7 +123,7 @@ exactly one final line and nothing after it:
 'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'." < /dev/null > "$snapshot/review.txt" 2>&1
 ```
 
-Either form saves Codex's whole log to `"$snapshot/review.txt"`; step 4 reads the commands Codex ran from it.
+Either form saves Codex's whole log to `"$snapshot/review.txt"`; step 4 reads the run's sandbox mode from its header.
 
 **In a worktree-isolated session (EnterWorktree), feed the prompt through a file on stdin.** The harness there refuses any shell command whose quoted text mentions `git` — and this prompt does, in `git diff` — and the `-c 'approval_policy="never"'` flag trips the same check. Write the prompt to `"$snapshot/prompt.txt"` with the Write tool and run
 
@@ -146,7 +146,24 @@ Codex output is long — read the tail for the findings and the verdict. That is
 
 ### 4. Check the repository was not touched
 
-List every file in the repository whose content or metadata changed since the snapshot was taken, `.git` included, and compare its refs:
+First establish whether Codex could write at all. Step 4 exists for the day its read-only sandbox is not in force: a mistyped flag, or a CLI upgrade that stops enforcing it. Both are checked directly, with no need to read what Codex did:
+
+```bash
+sed -n '1,/^user$/p' "$snapshot/review.txt" > "$snapshot/header.txt" || exit 1
+(cd "$snapshot/repo" && codex sandbox -c 'sandbox_mode="read-only"' -- touch "$snapshot/repo/.codex-canary" "$snapshot/codex-canary") > "$snapshot/canary.txt" 2>&1 < /dev/null
+grep -qx 'sandbox: read-only' "$snapshot/header.txt" && grep -qx 'approval: never' "$snapshot/header.txt" &&
+  [ "$(grep -c 'codex-canary: Operation not permitted' "$snapshot/canary.txt")" -eq 2 ] &&
+  [ ! -e "$snapshot/repo/.codex-canary" ] && [ ! -e "$snapshot/codex-canary" ] &&
+  echo "SANDBOX HELD" || echo "SANDBOX NOT SHOWN"
+```
+
+- **The run's own header** names the mode its commands ran under. A wrong `--sandbox` value, or an approval mode that could let a command out, shows there.
+- **The canary** runs `touch` under the same CLI's read-only sandbox, with no model involved. It writes once inside the snapshot and once beside it. Both must be refused with `Operation not permitted`, and neither file may exist.
+  - **What was measured** on 2026-11-01 with codex-cli 0.150.1: read-only refused both writes, while `workspace-write` and `danger-full-access` made both files.
+  - **Why `cd` rather than `-C`:** in that version, `codex sandbox -C <dir>` refuses to run without a `--permission-profile`.
+  - **Why the CLI runs it, not Codex:** asked in a prompt to run the same `touch`, Codex answered "I'll run the exact command now" and then ran nothing. A canary that rests on the model's compliance proves nothing.
+
+Then list every file in the repository whose content or metadata changed since the snapshot was taken, `.git` included, and compare its refs:
 
 ```bash
 find <repository> -cnewer "$snapshot/started" -print > "$snapshot/written.txt" || exit 1
@@ -154,82 +171,25 @@ git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapsho
 cat "$snapshot/written.txt"; diff "$snapshot/refs-before.txt" "$snapshot/refs-after.txt"
 ```
 
-`-cnewer` compares the inode change time, which every write and every permission change updates: a commit, a ref, an edited, new or `chmod`ed file, tracked, untracked or ignored. A deleted file shows as its directory. The file system here (APFS) keeps nanosecond times, so a write just after the marker is not lost to rounding. What it cannot catch is a process that sets times back deliberately. Codex's read-only sandbox stops that too, but this step exists for the case where that sandbox is not in force.
+`-cnewer` compares the inode change time, which every write and every permission change updates: a commit, a ref, an edited, new or `chmod`ed file, tracked, untracked or ignored. A deleted file shows as its directory. The file system here (APFS) keeps nanosecond times, so a write just after the marker is not lost to rounding. What it cannot catch is a process that sets times back deliberately; the canary shows whether Codex could have.
 
-Then check where Codex ran its commands, from its log:
+**On `SANDBOX HELD`,** Codex could not write anywhere, so nothing listed is Codex's. Other processes write to a repository too. Name what each entry is, using the kinds below, and report any entry they do not explain as another process's write, not as Codex's.
 
-```bash
-python3 -I ~/.claude/skills/codex-review/commands_check.py "$snapshot/review.txt" "$snapshot/repo" <repository>
-```
+**On `SANDBOX NOT SHOWN`,** the run cannot be shown to have been isolated. Every listed entry you did not write is then Codex's: stop and report it to the user as an incident, before any finding. Even with nothing listed, say that the review ran without a proven sandbox, and which check failed (`header.txt` or `canary.txt` shows it).
 
-It exits 0 when two things hold for every command Codex ran:
-- **where it ran:** in the snapshot;
-- **what it names:** every word, resolved as a path, lands inside the snapshot or under a system prefix such as `/usr/`. A bare variable such as `"$f"` is left out only when it is the variable of a `for` or `select` loop over plain words, whose words are checked themselves. Any other variable is flagged, and `$HOME` counts as home.
+Either way:
+- **Do not undo anything on your own.** Name what changed (a ref, a commit and its author, a file). The global Git rules forbid rewriting history and deleting untracked files without the user's permission.
+- **The findings still count.** A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
 
-**How a word is resolved:** against the command's own working directory.
-- **Expanded first:** `~`, `~user` and `$HOME`, then a shell's brace patterns such as `{a,b}`.
-- **Globs:** a glob is matched against the files there, zsh's `**` and `[^…]` included, and every match is checked.
-- **Symlinks** are followed.
-
-So a `../` that climbs out of the snapshot counts the same as the repository's own path. So does a link into it, whether named by its full path, by a bare name or through a glob, like the links under `~/.claude` in this setup.
-
-**Quoting does not hide a path:** each command is split the way a shell splits it, by Python's `shlex`, so a path disguised by quotes or backslashes (`"/"Users…`, `\/Users…`) is read as the shell reads it.
-- **A `#` hides nothing:** it is not read as starting a comment, so nothing after it goes unread. A comment's words are checked too.
-- **What is flagged:** a command `shlex` cannot split. That includes some valid shell, such as a heredoc whose text holds an apostrophe.
-
-**A path attached to a prefix counts too:**
-- a `file://` URL to this machine;
-- a path right after an option's letters (`-C/p`);
-- a path after a `:`, `@` or `+`.
-
-**Exit 1** prints each command to look at, with why. It also covers:
-- a path through another variable, or `~` for a user this machine does not have;
-- a brace pattern it cannot expand;
-- a log with no command records, or a record that does not split as exactly `<shell> -lc <script> in <dir>`. A line inside a script that looks like a status line therefore cannot end a record quietly.
-
-**Exit 2** means the log could not be read.
-
-**Exit 1 is not by itself an incident.** Read each flagged command:
-- **Only reads:** a search whose pattern holds a path, or a file read outside the snapshot, changes nothing in the repository. Say so in the report, and go on as for exit 0.
-- **Could write, or unclear:** if the command could have written to what it names, or you cannot tell, every listed entry is Codex's.
-
-**Only when the check leaves no command that could have written may an entry count as another process's,** and then only when it matches one of the three kinds below. Each kind's signature can also be made by a write, so the signature alone excuses nothing; Codex's own record of where it worked makes the difference.
-
-**What the check cannot see:**
-- a `cd` within one shell line;
-- a path built at run time, by `$(…)`, `$'\x2f'`-style quoting, `eval` or decoding;
-- a program that picks its own paths, or builds one from separate arguments or from its own configuration;
-- shell options that change globbing, such as zsh's `extendedglob` set in a startup file;
-- a symlink the repository tracks, written through and then removed before the check runs.
-  - **Why it is missed:** the check reads the files after Codex has finished.
-  - **Spotting the risk:** `git ls-files -s | awk '$1=="120000"'` in the snapshot lists such links, and this repository has none.
-  - **When there are some:** read Codex's log for their names.
-  - **A link Codex creates** names its target in the `ln -s` command, so the check resolves that.
-
-Short of those, an ordinary write names its path in a form the check resolves.
-
-Three kinds of entry are known not to be Codex's:
+The kinds of entry known to come from elsewhere:
 
 - **Your own.** A `git status` or `git diff` run in the repository during the review may refresh `.git/index`, and anything you edited there yourself shows up too.
-- **A process that polls the index.** An editor's git integration, or another session's `git status`, creates and removes `.git/index.lock` every few seconds. The result:
-  - **What shows:** `.git` itself, and sometimes `.git/index`.
-  - **What doesn't:** nothing else inside `.git` changes, and no ref moves.
+- **A process that polls the index.** An editor's git integration, or another session's `git status`, creates and removes `.git/index.lock` every few seconds. So `.git` itself, and sometimes `.git/index`, shows up with nothing else inside `.git` changed. (gakumas-supportcards, 2026-11-01: about 150 changes of `.git` in a 75-second watch, with only `index.lock` seen coming and going.)
+- **The `security-guidance` plugin.** Where it is installed with its review on, it writes loose objects under `.git/objects/`, all unreferenced, and logs each write in `~/.claude/security/log.txt`:
+  - **At each prompt** to the session, a background task's completion notice included, with uncommitted changes in the repository: its UserPromptSubmit hook runs `git stash create` on a copy of the index. That writes two commits titled "WIP on <branch>: …" and "index on <branch>: …", their trees and blobs, logged as `Captured git baseline: <the WIP commit's first 12 characters>`.
+  - **At a turn's end,** with untracked files: its Stop hook's `git add -N` writes the empty blob `e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`, at the time of a `Stop hook:` line.
 
-  (gakumas-supportcards, 2026-11-01: about 150 changes of `.git` in a 75-second watch, with only `index.lock` seen coming and going.)
-- **The `security-guidance` plugin's baseline.** Where that plugin is installed with its review on, its UserPromptSubmit hook runs `git stash create` on a copy of the index each time a prompt reaches the session, a background task's completion notice included.
-  - **What it writes:** with uncommitted changes in the repository, loose objects under `.git/objects/`, all unreferenced:
-    - two commits titled "WIP on <branch>: …" and "index on <branch>: …";
-    - their trees;
-    - a blob.
-  - **How to confirm each, all three must hold:**
-    - **The title:** `git log -1 --format=%s <sha>` shows "WIP on …" or "index on …".
-    - **The log line:** `~/.claude/security/log.txt` has `Captured git baseline: <the WIP commit's first 12 characters>`, written after the marker, at the second of the WIP commit's committer time (`git log -1 --format=%cd --date=format:%T <sha>`).
-    - **The other objects:** every other new object under `.git/objects/` is reachable from that commit, as listed by `git rev-list --objects <WIP sha>`. This is its whole closure, not only what it adds over `HEAD`: git refreshes an existing object's times rather than writing it again, so a shared object can show up too.
-  - **Its Stop hook, too:** when the repository has untracked files, the hook runs `git add -N` on its copy of the index, which writes the empty blob `e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`. Confirm it by a `Stop hook:` line in the same log, at the blob's change time.
-
-  (This repository, 2026-11-01, plugin 2.0.17: one pair at each review notice while the tree had changes, none on the pass with a clean tree; the empty blob at a turn's end while two files were untracked.)
-
-Anything else listed that you did not write is Codex's, and so is everything listed when a flagged command could have written. Stop and report it to the user as an incident, before any finding. Name what changed (a ref, a commit and its author, a file), and do not undo it on your own, because the global Git rules forbid rewriting history and deleting untracked files without the user's permission. A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
+  (This repository, 2026-11-01, plugin 2.0.17.)
 
 ### 5. Evaluate every finding — this is the step that is not optional
 
