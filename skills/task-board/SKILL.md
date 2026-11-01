@@ -71,6 +71,16 @@ On 3, read the message and do not force the step another way. A step that failed
 
      `Closes #N` works only when the PR merges into the repository's **default** branch, so a Git-flow project makes `develop` its default branch on GitHub.
 
+     **No other issue may follow a closing keyword.** On merge, GitHub closes every issue named after `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves` or `resolved` in the PR's description, wherever the phrase stands. A negation still counts: a description saying a run "did not close" an issue closed that issue on merge (gkms-memomemo, 2026-11-01). Commit messages count the same way once they are merged into the default branch.
+     - Name any other issue without a keyword before its number, as in "#20 stayed open".
+     - Right after opening the PR, check what it will close:
+
+       ```sh
+       gh pr view <PR> --json closingIssuesReferences --jq '[.closingIssuesReferences[].number]'
+       ```
+
+       It must print `[N]` alone. If it lists more, fix the description with `gh pr edit <PR> --body-file …` before asking for the merge.
+
      If the user closes the PR without merging, `release` the issue.
    - **By local merges:** only after the user-approved merge into the integration branch (`develop`, or `main` where that is the only branch), run `done N --branch <branch> --evidence "merge <sha> into develop; <checks that passed>; plan <path>"`.
 
