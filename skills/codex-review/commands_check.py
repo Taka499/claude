@@ -17,8 +17,9 @@ against the command's working directory: `~`, `~user` and `$HOME` expanded,
 globs matched against the files there (every match checked), symlinks
 followed. So `../` out of the snapshot, a link into the repository (such as
 those under ~/.claude), or a bare name of such a link, is caught like the
-repository's own path. A bare variable (`"$f"`) is left out; a path through
-any other variable, or `~` for an unknown user, fails.
+repository's own path. A `#` inside a script starts no comment here, so no
+word after it goes unread. A bare variable (`"$f"`) is left out only when the
+script sets it; any other variable, or `~` for an unknown user, fails.
 
 It fails closed: a log with no records, a record with no status line after
 it, a record or script that will not split, or a brace it cannot expand, is
@@ -101,7 +102,8 @@ def resolve(token, cwd, home):
     if "$" in t:
         return None
     t = t if os.path.isabs(t) else os.path.join(cwd, t)
-    matches = glob.glob(t) if GLOB.search(t) else []
+    # zsh's `**` recurses and its `[^…]` negates; Python's glob needs both spelled its own way.
+    matches = glob.glob(t.replace("[^", "[!"), recursive=True) if GLOB.search(t) else []
     return [os.path.realpath(m) for m in matches] or [os.path.realpath(t)]
 
 
@@ -148,6 +150,10 @@ def words(script):
     try:
         lex = shlex.shlex(script, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
+        # shlex ends a word at a `#` and drops the rest of the line, where a
+        # shell keeps `b#frag` whole: with no comment character, a comment's
+        # words are checked too, and nothing after a `#` goes unread.
+        lex.commenters = ""
         return list(lex)
     except ValueError:
         return None
@@ -157,12 +163,13 @@ def path_tokens(script):
     """Every token of the script that may name a file; None if the script will not split or a brace will not expand.
 
     Each word is brace-expanded, then kept whole and also split at `=` and
-    `,` (`--file=/p`, `a,/p`). A bare variable such as `"$f"` is left out:
-    what it holds was named where it was set, or was built at run time.
+    `,` (`--file=/p`, `a,/p`). A bare variable such as `"$f"` is left out only
+    when the script sets it (assigned_names).
     """
     found = words(script)
     if found is None:
         return None
+    assigned = assigned_names(found)
     out = []
     for w in found:
         expanded = braces(w)
@@ -170,9 +177,35 @@ def path_tokens(script):
             return None
         for e in expanded:
             for t in dict.fromkeys([e, *TOKEN.findall(e)]):
-                if not re.fullmatch(r"\$\{?\w+\}?", t):
+                bare = re.fullmatch(r"\$\{?(\w+)\}?", t)
+                if not (bare and bare.group(1) != "HOME" and bare.group(1) in assigned):
                     out.append(t)
     return out
+
+
+def assigned_names(found):
+    """Names the script itself sets: `name=…`, `for name in`, `select name in`, `read name…`.
+
+    A bare `$name` of one of these is left out, since its value was named, and
+    checked, where it was set. Any other bare variable is checked, which fails
+    it as a path through a variable; `$HOME` resolves to home, outside the
+    snapshot.
+    """
+    names = set()
+    for i, w in enumerate(found):
+        m = re.match(r"^(\w+)=", w)
+        if m:
+            names.add(m.group(1))
+        if w in ("for", "select") and i + 1 < len(found):
+            names.add(found[i + 1])
+        if w == "read":
+            for x in found[i + 1:]:
+                if not re.fullmatch(r"\w+", x):
+                    if x.startswith("-"):
+                        continue
+                    break
+                names.add(x)
+    return names
 
 
 def problems(body, snapshot, repository, home, complete=True):

@@ -125,6 +125,26 @@ class Check(unittest.TestCase):
         why = self.bad(text)[0][1]
         self.assertEqual(why, ["the record does not split as `<shell> -lc <script> in <dir>`"])
 
+    def test_a_hash_inside_a_word_does_not_hide_the_rest(self):
+        why = self.bad(record('/bin/zsh -lc "curl https://a/b#frag -o ~/Developer/claude/x"', self.snap))[0][1]
+        self.assertEqual(why, ["names the repository: ~/Developer/claude/x"])
+
+    def test_zsh_globs(self):
+        os.makedirs(os.path.join(self.snap, "a", "b"))
+        os.symlink(self.repo, os.path.join(self.snap, "a", "b", "lnk"))
+        for command, token in (("cp x **/lnk", "**/lnk"), ("cp x a/b/[^z]nk", "a/b/[^z]nk")):
+            with self.subTest(command=command):
+                why = self.bad(record(f'/bin/zsh -lc "{command}"', self.snap))[0][1]
+                self.assertEqual(why, [f"names the repository: {token}"])
+
+    def test_bare_variables(self):
+        loop = record("/bin/zsh -lc 'for f in a.md b.md; do nl -ba \"$f\"; done; g=c.md; read -r h; cat $g $h'",
+                      self.snap)
+        self.assertEqual(self.bad(loop), [])
+        why = self.bad(record("/bin/zsh -lc 'touch \"$OLDPWD\" $HOME'", self.snap))[0][1]
+        self.assertEqual(why, ["a path through a variable or an unknown user's ~: $OLDPWD",
+                               "a path outside the snapshot: $HOME"])
+
     def test_a_record_with_no_status_line_fails_closed(self):
         text = f'exec\n/bin/zsh -lc "git diff" in {self.snap}\n'
         self.assertEqual(self.bad(text)[0][1], ["no status line after the command"])
