@@ -164,9 +164,14 @@ python3 -I ~/.claude/skills/codex-review/commands_check.py "$snapshot/review.txt
 
 It exits 0 when two things hold for every command Codex ran:
 - **where it ran:** in the snapshot;
-- **what it names:** every path lands inside the snapshot or under a system prefix such as `/usr/`.
+- **what it names:** every word, resolved as a path, lands inside the snapshot or under a system prefix such as `/usr/`. A bare variable such as `"$f"` is left out.
 
-**How a path is resolved:** against the command's own working directory, with `~` and `$HOME` expanded and symlinks followed. So a `../` that climbs out of the snapshot counts the same as the repository's own path, and so does a link into it, such as the ones under `~/.claude` in this setup.
+**How a word is resolved:** against the command's own working directory.
+- **Expanded first:** `~`, `~user` and `$HOME`, then a shell's brace patterns such as `{a,b}`.
+- **Globs:** a glob is matched against the files there, and every match is checked.
+- **Symlinks** are followed.
+
+So a `../` that climbs out of the snapshot counts the same as the repository's own path. So does a link into it, whether named by its full path, by a bare name or through a glob, like the links under `~/.claude` in this setup.
 
 **Quoting does not hide a path:** each command is split the way a shell splits it, by Python's `shlex`, so a path disguised by quotes or backslashes (`"/"Users…`, `\/Users…`) is read as the shell reads it. A command `shlex` cannot split is flagged. That includes some valid shell, such as a heredoc whose text holds an apostrophe.
 
@@ -176,8 +181,9 @@ It exits 0 when two things hold for every command Codex ran:
 - a path after a `:`, `@` or `+`.
 
 **Exit 1** prints each command to look at, with why. It also covers:
-- a path through another variable;
-- a log with no command records, or with a record of a shape it does not know.
+- a path through another variable, or `~` for a user this machine does not have;
+- a brace pattern it cannot expand;
+- a log with no command records, or a record that does not split as exactly `<shell> -lc <script> in <dir>`. A line inside a script that looks like a status line therefore cannot end a record quietly.
 
 **Exit 2** means the log could not be read.
 

@@ -32,6 +32,8 @@ Both are harmless, but as the step was written, each would be reported as an inc
 
 **Commands are split as a shell splits them** (Python's `shlex`), so quotes and backslashes cannot disguise a path. A command that will not split is flagged.
 
+**How each word is checked:** every word is checked, not only path-like ones. Before resolving, the check expands `~user` and brace patterns, and matches globs against the files there.
+
 **Paths attached to a prefix count too:**
 - `file://` URLs to this machine;
 - a path right after an option's letters (`-C/p`);
@@ -61,7 +63,7 @@ Both are harmless, but as the step was written, each would be reported as an inc
 ## Verification
 
 - In this repository, with an uncommitted change, a prompt to the session adds a WIP/index pair whose SHA is logged as `Captured git baseline` (seen four times on 2026-11-01).
-- **`python3 -m unittest discover -s skills/codex-review`:** 15 tests.
+- **`python3 -m unittest discover -s skills/codex-review`:** 19 tests. Each of the check's 16 rules was removed in turn, with bytecode caching off, and every one of those 16 versions failed at least one test.
   - **They cover:**
     - the repository named in four forms, by `../` from the snapshot, and through a symlink;
     - nine prefix-attached forms;
@@ -136,3 +138,15 @@ Codex could not run the tests in its read-only sandbox, since `TemporaryDirector
 - **The pass's own LOW:** Codex found no ordinary write that names its path and passes the check.
 - **Applying the rules to that pass's own run** found the plugin's Stop-hook blob and the closure point above. § 4 gained both.
 - **Not re-run:** a seventh pass was not run. The one finding was wording, and the new rule only excuses a single fixed object, confirmed by its log line and gated by the check Codex had just passed.
+
+**The security-guidance plugin's automated review of the commit and of the push** found five more gaps. All were real and all are fixed, each with a test:
+- **`~user/…`** was not expanded.
+- **Brace expansion** was not modelled.
+- **A status-like line inside a script** could end its record early. A record must now split as exactly `<shell> -lc <script> in <dir>`.
+- **A glob** could reach a symlink in the snapshot.
+- **A bare word naming a symlink** in the snapshot, as in `echo x > lnk`, was never resolved. Every word is checked now.
+
+**Real logs:** of this session's ten, 23 commands in all, five pass. The other five are flagged:
+- three read-only searches;
+- the echoed example record;
+- one heredoc carrying a Python program, whose braces do not expand. That falls under "a program that picks its own paths", judged by hand.
