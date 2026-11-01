@@ -261,7 +261,42 @@ Global `CLAUDE.md`, § General: the exception for filing a job for the user (abo
 - **What fixing it would cost:** asking for every open issue's editor on every read, to guard against accounts that hold more power anyway.
 - **Otherwise:** Codex found no other break in the invariants it was asked about.
 
+## Trial (2026-11-01)
+
+**Where:** a scratch private repository, `tia-tools/task-board-trial`, with board `tia-tools` #9 set up by `setup_board.py`. Its `.task-board.json` named a page and a Goals script, and its `.claude/settings.json` wired the four hooks. The user typed the answers in this plan's session, and kept the repository for a second trial (its job #2, answered A).
+
+**The steps on the live board:**
+- **Ran as designed:**
+  - `check` and `sync`;
+  - `file` and `claim`;
+  - `ask` for a decision holding up the work, and for an approval;
+  - `ready`, which left out both jobs;
+  - `note --decided` and `--finding`;
+  - `page`, and `done`.
+
+  The page showed every part of D3 with links: the jobs, what each held up and how to answer, the Goals block, the work line and its turn, and Since.
+- **Redraw time:** each takes about 2.6 s (2.64, 2.64, 2.54 s), which answers § To check during the build.
+
+**Answers:**
+- **Refused, each with exit 3 and nothing changed:**
+  - a quote the user never typed;
+  - an undeclared answer (`#2 C`);
+  - an issue that is not a job;
+  - a run with no session ID.
+- **Accepted:** the user's one line, `#2 A, #3 approve`, closed both jobs, and each closing comment records the words and when they were typed. A rerun of `answer` found its own earlier answer and changed nothing.
+- **Then:** the work showed "Turn: the worker's".
+
+**The hooks, in headless `claude -p` sessions in the trial checkout:**
+- **PostToolUse:** a `sed -i` through Bash and an Edit-tool edit were each put back and logged, and the session quoted the hook's note word for word. Claude Code then added a note of its own, that a hook changed the file after the edit; it is harmless.
+- **FileChanged:** while a session sat in one long tool call, a write made from outside any tool call was put back and logged about a second later.
+- **Stop:** it redrew the page. It found no typed message to stamp, because a `claude -p` prompt carries no `origin` (entrypoint `sdk-cli`).
+  - **So a scripted session cannot answer a job,** as D8 wants.
+  - **"Since you last looked" needs a typed session,** such as the coordinator's in MulmoTerminal, whose typed messages are marked `origin.kind: "human"`.
+
+**Two bugs the trial found, fixed on `fix/task-board-progress-step-arg`, each with a test that failed before its fix:**
+- **`progress --step` overwrote argparse's own step name,** so `progress` fell through to drawing the page and wrote nothing. The unit tests called `Board.progress` directly; a test now runs every new step through `main()`.
+- **The page wrote a time from another day without its date,** so yesterday's 20:45 read as today's.
+
 **Not done yet:**
-- **No live run.** Nothing here has run against a real board, and no Claude Code session has run the hooks wired: the end-to-end checks in § Verification need a scratch project and board.
-- **Not measured:** how long one GitHub read takes per redraw (§ To check during the build).
+- **In use:** gkms's first week on the board (§ Verification).
 - **gkms's side,** including reading a worker's context share for D18, is its own ExecPlan.

@@ -224,8 +224,12 @@ def match_answer(quote: str, number: int, declared: tuple, messages: list, since
 
 # ---- the page -------------------------------------------------------------------------------------------------------
 
-def clock(at: datetime) -> str:
-    return at.astimezone().strftime("%H:%M")
+def clock(at: datetime, now: datetime | None = None) -> str:
+    """HH:MM, with the date in front when `at` is not on `now`'s day, so yesterday's 20:45 does not read as today's."""
+    local = at.astimezone()
+    if now is not None and local.date() != now.astimezone().date():
+        return local.strftime("%m-%d %H:%M")
+    return local.strftime("%H:%M")
 
 
 def waited(created: datetime, now: datetime) -> str:
@@ -290,9 +294,9 @@ def render_page(now: datetime, jobs: list, work: list, events: list, since: date
     lines += ["", f"## In progress ({len(work)})"]
     lines += [work_line(entry) for entry in work] or ["Nothing in progress."]
     recent = sorted((e for e in events if e[0] > since), key=lambda e: e[0], reverse=True)
-    lines += ["", f"## Since you last looked ({clock(since)})"]
+    lines += ["", f"## Since you last looked ({clock(since, now)})"]
     for at, number, url, text in recent[:SINCE_MAX]:
-        lines.append(f"- {clock(at)} {link(number, url)} {text}")
+        lines.append(f"- {clock(at, now)} {link(number, url)} {text}")
     if len(recent) > SINCE_MAX:
         lines.append(f"- … {len(recent) - SINCE_MAX} more: [recently updated issues]({more_url})")
     if not recent:

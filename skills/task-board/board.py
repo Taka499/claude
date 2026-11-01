@@ -1228,7 +1228,8 @@ def parse_args(argv: list) -> argparse.Namespace:
     progress.add_argument("--branch", required=True)
     for name in ("goal", "now", "next"):
         progress.add_argument(f"--{name}", required=True)
-    progress.add_argument("--step", type=int, required=True)
+    # dest: --step would otherwise write args.step, the name of the step being run, and the step would be lost
+    progress.add_argument("--step", type=int, required=True, dest="step_number")
     progress.add_argument("--of", type=int, required=True)
     note = steps.add_parser("note")
     note.add_argument("number", type=int)
@@ -1376,9 +1377,9 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None, environ: dic
                   f"#{found['number']} {found['kind']}: {found['state']}"
                   + (f", answered {found['answer']}" if found["answer"] else ""))
         elif args.step == "progress":
-            board.progress(args.number, args.branch, {"goal": args.goal, "step": args.step, "of": args.of,
+            board.progress(args.number, args.branch, {"goal": args.goal, "step": args.step_number, "of": args.of,
                                                       "now": args.now, "next": args.next})
-            print(f"#{args.number}: step {args.step} of {args.of}")
+            print(f"#{args.number}: step {args.step_number} of {args.of}")
         elif args.step == "note":
             board.note(args.number, "decided" if args.decided else "finding", args.text)
             print(f"noted on #{args.number}")
