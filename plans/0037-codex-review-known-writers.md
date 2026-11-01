@@ -23,14 +23,16 @@ Both are harmless, but as the step was written, each would be reported as an inc
 - **The run's own header.** `codex exec` prints the mode its commands run under; the log must show `sandbox: read-only` and `approval: never`.
 - **A canary run by the CLI, not the model.** `codex sandbox -c 'sandbox_mode="read-only"' -- touch` runs once inside the snapshot and once beside it. Both writes must be refused with `Operation not permitted`, and neither file may exist.
 
-**When both hold (`SANDBOX HELD`):** nothing on the file list is Codex's. The known writers are named only so each entry can be explained:
-- the session's own git commands;
-- a process polling the index;
-- the security-guidance plugin's stash baseline and its empty blob.
+**`SANDBOX HELD` is evidence, not proof:** the header states the policy, and the canary is a separate process run afterwards. So it never excuses an entry by itself.
+- **Not Codex's:** an entry is treated as another process's only when the sandbox held **and** one of the known writers explains it by its own evidence:
+  - the session's own git commands;
+  - a process polling the index;
+  - the security-guidance plugin's stash baseline, its empty blob, or its review state in `.git/sg-reviewed-*`.
 
-An entry they do not explain is reported as another process's write.
+  A wrong excuse then needs two failures at once.
+- **Codex's:** every other entry, and every entry when the sandbox is not shown. It is reported as an incident, as before.
 
-**When either fails (`SANDBOX NOT SHOWN`):** the earlier rule stands. Every listed entry the session did not write is Codex's, and the review is reported as run without a proven sandbox.
+The report always names step 4's result and each listed entry with what explains it.
 
 Step 3's inline form also saves Codex's log to `"$snapshot/review.txt"`, as the stdin form already did, so the header can be read.
 
@@ -50,7 +52,7 @@ The first version of this branch attributed each entry differently: it read the 
 
 **Size:** the checker reached 283 lines, its tests 172, and step 4 a long list of what it could not see.
 
-**Why every hole was the same hole:** each one needed the sandbox to be off, so a direct check of the sandbox closes all of them at once, and needs no parsing. The user asked whether the fixes were only patching holes, and whether to step back. With the user's go, this branch took that step.
+**Why every hole was the same hole:** each one needed the sandbox to be off, so evidence about the sandbox covers all of them at once, and needs no parsing. The user asked whether the fixes were only patching holes, and whether to step back. With the user's go, this branch took that step.
 
 The parser's commits stay in the branch's history: `85ba6cd`, `96851db`, `91fde17`, `fbfc820`.
 
@@ -61,9 +63,12 @@ The parser's commits stay in the branch's history: `85ba6cd`, `96851db`, `91fde1
   - **workspace-write:** both files written;
   - **danger-full-access:** both files written.
 - **The step-4 block on a real review snapshot** (the sixth pass's): it prints `SANDBOX HELD`.
-- **Negatives:**
-  - **a log header edited to `sandbox: workspace-write`** fails the header check;
-  - **the canary run under `workspace-write`** does not print `SANDBOX HELD`.
+- **Negatives,** each printing `SANDBOX NOT SHOWN`:
+  - a log header edited to `sandbox: workspace-write`, even with `sandbox: read-only` and `approval: never` appended later as if written by the model;
+  - a log missing its `OpenAI Codex v` banner;
+  - a log with only one `--------` line;
+  - the canary run under `workspace-write`.
+- **The single canary of the mode with no snapshot:** prints `SANDBOX HELD` on a real log.
 - **The header check on today's logs:** all ten show `sandbox: read-only` and `approval: never`.
 - **A model-run canary, tried first:** asked in the prompt to run the `touch`, Codex replied "I'll run the exact command now" and then ran nothing. That is why the CLI runs the canary.
 - **The known writers,** from the first version's evidence:
@@ -71,3 +76,16 @@ The parser's commits stay in the branch's history: `85ba6cd`, `96851db`, `91fde1
   - **its Stop hook:** the empty blob matched a `Stop hook:` line;
   - **the poller:** gakumas-supportcards' watch saw only `index.lock`.
 - `/codex-review` on this branch's diff.
+
+## Codex review (2026-11-01)
+
+One pass on the net diff at `f737e07`: CHANGES REQUESTED. Every finding was accepted.
+- **HIGH, `SANDBOX HELD` is not proof that the run itself could not write.** The canary is a separate process, and the header states a policy. Fixed by changing what the result may do, not by chasing proof: it excuses an entry only together with a known writer's own evidence.
+- **HIGH, the stdin form leaves approval to the configuration.** Its claim that this changes nothing is gone. The header check reads the effective `approval: never`, and it is required.
+- **MEDIUM, the header cut failed open.** With no `user` line, it copied the whole log. It now takes only the lines between the first two `--------` lines under the `OpenAI Codex v` banner, and fails without them.
+- **MEDIUM, the mode with no snapshot had no correct block.** The block now takes its canaries from a list, and that mode sets one.
+- **MEDIUM, the rest of the skill overstated step 4.** The stdin sentence is fixed, and step 7's report now includes step 4's result and each entry's explanation.
+
+**The new step 4 on this pass's own run:** `SANDBOX HELD`. It listed `.git`, `.git/index`, and `.git/sg-reviewed-shas` and `.git/sg-reviewed-diffs`. The last two are the plugin's review state, written at 18:49:13 after it reviewed this branch's commits, and they were added to the known writers.
+
+No second pass was run: the fixes narrow what `SANDBOX HELD` may excuse, and the shell block was tested on the cases above.
