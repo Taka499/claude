@@ -254,6 +254,13 @@ Global `CLAUDE.md`, § General: the exception for filing a job for the user (abo
   - **Decided:** the window is the time between two `os.replace` calls, so `SKILL.md` now says this, rather than adding machinery to catch it.
   - **Correction:** the earlier claim that every change is logged was too strong.
 
+**Second pass at `2f046e7`: CHANGES REQUESTED, one MEDIUM, not changed.**
+- **The finding:** another account editing an issue the board's login opened would still have its block trusted, since the author check passes.
+- **Why it does not reach a stranger:** GitHub lets an issue's text be edited only by its author and by accounts with write access to the repository.
+- **Why those accounts are out of scope:** they can already change the repository's code and its `.task-board.json`, so they are inside the boundary this rule does not police. The rule exists for a stranger on a public repository, who can open issues but cannot edit the user's.
+- **What fixing it would cost:** asking for every open issue's editor on every read, to guard against accounts that hold more power anyway.
+- **Otherwise:** Codex found no other break in the invariants it was asked about.
+
 **Not done yet:**
 - **No live run.** Nothing here has run against a real board, and no Claude Code session has run the hooks wired: the end-to-end checks in § Verification need a scratch project and board.
 - **Not measured:** how long one GitHub read takes per redraw (§ To check during the build).
