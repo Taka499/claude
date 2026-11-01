@@ -19,151 +19,55 @@ Both are harmless, but as the step was written, each would be reported as an inc
 
 ## Change
 
-`skills/codex-review/SKILL.md` § 4: the paragraph on entries that are not Codex's now names three kinds, each with how to recognise it:
-- **the session's own writes;**
-- **an index poller:** `.git` and possibly `.git/index` only, with no ref moved;
-- **the plugin's baseline:** "WIP on" / "index on" commits, each matched by a `Captured git baseline` line in the plugin's log.
+`skills/codex-review/SKILL.md` § 4 now asks first whether Codex could write at all. That is the question the step exists for: its read-only sandbox may silently not be in force, after a mistyped flag or a CLI upgrade. Two direct checks answer it:
+- **The run's own header.** `codex exec` prints the mode its commands run under; the log must show `sandbox: read-only` and `approval: never`.
+- **A canary run by the CLI, not the model.** `codex sandbox -c 'sandbox_mode="read-only"' -- touch` runs once inside the snapshot and once beside it. Both writes must be refused with `Operation not permitted`, and neither file may exist.
 
-**Only after a command check.** Each signature can also be made by Codex, so it excuses an entry only after a new script, `skills/codex-review/commands_check.py`, has read Codex's log. The script requires two things of every command Codex ran:
-- **where it ran:** in the snapshot;
-- **where its paths land:** inside the snapshot, or under a system prefix.
+**When both hold (`SANDBOX HELD`):** nothing on the file list is Codex's. The known writers are named only so each entry can be explained:
+- the session's own git commands;
+- a process polling the index;
+- the security-guidance plugin's stash baseline and its empty blob.
 
-**How a path is resolved:** against the command's working directory, with `~` and `$HOME` expanded and symlinks followed. So `../` out of the snapshot is caught, and so is a link into the repository, such as those under `~/.claude` in this setup.
+An entry they do not explain is reported as another process's write.
 
-**Commands are split as a shell splits them** (Python's `shlex`), so quotes and backslashes cannot disguise a path. A command that will not split is flagged.
+**When either fails (`SANDBOX NOT SHOWN`):** the earlier rule stands. Every listed entry the session did not write is Codex's, and the review is reported as run without a proven sandbox.
 
-**How each word is checked:** every word is checked, not only path-like ones. Before resolving, the check expands `~user` and brace patterns, and matches globs against the files there.
+Step 3's inline form also saves Codex's log to `"$snapshot/review.txt"`, as the stdin form already did, so the header can be read.
 
-**Paths attached to a prefix count too:**
-- `file://` URLs to this machine;
-- a path right after an option's letters (`-C/p`);
-- a path after `:`, `@` or `+`.
+## The parser that was dropped
 
-**What the check refuses:**
-- a path through any other variable;
-- a log with no records, or with a record of an unknown shape or with no status line.
+The first version of this branch attributed each entry differently: it read the commands Codex ran, from its log, and excused an entry only when no command could have written into the repository. That meant proving a negative over shell syntax, and it did not converge.
 
-**A flag is judged by hand:**
-- **only reads,** such as a search pattern that holds a path: the classification stands;
-- **could write, or unclear:** every entry is Codex's.
+**Review rounds:** six `/codex-review` passes and four rounds of the security-guidance plugin's automated review each found a new way a command could name a path the parser did not see. Each fix was sound and each round found another:
+- `../` and symlinks;
+- `file://` and paths attached to options;
+- `./` after a prefix;
+- escapes and quoting;
+- `#`;
+- braces and zsh globs;
+- bare variables;
+- a symlink removed after use.
 
-**A review with no snapshot** (a repository with no commit) skips the check, and treats every entry as Codex's.
+**Size:** the checker reached 283 lines, its tests 172, and step 4 a long list of what it could not see.
 
-**What the plugin's signature requires:**
-- the log line is written after the marker, at the second of the WIP commit's time;
-- every other new object is reachable from that commit (`git rev-list --objects <WIP>`, its whole closure, since git refreshes the times of an object that already exists);
-- the empty blob `e69de29…` that the plugin's Stop hook writes with `git add -N` when files are untracked is confirmed by its `Stop hook:` log line.
+**Why every hole was the same hole:** each one needed the sandbox to be off, so a direct check of the sandbox closes all of them at once, and needs no parsing. The user asked whether the fixes were only patching holes, and whether to step back. With the user's go, this branch took that step.
 
-**Step 3:** its inline form now saves Codex's log to `"$snapshot/review.txt"`, as the stdin form already did, so the script has a log to read.
-
-**Everything else stays an incident:** any entry that matches no kind, and every entry when the check fails. This corrects the rule, so the rule is replaced in place rather than added beside the old one.
-
-**Not caught:** a command that builds the repository's path out of sight, for example by decoding it. Like a process setting times back, that is deliberate evasion, outside what step 4 can see.
+The parser's commits stay in the branch's history: `85ba6cd`, `96851db`, `91fde17`, `fbfc820`.
 
 ## Verification
 
-- In this repository, with an uncommitted change, a prompt to the session adds a WIP/index pair whose SHA is logged as `Captured git baseline` (seen four times on 2026-11-01).
-- **`python3 -m unittest discover -s skills/codex-review`:** 22 tests. Each of the check's 18 rules was removed in turn, with bytecode caching off, and every one of those 18 versions failed at least one test.
-  - **They cover:**
-    - the repository named in four forms, by `../` from the snapshot, and through a symlink;
-    - nine prefix-attached forms;
-    - ordinary tokens such as `HEAD~1`, `HEAD:path`, `origin/master...HEAD` and a URL to GitHub, which pass;
-    - the plugin's log;
-    - a command run outside the snapshot;
-    - other variables and outside paths;
-    - an empty log, an unknown shape, a record with no status line, and a script that will not split;
-    - paths disguised by backslashes or by quotes;
-    - the exit statuses.
-  - **Each tested rule shown to catch a break,** its tests failing once the rule is removed:
-    - realpath;
-    - the snapshot test;
-    - the repository test;
-    - the variable test;
-    - the URL rule;
-    - the option rule;
-    - the `:@+` rule;
-    - the status-line rule;
-    - the token filter;
-    - the reason ranking;
-    - the shell-style split;
-    - the parse refusal.
-- **Against this session's nine real Codex logs,** 23 commands, all of which split:
-  - **Five pass.**
-  - **Three are flagged for read-only searches:** an `rg` pattern holding `/Users` and `~`, and two `sed '/…/,/…/p'` addresses. That is the judged-by-hand case.
-  - **One is flagged for an example log record** pasted into the prompt, which Codex's log echoes back. That is the unknown-shape case.
-- **The plugin's signature, against the real objects:**
-  - **The pair from 14:24:38:** all 5 of its objects are reachable from `d3d117d`, and the log line has the commit's second.
-  - **The sixth review pass's run (14:59):** 9 objects appeared. 8 are reachable from the WIP commit `0b32118`, which is logged at 14:59:57. The ninth is the empty blob, written at 14:59:38 by the plugin's Stop hook (logged `Stop hook: review_set=4`) while two new files were untracked. That led to the Stop-hook rule.
+- **The canary under each mode,** with codex-cli 0.150.1:
+  - **read-only:** both writes refused with `Operation not permitted`, and neither file exists;
+  - **workspace-write:** both files written;
+  - **danger-full-access:** both files written.
+- **The step-4 block on a real review snapshot** (the sixth pass's): it prints `SANDBOX HELD`.
+- **Negatives:**
+  - **a log header edited to `sandbox: workspace-write`** fails the header check;
+  - **the canary run under `workspace-write`** does not print `SANDBOX HELD`.
+- **The header check on today's logs:** all ten show `sandbox: read-only` and `approval: never`.
+- **A model-run canary, tried first:** asked in the prompt to run the `touch`, Codex replied "I'll run the exact command now" and then ran nothing. That is why the CLI runs the canary.
+- **The known writers,** from the first version's evidence:
+  - **the plugin:** each WIP commit matched a `Captured git baseline` log line to the second;
+  - **its Stop hook:** the empty blob matched a `Stop hook:` line;
+  - **the poller:** gakumas-supportcards' watch saw only `index.lock`.
 - `/codex-review` on this branch's diff.
-
-## Codex review (2026-11-01)
-
-**First pass, at `897ef67`: CHANGES REQUESTED.** Both HIGH findings were accepted.
-- **HIGH, the poller's signature could excuse Codex creating and deleting a file in `.git`.**
-- **HIGH, the plugin's signature could excuse Codex running `git stash create`, or appending the matching log line.** "At the commit's time" was also too loose.
-
-**The fix:** both signatures now apply only after the command check, and the plugin's signature gained the time and object conditions. The rest of Codex's suggestion was not taken: process attribution that Codex cannot forge would need tracing every process on the machine, and the threat step 4 guards against is an ordinary command landing in the repository after the sandbox silently dropped. That command names the repository, so the check sees it.
-
-**Two LOW findings confirmed the rest:** no contradiction with the rest of the skill, and the citations follow § Continuous Learning.
-
-**Second pass: CHANGES REQUESTED.** Every finding was accepted.
-- **HIGH, the check matched path strings.** A `../` or a symlink reached the repository unnamed. This session had found the same gap in its own reading. Fixed: paths are resolved, and links are followed.
-- **MEDIUM, an empty or reshaped log passed as "0 commands".** Fixed: the check fails closed.
-- **MEDIUM, a review with no snapshot could not pass the check.** Fixed: that mode skips the check, and counts every entry as Codex's.
-- **LOW:** the redirect in step 3 is consistent with the rest of the skill.
-
-**Third pass: CHANGES REQUESTED.** Every finding was accepted.
-- **HIGH, a path attached to a prefix went unseen.** Examples: `file:///repo/x` and `-o/repo/x`. This session had found the same gap while the pass ran. Fixed by the prefix rules.
-- **MEDIUM, a record with no status line was accepted.** Fixed: it fails closed.
-- **MEDIUM, no test covered the tokenizer's edges.** Fixed: three tests added, each shown to catch its rule's removal.
-- **LOW:** the judged-by-hand rule is safe as written.
-
-Codex could not run the tests in its read-only sandbox, since `TemporaryDirectory` had nowhere to write. This session ran them.
-
-**Fourth pass: CHANGES REQUESTED.** Every finding was accepted.
-- **HIGH, an attached path spelled `./…` was not examined.** Example: `-o./../../repo/x`.
-  - **The fix:** any path-like remainder after a prefix is now checked.
-  - **Ranking:** when a token can be read several ways, the gravest reason is reported, so a path into the repository wins over "outside the snapshot".
-- **MEDIUM, § 4's claim did not match:** it holds now.
-- **LOW:** ordinary review commands still pass.
-
-**Fifth pass: CHANGES REQUESTED.** It confirmed the fourth pass's finding resolved.
-- **HIGH, a path disguised by backslashes passed.** Example: `\/Users\/…`.
-  - **The fix covers the class,** quotes as well as backslashes: commands are now split by `shlex`, as a shell splits them.
-  - **Still out of scope:** `$'…'` quoting, `eval` and the like, named as such in § 4.
-- **MEDIUM, § 4's claim:** updated to match.
-
-**Sixth pass: CHANGES REQUESTED, one MEDIUM, accepted.**
-- **The finding:** a valid heredoc holding an apostrophe does not split under `shlex`. It is flagged, which is safe, but § 4 said only commands that "will not split" are flagged. § 4 now says so.
-- **The pass's own LOW:** Codex found no ordinary write that names its path and passes the check.
-- **Applying the rules to that pass's own run** found the plugin's Stop-hook blob and the closure point above. § 4 gained both.
-- **Not re-run:** a seventh pass was not run. The one finding was wording, and the new rule only excuses a single fixed object, confirmed by its log line and gated by the check Codex had just passed.
-
-**The security-guidance plugin's automated review of the commit and of the push** found five more gaps. All were real and all are fixed, each with a test:
-- **`~user/…`** was not expanded.
-- **Brace expansion** was not modelled.
-- **A status-like line inside a script** could end its record early. A record must now split as exactly `<shell> -lc <script> in <dir>`.
-- **A glob** could reach a symlink in the snapshot.
-- **A bare word naming a symlink** in the snapshot, as in `echo x > lnk`, was never resolved. Every word is checked now.
-
-**The plugin's second round, on that commit: four findings.**
-- **`#` inside a word: fixed.** `shlex` read a `#` inside a word as starting a comment, and dropped the rest of the line. So `curl https://a/b#frag -o /repo/x` hid its target. The split now has no comment character.
-- **zsh globs: fixed.** zsh's `**` and `[^…]` are now matched as zsh matches them.
-- **Bare variables: fixed.** Every bare variable was skipped. Now only those the script sets are, and `$HOME` resolves.
-- **Not fixed: a tracked symlink, written through and then removed before the check runs.** It is named in § 4 as outside the check's sight, with how to spot the risk; this repository tracks none.
-  - **Why it is outside:** reaching it needs the sandbox to be down *and* such a link in the repository.
-  - **A link Codex creates** names its target in the `ln -s` command, which the check resolves.
-  - **The suggested fix,** recording every link when the snapshot is taken, would add a step to every review, for every repository, against that one case.
-- **Not taken: flagging every glob with no match,** in place of checking its literal path.
-  - **Why:** it would flag every search pattern holding `*`, such as `rg "foo.*bar"`.
-  - **What is lost:** nothing that writes. A glob that matches nothing makes zsh stop, and bash passes it on as the literal path, which the check resolves.
-
-**Its third round, on `91fde17`: one finding, fixed.**
-- **The finding:** the exemption for variables the script sets could be fooled. `echo f=ok` counted as setting `f`, and `read` fills a variable at run time.
-- **The fix removes rules rather than adding one.** Only the variable of a `for` or `select` loop over plain words stays exempt, and any other bare variable is flagged.
-- **The cost:** a script like `g=c.md; cat $g` now needs a look by hand. None of this session's real logs had one; their loops were all `for f in <files>`.
-
-**Real logs:** of this session's ten, 23 commands in all, five pass. The other five are flagged:
-- three read-only searches;
-- the echoed example record;
-- one heredoc carrying a Python program, whose braces do not expand. That falls under "a program that picks its own paths", judged by hand.
