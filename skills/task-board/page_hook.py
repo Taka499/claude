@@ -49,7 +49,10 @@ def locate(cwd: Path, paths=None):
     config = board.main_checkout_config(config, root)
     if root is None or not config.page:
         return None
-    return root / config.page, state, root
+    try:
+        return board.page_target(root, config.page), state, root
+    except OSError:
+        return None  # a page that resolves outside the main checkout is neither watched nor written
 
 
 def restore(page: Path, copy: Path) -> bool:

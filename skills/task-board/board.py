@@ -642,11 +642,18 @@ def write_page(root: Path, state: Path, page: str, text: str) -> Path:
     """The generated copy first, then the page: the hooks restore the page from the copy, and with the copy written
     first, the page's own write never reads as a hand edit. The page's real path must stay inside the main
     checkout, so a symlinked folder cannot send the write elsewhere."""
+    target = page_target(root, page)
+    write_atomically(state / "page.md", text)
+    write_atomically(target, text)
+    return target
+
+
+def page_target(root: Path, page: str) -> Path:
+    """The page's real path, which must stay inside the main checkout: OSError otherwise. Every write of the page,
+    the helper's and the restore hook's, goes through here."""
     target = (root / page).resolve()
     if not target.is_relative_to(root.resolve()):
         raise OSError(f"the page {page} resolves to {target}, outside {root}")
-    write_atomically(state / "page.md", text)
-    write_atomically(target, text)
     return target
 
 

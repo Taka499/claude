@@ -19,7 +19,7 @@ NOW = datetime(2026, 11, 1, 3, 0, tzinfo=timezone.utc)
 
 class Hooks(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(tempfile.mkdtemp()).resolve()  # the hook watches the page's real path
         self.state = self.root / ".git" / "task-board"
         self.state.mkdir(parents=True)
         (self.root / ".task-board.json").write_text(json.dumps({"owner": "o", "project": 1, "repo": "o/r",
@@ -50,6 +50,15 @@ class Hooks(unittest.TestCase):
                                                                "page": "coord/branch.md"}))
         printed = json.loads(self.run_hook("session-start", cwd=worktree))
         self.assertEqual(printed["hookSpecificOutput"]["watchPaths"], [str(self.page)])
+
+    def test_a_page_that_resolves_outside_the_checkout_is_neither_watched_nor_written(self):
+        outside = Path(tempfile.mkdtemp())
+        self.page.parent.rmdir()
+        (self.root / "coord").symlink_to(outside)
+        (self.state / "page.md").write_text("drawn\n")
+        self.assertEqual(self.run_hook("session-start"), "")
+        self.run_hook("restore", {"hook_event_name": "PostToolUse"})
+        self.assertFalse((outside / "board.md").exists())
 
     def test_a_project_without_a_page_gets_nothing(self):
         (self.root / ".task-board.json").write_text(json.dumps({"owner": "o", "project": 1, "repo": "o/r"}))
