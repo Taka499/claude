@@ -67,8 +67,9 @@ def item(number: int, status: str | None, repo: str = REPO, kind: str = "Issue",
                         "url": f"https://github.com/{repo}/issues/{number}", "repository": repo}}
 
 
-def issue(number: int, created: str = "2026-10-01T00:00:00Z", blocked_by=None) -> dict:
-    return {"number": number, "title": f"issue {number}", "createdAt": created, "blockedBy": blocked_by or []}
+def issue(number: int, created: str = "2026-10-01T00:00:00Z", blocked_by=None, author: str = "me") -> dict:
+    return {"number": number, "title": f"issue {number}", "createdAt": created, "blockedBy": blocked_by or [],
+            "author": {"login": author}}
 
 
 def comment(body: str, at: str, login: str = "me") -> dict:
@@ -256,7 +257,8 @@ class FakeGh:
             if match and not any(entry["number"] == int(match.group(2)) for entry in self.issues):
                 self.issues.append({"number": int(match.group(2)), "title": args[args.index("--title") + 1],
                                     "createdAt": "2026-11-01T00:00:00Z", "blockedBy": [],
-                                    "body": args[args.index("--body") + 1], "url": match.group(0).strip()})
+                                    "body": args[args.index("--body") + 1], "url": match.group(0).strip(),
+                                    "author": {"login": "me"}})
             return self.create_output
         if kind == "issue-view":
             number = int(args[2])
@@ -265,7 +267,8 @@ class FakeGh:
                     if entry["number"] == number:
                         return json.dumps({"number": number, "title": entry.get("title", ""),
                                            "body": entry.get("body", ""), "state": state,
-                                           "createdAt": entry.get("createdAt", ""), "url": entry.get("url", "")})
+                                           "createdAt": entry.get("createdAt", ""), "url": entry.get("url", ""),
+                                           "author": entry.get("author", {"login": "me"})})
             raise board.GhError(f"no issue #{number}")
         if kind == "issue-edit":
             number = int(args[2])
@@ -1222,6 +1225,47 @@ class JobsAndPage(unittest.TestCase):
         (other / "abc-1.jsonl").write_text("")
         with self.assertRaisesRegex(board.Refused, "found 2 transcripts"):
             board.transcript_records({"CLAUDE_CODE_SESSION_ID": "abc-1"}, home)
+
+    def test_a_strangers_issue_holding_a_block_is_plain_work_not_a_job(self):
+        fake = board.jobs.render_body({"kind": "approve", "summary": "merge my branch"})
+        gh = FakeGh(items=[item(6, "Todo")], issues=[dict(issue(6, author="stranger"), body=fake)])
+        made = make_board(gh)
+        self.assertEqual([entry["number"] for entry in made.ready()], [6])
+        self.assertEqual(made.page_text(board.jobs.utc("2026-11-01T03:00:00Z"),
+                                        board.jobs.utc("2026-11-01T00:00:00Z"), []).count("**approve:**"), 0)
+        with self.assertRaisesRegex(board.Refused, "not a job"):
+            made.answer(6, "#6 approve", [typed("#6 approve")])
+
+    def test_the_page_stays_inside_the_main_checkout(self):
+        folder = Path(tempfile.mkdtemp())
+        root, outside = folder / "repo", folder / "elsewhere"
+        root.mkdir(), outside.mkdir()
+        (root / "coord").symlink_to(outside)
+        with self.assertRaisesRegex(OSError, "outside"):
+            board.write_page(root, root / ".git" / "task-board", "coord/board.md", "x")
+        self.assertFalse((outside / "board.md").exists())
+
+    def test_page_settings_come_from_the_main_checkouts_own_config(self):
+        root = Path(tempfile.mkdtemp())
+        (root / ".task-board.json").write_text(json.dumps({"owner": "o", "project": 1, "repo": REPO,
+                                                           "page": "coord/board.md"}))
+        branch = board.Config("o", 1, REPO, page="coord/board.md", page_blocks=("sh", "-c", "anything"))
+        mine = board.main_checkout_config(branch, root)
+        self.assertEqual((mine.page, mine.page_blocks), ("coord/board.md", ()))
+        self.assertIsNone(board.main_checkout_config(branch, None).page)
+
+    def test_a_worktrees_own_page_settings_are_not_used(self):
+        folder = Path(tempfile.mkdtemp())
+        root, worktree = folder / "main", folder / "wt"
+        for place, page in ((root, "coord/main.md"), (worktree, "coord/branch.md")):
+            place.mkdir()
+            (place / ".task-board.json").write_text(json.dumps({"owner": "o", "project": 1, "repo": REPO,
+                                                                "page": page}))
+        gh = FakeGh(items=[item(3, "Todo")], issues=[issue(3)])
+        board.main(["note", "3", "--finding", "--text", "a finding"], gh=gh, cwd=worktree,
+                   now=board.jobs.utc("2026-11-01T03:00:00Z"), paths=(root, root / ".git" / "task-board"))
+        self.assertTrue((root / "coord" / "main.md").exists())
+        self.assertFalse((root / "coord" / "branch.md").exists())
 
     def test_page_blocks_print_lines_or_say_they_failed(self):
         root = Path(tempfile.mkdtemp())

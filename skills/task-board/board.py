@@ -463,22 +463,27 @@ def missing_from_board(items: list, issues: list, repo: str) -> list:
     return sorted(issue["number"] for issue in issues if item_for(items, issue["number"], repo) is None)
 
 
-def block_of(issue: dict, pattern: str = jobs.DEFAULT_ID_PATTERN):
-    """An issue's task-board block, as jobs.read_block gives it: (data, None), (None, None) or (None, reason)."""
+def block_of(issue: dict, pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None):
+    """An issue's task-board block, as jobs.read_block gives it: (data, None), (None, None) or (None, reason).
+    With `login`, only an issue written by that account, the one every session acts as, can hold a block: on a
+    public repository anyone can open an issue, and a stranger's block must neither show as a job nor hide work."""
+    if login is not None and ((issue.get("author") or {}).get("login") or "") != login:
+        return None, None
     return jobs.read_block(issue.get("body") or "", pattern)
 
 
-def is_job(issue: dict, pattern: str = jobs.DEFAULT_ID_PATTERN) -> bool:
-    data, _ = block_of(issue, pattern)
+def is_job(issue: dict, pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None) -> bool:
+    data, _ = block_of(issue, pattern, login)
     return bool(data) and data["kind"] in jobs.JOB_KINDS
 
 
-def malformed(issues: list, pattern: str = jobs.DEFAULT_ID_PATTERN) -> list:
+def malformed(issues: list, pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None) -> list:
     """(number, reason) of each open issue whose task-board block is malformed."""
-    return [(issue["number"], error) for issue in issues for _, error in [block_of(issue, pattern)] if error]
+    return [(issue["number"], error) for issue in issues for _, error in [block_of(issue, pattern, login)] if error]
 
 
-def ready_candidates(items: list, issues: list, repo: str, pattern: str = jobs.DEFAULT_ID_PATTERN) -> list:
+def ready_candidates(items: list, issues: list, repo: str, pattern: str = jobs.DEFAULT_ID_PATTERN,
+                     login: str | None = None) -> list:
     """Numbers of the board's items for open issues of this repository with Status Todo and no open blocker. A job
     for the user is never ready work, and neither is an issue whose block is malformed: it might be one."""
     open_issues = {issue["number"]: issue for issue in issues}
@@ -488,7 +493,7 @@ def ready_candidates(items: list, issues: list, repo: str, pattern: str = jobs.D
         number = content.get("number")
         if content.get("type") != "Issue" or repo_of(content) != repo or number not in open_issues:
             continue
-        data, error = block_of(open_issues[number], pattern)
+        data, error = block_of(open_issues[number], pattern, login)
         if error or (data and data["kind"] in jobs.JOB_KINDS):
             continue
         if status_of(item) == TODO and not open_blockers(open_issues[number], set(open_issues), repo):
@@ -497,7 +502,7 @@ def ready_candidates(items: list, issues: list, repo: str, pattern: str = jobs.D
 
 
 def ready(items: list, issues: list, repo: str, priorities, priority_of: dict,
-          pattern: str = jobs.DEFAULT_ID_PATTERN) -> list:
+          pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None) -> list:
     """Ready work, ordered by Priority (most urgent first; an issue without one counts as the middle option), then
     oldest first. `priority_of` maps an issue number to its Priority, or "" for none. Each entry: number, title,
     priority, created."""
@@ -505,7 +510,7 @@ def ready(items: list, issues: list, repo: str, priorities, priority_of: dict,
     rank = {priority: index for index, priority in enumerate(priorities)}
     default = priorities[len(priorities) // 2]
     result = []
-    for number in ready_candidates(items, issues, repo, pattern):
+    for number in ready_candidates(items, issues, repo, pattern, login):
         priority = priority_of.get(number) or default
         result.append({"number": number, "title": open_issues[number].get("title", ""), "priority": priority,
                        "created": open_issues[number].get("createdAt", "")})
@@ -557,16 +562,17 @@ def holds_up(job: int, issues: list, repo: str) -> list:
             if job in open_blockers(issue, open_numbers, repo)]
 
 
-def page_parts(items: list, issues: list, repo: str, pattern: str = jobs.DEFAULT_ID_PATTERN):
+def page_parts(items: list, issues: list, repo: str, pattern: str = jobs.DEFAULT_ID_PATTERN,
+               login: str | None = None):
     """(the open jobs, oldest first; the In Progress work), shaped as jobs.render_page takes them. An open issue
     whose block is malformed and that is not in progress is listed with the jobs, so it is seen, as malformed."""
     open_issues = {issue["number"]: issue for issue in issues}
     status = {item["content"]["number"]: status_of(item) for item in items
               if item["content"]["type"] == "Issue" and repo_of(item["content"]) == repo}
-    job_numbers = {number for number, issue in open_issues.items() if is_job(issue, pattern)}
+    job_numbers = {number for number, issue in open_issues.items() if is_job(issue, pattern, login)}
     found_jobs, work = [], []
     for number, issue in open_issues.items():
-        data, error = block_of(issue, pattern)
+        data, error = block_of(issue, pattern, login)
         entry = {"number": number, "title": issue.get("title", ""), "url": issue.get("url", ""),
                  "data": data, "malformed": error}
         if number in job_numbers or (error and status.get(number) != IN_PROGRESS):
@@ -634,10 +640,26 @@ def write_atomically(path: Path, text: str) -> None:
 
 def write_page(root: Path, state: Path, page: str, text: str) -> Path:
     """The generated copy first, then the page: the hooks restore the page from the copy, and with the copy written
-    first, the page's own write never reads as a hand edit."""
+    first, the page's own write never reads as a hand edit. The page's real path must stay inside the main
+    checkout, so a symlinked folder cannot send the write elsewhere."""
+    target = (root / page).resolve()
+    if not target.is_relative_to(root.resolve()):
+        raise OSError(f"the page {page} resolves to {target}, outside {root}")
     write_atomically(state / "page.md", text)
-    write_atomically(root / page, text)
-    return root / page
+    write_atomically(target, text)
+    return target
+
+
+def main_checkout_config(config: Config, root) -> Config:
+    """The page's settings, which can name a command (page_blocks), come from the main checkout's own
+    .task-board.json, not from whatever branch a worker's worktree has checked out."""
+    if root is None:
+        return replace(config, page=None, page_blocks=())
+    try:
+        own = parse_config((root / CONFIG_FILE).read_text())
+    except (OSError, BoardError):
+        return replace(config, page=None, page_blocks=())
+    return replace(config, page=own.page, page_blocks=own.page_blocks, id_pattern=own.id_pattern)
 
 
 def checkout_paths(cwd: Path):
@@ -760,11 +782,11 @@ class Board:
 
     def open_issues(self) -> list:
         return json.loads(self.gh.run("issue", "list", "--repo", self.config.repo, "--state", "open", "--limit",
-                                      LIMIT, "--json", "number,title,createdAt,blockedBy,body,url"))
+                                      LIMIT, "--json", "number,title,createdAt,blockedBy,body,url,author"))
 
     def issue(self, number: int) -> dict:
         return json.loads(self.gh.run("issue", "view", str(number), "--repo", self.config.repo, "--json",
-                                      "number,title,body,state,createdAt,url"))
+                                      "number,title,body,state,createdAt,url,author"))
 
     def updated_since(self, since: datetime) -> list:
         """Issues of any state updated on or after `since`'s day, with their comments: what Since reads."""
@@ -877,7 +899,7 @@ class Board:
         lines.append("ok: no workflow sets a Status on items as they are added")
         issues = self.open_issues()
         lines.append(f"ok: {len(issues)} open issue(s) in {self.config.repo}")
-        for number, error in malformed(issues, self.config.id_pattern):
+        for number, error in malformed(issues, self.config.id_pattern, self.login()):
             lines.append(f"warn: #{number}: {error}; fix it with the helper")
         on_board = [item["content"]["number"] for item in items
                     if item["content"]["type"] == "Issue" and repo_of(item["content"]) == self.config.repo]
@@ -915,12 +937,12 @@ class Board:
     def ready(self) -> list:
         items, issues = self.items(), self.open_issues()
         priorities = self.priority_field().priorities
-        pattern = self.config.id_pattern
-        for number, error in malformed(issues, pattern):
+        pattern, login = self.config.id_pattern, self.login()
+        for number, error in malformed(issues, pattern, login):
             self.warnings.append(f"#{number} is left out of ready work: {error}")
-        candidates = ready_candidates(items, issues, self.config.repo, pattern)
+        candidates = ready_candidates(items, issues, self.config.repo, pattern, login)
         return ready(items, issues, self.config.repo, priorities,
-                     {number: self.priority_of(number, items) for number in candidates}, pattern)
+                     {number: self.priority_of(number, items) for number in candidates}, pattern, login)
 
     def file(self, title: str, body: str, todo: bool, priority: str | None, blocked_by: str | None) -> int:
         self.status_field()  # check the board, the workflows and the priority before creating anything on it
@@ -1062,7 +1084,7 @@ class Board:
     def job(self, number: int):
         """(the issue, its job block); Refused for an issue that is not a job or whose block is malformed."""
         issue = self.issue(number)
-        data, error = block_of(issue, self.config.id_pattern)
+        data, error = block_of(issue, self.config.id_pattern, self.login())
         if error:
             raise Refused(f"#{number}: {error}")
         if not data or data["kind"] not in jobs.JOB_KINDS:
@@ -1120,7 +1142,7 @@ class Board:
 
     def page_text(self, now: datetime, since: datetime, blocks: list) -> str:
         items, issues = self.items(), self.open_issues()
-        found_jobs, work = page_parts(items, issues, self.config.repo, self.config.id_pattern)
+        found_jobs, work = page_parts(items, issues, self.config.repo, self.config.id_pattern, self.login())
         happened = events(self.updated_since(since), self.login())
         more = f"https://github.com/{self.config.repo}/issues?q=sort%3Aupdated-desc"
         return jobs.render_page(now, found_jobs, work, happened, since, blocks, more)
@@ -1278,6 +1300,8 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None, environ: dic
         now = now or datetime.now(timezone.utc)
         root, state = paths if paths is not None else \
             (checkout_paths(here) if board.config.page else (None, None))
+        if board.config.page:
+            board.config = main_checkout_config(board.config, root)
         if args.step == "check":
             for line in board.check() + (restore_warnings(state, now) if state else []):
                 print(line)
