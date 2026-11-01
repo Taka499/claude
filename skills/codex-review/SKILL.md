@@ -104,7 +104,7 @@ git -C <repository> for-each-ref --format='%(refname) %(objectname)' > "$snapsho
 touch "$snapshot/started" || exit 1
 ```
 
-**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, writing `<repository>` wherever step 3 has `"$snapshot/repo"` (the `cd`, the prompt, and the stdin form's `grep`), keep step 4 exactly as written, and say in the report that no snapshot was used.
+**A repository with no commit yet** has no `HEAD` to clone: `rev-parse --verify HEAD` stops the first block with the message above, and `git -C <repository> rev-list -n 1 --all` printing nothing confirms it. Review it in place instead: skip the clone and the copy, run this last block, run Codex from `<repository>` itself, writing `<repository>` wherever step 3 has `"$snapshot/repo"` (the `cd`, the prompt, and the stdin form's `grep`), and say in the report that no snapshot was used. In step 4, keep the file list and the refs check, but skip the command check. Codex then works in the repository itself, so the check cannot tell its commands from a write, and every listed entry you did not write is Codex's.
 
 ### 3. Run Codex
 
@@ -120,8 +120,10 @@ Answer these specifically:
 
 List one bullet per finding, each with a severity. Then end the ENTIRE response with
 exactly one final line and nothing after it:
-'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'." < /dev/null
+'CODEX VERDICT: LGTM' or 'CODEX VERDICT: CHANGES REQUESTED'." < /dev/null > "$snapshot/review.txt" 2>&1
 ```
+
+Either form saves Codex's whole log to `"$snapshot/review.txt"`; step 4 reads the commands Codex ran from it.
 
 **In a worktree-isolated session (EnterWorktree), feed the prompt through a file on stdin.** The harness there refuses any shell command whose quoted text mentions `git` — and this prompt does, in `git diff` — and the `-c 'approval_policy="never"'` flag trips the same check. Write the prompt to `"$snapshot/prompt.txt"` with the Write tool and run
 
@@ -154,7 +156,45 @@ cat "$snapshot/written.txt"; diff "$snapshot/refs-before.txt" "$snapshot/refs-af
 
 `-cnewer` compares the inode change time, which every write and every permission change updates: a commit, a ref, an edited, new or `chmod`ed file, tracked, untracked or ignored. A deleted file shows as its directory. The file system here (APFS) keeps nanosecond times, so a write just after the marker is not lost to rounding. What it cannot catch is a process that sets times back deliberately. Codex's read-only sandbox stops that too, but this step exists for the case where that sandbox is not in force.
 
-Some entries are not Codex's. Three kinds are known:
+Then check where Codex ran its commands, from its log:
+
+```bash
+python3 -I ~/.claude/skills/codex-review/commands_check.py "$snapshot/review.txt" "$snapshot/repo" <repository>
+```
+
+It exits 0 when two things hold for every command Codex ran:
+- **where it ran:** in the snapshot;
+- **what it names:** every path lands inside the snapshot or under a system prefix such as `/usr/`.
+
+**How a path is resolved:** against the command's own working directory, with `~` and `$HOME` expanded and symlinks followed. So a `../` that climbs out of the snapshot counts the same as the repository's own path, and so does a link into it, such as the ones under `~/.claude` in this setup.
+
+**Quoting does not hide a path:** each command is split the way a shell splits it, by Python's `shlex`, so a path disguised by quotes or backslashes (`"/"Users…`, `\/Users…`) is read as the shell reads it. A command `shlex` cannot split is flagged. That includes some valid shell, such as a heredoc whose text holds an apostrophe.
+
+**A path attached to a prefix counts too:**
+- a `file://` URL to this machine;
+- a path right after an option's letters (`-C/p`);
+- a path after a `:`, `@` or `+`.
+
+**Exit 1** prints each command to look at, with why. It also covers:
+- a path through another variable;
+- a log with no command records, or with a record of a shape it does not know.
+
+**Exit 2** means the log could not be read.
+
+**Exit 1 is not by itself an incident.** Read each flagged command:
+- **Only reads:** a search whose pattern holds a path, or a file read outside the snapshot, changes nothing in the repository. Say so in the report, and go on as for exit 0.
+- **Could write, or unclear:** if the command could have written to what it names, or you cannot tell, every listed entry is Codex's.
+
+**Only when the check leaves no command that could have written may an entry count as another process's,** and then only when it matches one of the three kinds below. Each kind's signature can also be made by a write, so the signature alone excuses nothing; Codex's own record of where it worked makes the difference.
+
+**What the check cannot see:**
+- a `cd` within one shell line;
+- a path built at run time, by `$(…)`, `$'\x2f'`-style quoting, `eval` or decoding;
+- a program that picks its own paths, or builds one from separate arguments or from its own configuration.
+
+Short of those, an ordinary write names its path in a form the check resolves.
+
+Three kinds of entry are known not to be Codex's:
 
 - **Your own.** A `git status` or `git diff` run in the repository during the review may refresh `.git/index`, and anything you edited there yourself shows up too.
 - **A process that polls the index.** An editor's git integration, or another session's `git status`, creates and removes `.git/index.lock` every few seconds. The result:
@@ -167,11 +207,15 @@ Some entries are not Codex's. Three kinds are known:
     - two commits titled "WIP on <branch>: …" and "index on <branch>: …";
     - their trees;
     - a blob.
-  - **How to confirm each:** `git log -1 --format=%s <sha>` shows such a title, and `~/.claude/security/log.txt` has the line `Captured git baseline: <the WIP commit's first 12 characters>` at the commit's time.
+  - **How to confirm each, all three must hold:**
+    - **The title:** `git log -1 --format=%s <sha>` shows "WIP on …" or "index on …".
+    - **The log line:** `~/.claude/security/log.txt` has `Captured git baseline: <the WIP commit's first 12 characters>`, written after the marker, at the second of the WIP commit's committer time (`git log -1 --format=%cd --date=format:%T <sha>`).
+    - **The other objects:** every other new object under `.git/objects/` is reachable from that commit, as listed by `git rev-list --objects <WIP sha>`. This is its whole closure, not only what it adds over `HEAD`: git refreshes an existing object's times rather than writing it again, so a shared object can show up too.
+  - **Its Stop hook, too:** when the repository has untracked files, the hook runs `git add -N` on its copy of the index, which writes the empty blob `e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`. Confirm it by a `Stop hook:` line in the same log, at the blob's change time.
 
-  (This repository, 2026-11-01, plugin 2.0.17: one pair at each of three review notices, none on the pass with a clean tree.)
+  (This repository, 2026-11-01, plugin 2.0.17: one pair at each review notice while the tree had changes, none on the pass with a clean tree; the empty blob at a turn's end while two files were untracked.)
 
-Anything else listed that you did not write is Codex's. Stop and report it to the user as an incident, before any finding. Name what changed (a ref, a commit and its author, a file), and do not undo it on your own, because the global Git rules forbid rewriting history and deleting untracked files without the user's permission. A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
+Anything else listed that you did not write is Codex's, and so is everything listed when a flagged command could have written. Stop and report it to the user as an incident, before any finding. Name what changed (a ref, a commit and its author, a file), and do not undo it on your own, because the global Git rules forbid rewriting history and deleting untracked files without the user's permission. A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
 
 ### 5. Evaluate every finding — this is the step that is not optional
 
