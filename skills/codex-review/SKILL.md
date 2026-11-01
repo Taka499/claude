@@ -154,7 +154,24 @@ cat "$snapshot/written.txt"; diff "$snapshot/refs-before.txt" "$snapshot/refs-af
 
 `-cnewer` compares the inode change time, which every write and every permission change updates: a commit, a ref, an edited, new or `chmod`ed file, tracked, untracked or ignored. A deleted file shows as its directory. The file system here (APFS) keeps nanosecond times, so a write just after the marker is not lost to rounding. What it cannot catch is a process that sets times back deliberately. Codex's read-only sandbox stops that too, but this step exists for the case where that sandbox is not in force.
 
-Some entries can be your own. A `git status` or `git diff` run in the repository during the review may refresh `.git/index`, and anything you edited there yourself shows up too. Anything listed that you did not write is Codex's. Stop and report it to the user as an incident, before any finding. Name what changed (a ref, a commit and its author, a file), and do not undo it on your own, because the global Git rules forbid rewriting history and deleting untracked files without the user's permission. A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
+Some entries are not Codex's. Three kinds are known:
+
+- **Your own.** A `git status` or `git diff` run in the repository during the review may refresh `.git/index`, and anything you edited there yourself shows up too.
+- **A process that polls the index.** An editor's git integration, or another session's `git status`, creates and removes `.git/index.lock` every few seconds. The result:
+  - **What shows:** `.git` itself, and sometimes `.git/index`.
+  - **What doesn't:** nothing else inside `.git` changes, and no ref moves.
+
+  (gakumas-supportcards, 2026-11-01: about 150 changes of `.git` in a 75-second watch, with only `index.lock` seen coming and going.)
+- **The `security-guidance` plugin's baseline.** Where that plugin is installed with its review on, its UserPromptSubmit hook runs `git stash create` on a copy of the index each time a prompt reaches the session, a background task's completion notice included.
+  - **What it writes:** with uncommitted changes in the repository, loose objects under `.git/objects/`, all unreferenced:
+    - two commits titled "WIP on <branch>: …" and "index on <branch>: …";
+    - their trees;
+    - a blob.
+  - **How to confirm each:** `git log -1 --format=%s <sha>` shows such a title, and `~/.claude/security/log.txt` has the line `Captured git baseline: <the WIP commit's first 12 characters>` at the commit's time.
+
+  (This repository, 2026-11-01, plugin 2.0.17: one pair at each of three review notices, none on the pass with a clean tree.)
+
+Anything else listed that you did not write is Codex's. Stop and report it to the user as an incident, before any finding. Name what changed (a ref, a commit and its author, a file), and do not undo it on your own, because the global Git rules forbid rewriting history and deleting untracked files without the user's permission. A review whose reviewer wrote to the repository is still worth reading, but say that it was run that way.
 
 ### 5. Evaluate every finding — this is the step that is not optional
 
