@@ -63,7 +63,7 @@ Both are harmless, but as the step was written, each would be reported as an inc
 ## Verification
 
 - In this repository, with an uncommitted change, a prompt to the session adds a WIP/index pair whose SHA is logged as `Captured git baseline` (seen four times on 2026-11-01).
-- **`python3 -m unittest discover -s skills/codex-review`:** 19 tests. Each of the check's 16 rules was removed in turn, with bytecode caching off, and every one of those 16 versions failed at least one test.
+- **`python3 -m unittest discover -s skills/codex-review`:** 22 tests. Each of the check's 18 rules was removed in turn, with bytecode caching off, and every one of those 18 versions failed at least one test.
   - **They cover:**
     - the repository named in four forms, by `../` from the snapshot, and through a symlink;
     - nine prefix-attached forms;
@@ -145,6 +145,18 @@ Codex could not run the tests in its read-only sandbox, since `TemporaryDirector
 - **A status-like line inside a script** could end its record early. A record must now split as exactly `<shell> -lc <script> in <dir>`.
 - **A glob** could reach a symlink in the snapshot.
 - **A bare word naming a symlink** in the snapshot, as in `echo x > lnk`, was never resolved. Every word is checked now.
+
+**The plugin's second round, on that commit: four findings.**
+- **`#` inside a word: fixed.** `shlex` read a `#` inside a word as starting a comment, and dropped the rest of the line. So `curl https://a/b#frag -o /repo/x` hid its target. The split now has no comment character.
+- **zsh globs: fixed.** zsh's `**` and `[^…]` are now matched as zsh matches them.
+- **Bare variables: fixed.** Every bare variable was skipped. Now only those the script sets are, and `$HOME` resolves.
+- **Not fixed: a tracked symlink, written through and then removed before the check runs.** It is named in § 4 as outside the check's sight, with how to spot the risk; this repository tracks none.
+  - **Why it is outside:** reaching it needs the sandbox to be down *and* such a link in the repository.
+  - **A link Codex creates** names its target in the `ln -s` command, which the check resolves.
+  - **The suggested fix,** recording every link when the snapshot is taken, would add a step to every review, for every repository, against that one case.
+- **Not taken: flagging every glob with no match,** in place of checking its literal path.
+  - **Why:** it would flag every search pattern holding `*`, such as `rg "foo.*bar"`.
+  - **What is lost:** nothing that writes. A glob that matches nothing makes zsh stop, and bash passes it on as the literal path, which the check resolves.
 
 **Real logs:** of this session's ten, 23 commands in all, five pass. The other five are flagged:
 - three read-only searches;

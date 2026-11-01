@@ -164,16 +164,18 @@ python3 -I ~/.claude/skills/codex-review/commands_check.py "$snapshot/review.txt
 
 It exits 0 when two things hold for every command Codex ran:
 - **where it ran:** in the snapshot;
-- **what it names:** every word, resolved as a path, lands inside the snapshot or under a system prefix such as `/usr/`. A bare variable such as `"$f"` is left out.
+- **what it names:** every word, resolved as a path, lands inside the snapshot or under a system prefix such as `/usr/`. A bare variable such as `"$f"` is left out only when the script sets it itself, with `f=…`, `for f in`, `select` or `read`. Any other variable is flagged, and `$HOME` counts as home.
 
 **How a word is resolved:** against the command's own working directory.
 - **Expanded first:** `~`, `~user` and `$HOME`, then a shell's brace patterns such as `{a,b}`.
-- **Globs:** a glob is matched against the files there, and every match is checked.
+- **Globs:** a glob is matched against the files there, zsh's `**` and `[^…]` included, and every match is checked.
 - **Symlinks** are followed.
 
 So a `../` that climbs out of the snapshot counts the same as the repository's own path. So does a link into it, whether named by its full path, by a bare name or through a glob, like the links under `~/.claude` in this setup.
 
-**Quoting does not hide a path:** each command is split the way a shell splits it, by Python's `shlex`, so a path disguised by quotes or backslashes (`"/"Users…`, `\/Users…`) is read as the shell reads it. A command `shlex` cannot split is flagged. That includes some valid shell, such as a heredoc whose text holds an apostrophe.
+**Quoting does not hide a path:** each command is split the way a shell splits it, by Python's `shlex`, so a path disguised by quotes or backslashes (`"/"Users…`, `\/Users…`) is read as the shell reads it.
+- **A `#` hides nothing:** it is not read as starting a comment, so nothing after it goes unread. A comment's words are checked too.
+- **What is flagged:** a command `shlex` cannot split. That includes some valid shell, such as a heredoc whose text holds an apostrophe.
 
 **A path attached to a prefix counts too:**
 - a `file://` URL to this machine;
@@ -196,7 +198,13 @@ So a `../` that climbs out of the snapshot counts the same as the repository's o
 **What the check cannot see:**
 - a `cd` within one shell line;
 - a path built at run time, by `$(…)`, `$'\x2f'`-style quoting, `eval` or decoding;
-- a program that picks its own paths, or builds one from separate arguments or from its own configuration.
+- a program that picks its own paths, or builds one from separate arguments or from its own configuration;
+- shell options that change globbing, such as zsh's `extendedglob` set in a startup file;
+- a symlink the repository tracks, written through and then removed before the check runs.
+  - **Why it is missed:** the check reads the files after Codex has finished.
+  - **Spotting the risk:** `git ls-files -s | awk '$1=="120000"'` in the snapshot lists such links, and this repository has none.
+  - **When there are some:** read Codex's log for their names.
+  - **A link Codex creates** names its target in the `ln -s` command, so the check resolves that.
 
 Short of those, an ordinary write names its path in a form the check resolves.
 
