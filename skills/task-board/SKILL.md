@@ -82,6 +82,19 @@ On 3, read the message and do not force the step another way. A step that failed
 
      `Closes #N` works only when the PR merges into the repository's **default** branch, so a Git-flow project makes `develop` its default branch on GitHub.
 
+     **No other issue may follow a closing keyword.** On merge, GitHub closes every issue named after `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves` or `resolved` in the PR's description, wherever the phrase stands. A negation still counts: a description saying a run "did not close" an issue closed that issue on merge (gkms-memomemo, 2026-11-01).
+     - **Commit messages** count too, once merged into the default branch, but the PR does not list them among the issues it closes. So no commit message carries a closing keyword before an issue at all; the description does the closing. A conventional `fix: … (#22)` is not one.
+     - **Other issues** are named without a keyword before their number, as in "#20 stayed open".
+     - **Check both** right after opening the PR, from the branch:
+
+       ```sh
+       gh pr view <PR> --json closingIssuesReferences --jq '[.closingIssuesReferences[] | "\(.repository.owner.login)/\(.repository.name)#\(.number)"]'
+       git log --format=%B origin/<base>..HEAD | grep -inE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?[[:space:]]+([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+'
+       ```
+
+       The first must print `["<owner>/<repo>#N"]` alone, this repository and the claimed issue, since a keyword can name another repository's issue too; the second must print nothing.
+     - **If either fails,** fix it before asking for the merge: the description with `gh pr edit <PR> --body-file …`, a commit message by asking the user how, since rewriting a pushed commit needs their permission.
+
      If the user closes the PR without merging, `release` the issue.
    - **By local merges:** only after the user-approved merge into the integration branch (`develop`, or `main` where that is the only branch), run `done N --branch <branch> --evidence "merge <sha> into develop; <checks that passed>; plan <path>"`.
 
