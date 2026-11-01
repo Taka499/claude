@@ -66,13 +66,13 @@ class Check(unittest.TestCase):
 
     def test_other_variable_and_outside_paths_fail_closed(self):
         why = self.bad(record('/bin/zsh -lc "cat $TMPDIR/x /etc/hosts .."', self.snap))[0][1]
-        self.assertEqual(why, ["a path through a variable: $TMPDIR/x", "a path outside the snapshot: /etc/hosts",
-                               "a path outside the snapshot: .."])
+        self.assertEqual(why, ["a path through a variable or an unknown user's ~: $TMPDIR/x",
+                               "a path outside the snapshot: /etc/hosts", "a path outside the snapshot: .."])
 
     def test_unexpected_shapes_fail_closed(self):
         self.assertEqual(cc.check("", self.snap, self.repo, self.home), (0, []))
         why = self.bad("exec\n/bin/zsh -lc \"git diff\"\n succeeded in 1ms:\n")[0][1]
-        self.assertEqual(why, ["no working directory"])
+        self.assertEqual(why, ["the record does not split as `<shell> -lc <script> in <dir>`"])
 
     def test_paths_attached_to_a_prefix(self):
         up = os.path.relpath(self.repo, self.snap)
@@ -99,7 +99,31 @@ class Check(unittest.TestCase):
 
     def test_a_script_that_will_not_split_fails_closed(self):
         why = self.bad(record('/bin/zsh -lc "echo \'unbalanced"', self.snap))[0][1]
-        self.assertEqual(why, ["the command will not parse as `<shell> -lc <script>`"])
+        self.assertEqual(why, ["the script will not split, or a brace in it will not expand"])
+
+    def test_another_users_home(self):
+        why = self.bad(record('/bin/zsh -lc "touch ~nosuchuser_zz9/x ~root/x"', self.snap))[0][1]
+        self.assertEqual(why, ["a path through a variable or an unknown user's ~: ~nosuchuser_zz9/x",
+                               "a path outside the snapshot: ~root/x"])
+
+    def test_brace_expansion(self):
+        why = self.bad(record('/bin/zsh -lc "touch {a,~/Developer/claude/x} {b,{c,~/Developer/claude/y}}"',
+                              self.snap))[0][1]
+        self.assertEqual(why, ["names the repository: ~/Developer/claude/x", "names the repository: ~/Developer/claude/y"])
+        self.assertEqual(self.bad(record('/bin/zsh -lc "mkdir -p {a,b}/c"', self.snap)), [])
+
+    def test_a_symlink_in_the_snapshot_by_bare_name_or_glob(self):
+        os.symlink(self.repo, os.path.join(self.snap, "lnk"))
+        for command, token in (('echo x > lnk', "lnk"), ('cp a ln*/', "ln*/")):
+            with self.subTest(command=command):
+                why = self.bad(record(f'/bin/zsh -lc "{command}"', self.snap))[0][1]
+                self.assertEqual(why, [f"names the repository: {token}"])
+
+    def test_a_status_like_line_inside_a_script_does_not_end_the_record_quietly(self):
+        text = (f'exec\n/bin/zsh -lc "echo a\n succeeded in 1ms:\ntouch ~/Developer/claude/x" in {self.snap}\n'
+                ' succeeded in 2ms:\n')
+        why = self.bad(text)[0][1]
+        self.assertEqual(why, ["the record does not split as `<shell> -lc <script> in <dir>`"])
 
     def test_a_record_with_no_status_line_fails_closed(self):
         text = f'exec\n/bin/zsh -lc "git diff" in {self.snap}\n'

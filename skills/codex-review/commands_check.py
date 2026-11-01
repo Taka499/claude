@@ -4,38 +4,42 @@ Usage: python3 -I commands_check.py <codex log> <snapshot repo> <repository>
 
 Step 4 of SKILL.md runs it before treating any changed entry in the repository
 as another process's. A command passes only if it ran in the snapshot and
-every path it names lands, once resolved, inside the snapshot or under a
-system prefix (ALLOWED). Each path is resolved against the command's own
-working directory, with ~ and $HOME expanded and symlinks followed, so `../`
-climbing out of the snapshot, or a symlink into the repository such as one
-under ~/.claude, is caught like the repository's own path. A path through any
-other variable cannot be resolved and fails. It cannot follow a `cd` between
-commands of one shell line, a path built at run time (`$(…)`, decoding), or
-a program that picks its own paths: that is out of sight of any log reader.
+every word of its script, resolved as a path, lands inside the snapshot or
+under a system prefix (ALLOWED).
 
-A record in the log is a line that is exactly "exec", the shell command after
-it (starting `/bin/zsh -lc`, `/bin/bash -lc` or `/bin/sh -lc`, possibly over
-several lines and ending " in <working directory>"), then a status line
-(" succeeded in …", " exited N in …"). The check fails closed: a log with no
-records, a record with no status line after it, one whose command does not
-start with such a shell, or one with no working directory, is flagged, not
-passed. The script is split the way a shell splits it (shlex), so quotes
-and backslashes cannot hide a path, and a script that will not split is
-flagged. A path attached to a prefix is checked too: `file://` URLs to this
-machine, an option's letters (`-C/p`), and a `:`, `@` or `+` before it.
+How a command is read. Its record must split, as a shell would, into exactly
+`<shell> -lc <script> in <dir>`; the script is then split the same way
+(shlex), so quotes and backslashes cannot disguise a path. Each word is
+brace-expanded, kept whole and also split at `=` and `,`. A path attached to
+a prefix is checked too: a `file://` URL to this machine, the rest of an
+option (`-C/p`), or what follows `:`, `@` or `+`. Each word is resolved
+against the command's working directory: `~`, `~user` and `$HOME` expanded,
+globs matched against the files there (every match checked), symlinks
+followed. So `../` out of the snapshot, a link into the repository (such as
+those under ~/.claude), or a bare name of such a link, is caught like the
+repository's own path. A bare variable (`"$f"`) is left out; a path through
+any other variable, or `~` for an unknown user, fails.
+
+It fails closed: a log with no records, a record with no status line after
+it, a record or script that will not split, or a brace it cannot expand, is
+flagged, not passed. Out of its sight: a `cd` between commands of one shell
+line, a path built at run time (`$(…)`, `$'…'`, `eval`, decoding), and a
+program that chooses its own paths.
 
 Exit status: 0 every command passed, 1 something to look at (printed),
 2 bad usage or the log could not be read.
 Tests: python3 -m unittest discover -s skills/codex-review
 """
+import glob
 import os
 import re
 import shlex
 import sys
 
 STATUS = re.compile(r"^ (succeeded|exited|failed|declined|timed out)\b")
-SHELL = re.compile(r"^/bin/(zsh|bash|sh) -lc ")
-CWD = re.compile(r" in (/[^\n]*)$")
+SHELLS = ("/bin/zsh", "/bin/bash", "/bin/sh")
+GLOB = re.compile(r"[*?\[]")
+BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 TOKEN = re.compile(r"[^\s'\"`;|&<>()=,]+")
 URL = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://([^/]*)(/.*)?$")
 LOCAL_HOSTS = ("", "localhost", "127.0.0.1")
@@ -43,7 +47,7 @@ ALLOWED = ("/bin/", "/usr/", "/dev/null", "/opt/homebrew/", "/System/", "/Librar
 
 
 def records(text):
-    """Yield (command text, working directory, has a status line) for each command record."""
+    """Yield (record text, has a status line) for each command record of a codex exec log."""
     lines = text.split("\n")
     i = 0
     while i < len(lines):
@@ -51,11 +55,25 @@ def records(text):
             j = i + 1
             while j < len(lines) and not STATUS.match(lines[j]):
                 j += 1
-            body = "\n".join(lines[i + 1:j])
-            m = CWD.search(body)
-            yield (body[:m.start()] if m else body), (m.group(1).strip() if m else ""), j < len(lines)
+            yield "\n".join(lines[i + 1:j]), j < len(lines)
             i = j
         i += 1
+
+
+def parse(body):
+    """(script, working directory) when the record splits as exactly `<shell> -lc <script> in <dir>`, else None.
+
+    Requiring the whole record to split this way means a line inside the
+    script that looks like a status line cannot end the record early: the
+    text cut there leaves the script's quote open, and the split fails.
+    """
+    try:
+        w = shlex.split(body)
+    except ValueError:
+        return None
+    if len(w) != 5 or w[0] not in SHELLS or w[1] != "-lc" or w[3] != "in" or not w[4].startswith("/"):
+        return None
+    return w[2], w[4]
 
 
 def inside(path, base):
@@ -63,15 +81,42 @@ def inside(path, base):
 
 
 def resolve(token, cwd, home):
-    """The real absolute path a path-like token names, or None when a variable hides it."""
+    """The real absolute paths a token may name, or None when a variable or an unknown user hides it.
+
+    `~`, `~/…`, `$HOME` and `${HOME}` expand to home, `~user/…` to that
+    user's home. A glob is matched against the file system, as the shell
+    would, and every match is returned; with no match, the literal path.
+    """
     t = token
     for prefix in ("${HOME}", "$HOME", "~"):
         if t == prefix or t.startswith(prefix + "/"):
             t = home + t[len(prefix):]
             break
+    else:
+        if t.startswith("~"):
+            expanded = os.path.expanduser(t)
+            if expanded == t:
+                return None
+            t = expanded
     if "$" in t:
         return None
-    return os.path.realpath(t if os.path.isabs(t) else os.path.join(cwd, t))
+    t = t if os.path.isabs(t) else os.path.join(cwd, t)
+    matches = glob.glob(t) if GLOB.search(t) else []
+    return [os.path.realpath(m) for m in matches] or [os.path.realpath(t)]
+
+
+def braces(word):
+    """The words a shell's brace expansion makes of one word; None for a nested or unbalanced brace."""
+    m = BRACE.search(word)
+    if not m:
+        return None if ("{" in word and "}" in word and "," in word) else [word]
+    out = []
+    for part in m.group(1).split(","):
+        more = braces(word[:m.start()] + part + word[m.end():])
+        if more is None:
+            return None
+        out += more
+    return out
 
 
 def candidates(token):
@@ -95,39 +140,49 @@ def candidates(token):
     return out
 
 
-def words(command):
-    """The words a shell would see in the command, quotes and backslashes resolved; None if it will not parse.
+def words(script):
+    """The words a shell would see in the script, quotes and backslashes resolved; None if it will not split.
 
-    The record's line is `/bin/zsh -lc <quoted script>`: the script is split
-    the way a shell splits it, so `\\/repo` or `"/"repo` read as `/repo`.
+    `\\/repo` and `"/"repo` both read as `/repo`.
     """
     try:
-        outer = shlex.split(command)
-        if len(outer) != 3 or outer[1] != "-lc":
-            return None
-        lex = shlex.shlex(outer[2], posix=True, punctuation_chars=True)
+        lex = shlex.shlex(script, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
         return list(lex)
     except ValueError:
         return None
 
 
-def path_tokens(command):
-    """The tokens of a command that may name a path: those holding a slash, a ~ or `..`; None if unparsable."""
-    found = words(command)
+def path_tokens(script):
+    """Every token of the script that may name a file; None if the script will not split or a brace will not expand.
+
+    Each word is brace-expanded, then kept whole and also split at `=` and
+    `,` (`--file=/p`, `a,/p`). A bare variable such as `"$f"` is left out:
+    what it holds was named where it was set, or was built at run time.
+    """
+    found = words(script)
     if found is None:
         return None
-    return [t for w in found for t in TOKEN.findall(w) if "/" in t or "~" in t or ".." in t]
+    out = []
+    for w in found:
+        expanded = braces(w)
+        if expanded is None:
+            return None
+        for e in expanded:
+            for t in dict.fromkeys([e, *TOKEN.findall(e)]):
+                if not re.fullmatch(r"\$\{?\w+\}?", t):
+                    out.append(t)
+    return out
 
 
-def problems(command, cwd, snapshot, repository, home, complete=True):
-    """Why a command does not pass, as a list of reasons; empty when it passes."""
+def problems(body, snapshot, repository, home, complete=True):
+    """Why a command record does not pass, as a list of reasons; empty when it passes."""
     if not complete:
         return ["no status line after the command"]
-    if not SHELL.match(command):
-        return ["not a shell command record"]
-    if not cwd:
-        return ["no working directory"]
+    parsed = parse(body)
+    if parsed is None:
+        return ["the record does not split as `<shell> -lc <script> in <dir>`"]
+    script, cwd = parsed
     snap = os.path.realpath(snapshot)
     repo = os.path.realpath(repository)
     plugin_log = os.path.realpath(os.path.join(home, ".claude", "security"))
@@ -136,23 +191,24 @@ def problems(command, cwd, snapshot, repository, home, complete=True):
         return [f"ran outside the snapshot, in {cwd}"]
     out = []
     # Of the paths a token may name, report the gravest.
-    rank = ("names the repository", "names the plugin's log", "a path through a variable",
+    rank = ("names the repository", "names the plugin's log", "a path through a variable or an unknown user's ~",
             "a path outside the snapshot")
-    tokens = path_tokens(command)
+    tokens = path_tokens(script)
     if tokens is None:
-        return ["the command will not parse as `<shell> -lc <script>`"]
+        return ["the script will not split, or a brace in it will not expand"]
     for token in tokens:
         found = set()
         for cand in candidates(token):
-            path = resolve(cand, where, home)
-            if path is None:
-                found.add(rank[2])
-            elif inside(path, repo):
-                found.add(rank[0])
-            elif inside(path, plugin_log):
-                found.add(rank[1])
-            elif not inside(path, snap) and not path.startswith(ALLOWED):
-                found.add(rank[3])
+            paths = resolve(cand, where, home)
+            for path in paths if paths is not None else [None]:
+                if path is None:
+                    found.add(rank[2])
+                elif inside(path, repo):
+                    found.add(rank[0])
+                elif inside(path, plugin_log):
+                    found.add(rank[1])
+                elif not inside(path, snap) and not path.startswith(ALLOWED):
+                    found.add(rank[3])
         if found:
             out.append(f"{min(found, key=rank.index)}: {token}")
     return out
@@ -161,8 +217,8 @@ def problems(command, cwd, snapshot, repository, home, complete=True):
 def check(text, snapshot, repository, home):
     """(number of records, [(command, reasons)] for the ones that do not pass)."""
     found = list(records(text))
-    bad = [(cmd, why) for cmd, cwd, complete in found
-           for why in [problems(cmd, cwd, snapshot, repository, home, complete)] if why]
+    bad = [(body, why) for body, complete in found
+           for why in [problems(body, snapshot, repository, home, complete)] if why]
     return len(found), bad
 
 
