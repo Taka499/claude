@@ -1242,7 +1242,8 @@ class JobsAndPage(unittest.TestCase):
             made.answer(6, "#6 approve", [typed("#6 approve")])
 
     def test_progress_on_an_issue_someone_else_opened_shows_until_they_edit_it(self):
-        gh = FakeGh(items=[item(6, "In Progress")], issues=[dict(issue(6, author="contributor"), body="please fix")],
+        gh = FakeGh(items=[item(6, "In Progress"), item(7, "In Progress")],
+                    issues=[dict(issue(6, author="contributor"), body="please fix"), issue(7)],
                     comments={6: [claimed("feature/x")]})
         made = make_board(gh)
         made.progress(6, "feature/x", {"goal": "the bug", "step": 1, "of": 2, "now": "reproducing", "next": "fix"})
