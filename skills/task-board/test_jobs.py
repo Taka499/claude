@@ -1,6 +1,7 @@
 """Tests for jobs.py. Run: python3 -m unittest discover -s skills/task-board"""
 from __future__ import annotations
 
+import re
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -166,19 +167,63 @@ class Page(unittest.TestCase):
         values.update(given)
         return jobs.render_page(**values)
 
-    def test_a_job_takes_at_most_five_lines_with_links_and_how_to_answer(self):
+    def cells(self, row: str) -> list:
+        """A table row's cells, split at the "|"s that are not escaped."""
+        self.assertTrue(row.startswith("| ") and row.endswith(" |"), row)
+        return [part.strip() for part in re.split(r"(?<!\\)\|", row[1:-1])]
+
+    def test_a_decision_is_one_row_with_its_options_recommendation_and_answers(self):
         three = dict(DECIDE, options=DECIDE["options"] + [{"key": "C", "text": "drop them", "cost": "none"}])
-        lines = jobs.job_lines(self.job(data=three), T0 + timedelta(hours=3))
-        self.assertEqual(len(lines), 5)
-        self.assertIn("[#312](https://x/312)", lines[0])
-        self.assertIn("holds up [#298](https://x/298) · waiting 3 h", lines[0])
-        self.assertIn("Answer `#312 A`", lines[-1])
-        approve = jobs.job_lines(self.job(data={"kind": "approve", "summary": "checks green"}), T0)
-        self.assertEqual(approve[-1], "  - Answer `#312 approve` or `#312 decline`.")
+        row = self.cells(jobs.job_row(self.job(data=three), T0 + timedelta(hours=3)))
+        self.assertEqual(len(row), len(self.cells(jobs.TABLE_HEAD[0])))
+        number, kind, question, options, recommended, held, waiting, answer = row
+        self.assertEqual((number, kind, question), ("[#312](https://x/312)", "decide", "fix two engine rules first?"))
+        self.assertEqual(options.split("<br>"), ["**A** fix the two rules first. Cost: about half a day",
+                                                 "**B** predict now. Cost: 140 of 900 moves left out",
+                                                 "**C** drop them. Cost: none"])
+        self.assertEqual(recommended, "**A**: the full logs exist to find such gaps")
+        self.assertEqual((held, waiting), ("[#298](https://x/298)", "3 h"))
+        self.assertEqual(answer, "`#312 A` / `#312 B` / `#312 C`")
+
+    def test_an_approval_a_capture_and_a_run_fill_their_cells(self):
+        approve = self.cells(jobs.job_row(self.job(data={"kind": "approve", "summary": "checks green"}), T0))
+        self.assertEqual(approve[2:5], ["fix two engine rules first?<br>checks green", "approve / decline", "—"])
+        self.assertEqual(approve[7], "`#312 approve` / `#312 decline`")
+        for kind in ("capture", "run"):
+            row = self.cells(jobs.job_row(self.job(data={"kind": kind, "summary": "five more log sets"}), T0))
+            self.assertEqual(row[1:5], [kind, "fix two engine rules first?", "five more log sets", "—"])
+            self.assertEqual(row[7], "`#312 done`")
+
+    def test_a_cell_keeps_its_row_whole(self):
+        job = dict(self.job(data={"kind": "approve", "summary": "a | b"}), title="one |\ntwo", holds_up=[])
+        row = jobs.job_row(job, T0)
+        self.assertNotIn("\n", row)
+        cells = self.cells(row)
+        self.assertEqual(len(cells), 8)
+        self.assertEqual(cells[2], "one \\| two<br>a \\| b")
+        self.assertEqual(cells[5], "nothing")
 
     def test_a_malformed_job_is_shown_as_malformed_not_as_content(self):
-        lines = jobs.job_lines(self.job(data=None, malformed="the block is malformed: x"), T0)
-        self.assertIn("Malformed, so not shown", lines[1])
+        row = self.cells(jobs.job_row(self.job(data=None, malformed="the block is malformed: x"), T0))
+        self.assertEqual(row[1], "job")
+        self.assertEqual(row[3], "malformed: the block is malformed: x")
+        self.assertEqual(row[7], "fix it with the helper")
+
+    def test_needs_you_is_a_table_oldest_first_under_its_warning(self):
+        page = self.page(jobs=[self.job(number=n) for n in (3, 1, 2)] + [self.job(number=n) for n in range(4, 9)])
+        lines = page.splitlines()
+        start = lines.index("## Needs you (8)")
+        self.assertTrue(lines[start + 1].startswith("_8 jobs are open, more than 7"))
+        self.assertEqual(lines[start + 2], "")
+        self.assertEqual(tuple(lines[start + 3:start + 5]), jobs.TABLE_HEAD)
+        rows = lines[start + 5:start + 13]
+        self.assertEqual([self.cells(r)[0].split("]")[0] for r in rows[:3]], ["[#3", "[#1", "[#2"])
+        self.assertEqual(lines[start + 13], "")
+
+    def test_no_jobs_means_no_table(self):
+        page = self.page()
+        self.assertIn("## Needs you (0)\nNothing waits on you.", page)
+        self.assertNotIn(jobs.TABLE_HEAD[0], page)
 
     def test_more_than_seven_jobs_warns_first(self):
         page = self.page(jobs=[self.job(number=n) for n in range(8)])

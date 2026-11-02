@@ -1187,8 +1187,8 @@ class JobsAndPage(unittest.TestCase):
         since = board.jobs.utc("2026-10-29T01:00:00Z")
         page = made.page_text(board.jobs.utc("2026-11-01T03:00:00Z"), since, ["## Goals", "- one goal"])
         self.assertIn("## Needs you (1)", page)
-        self.assertIn("[#9](https://github.com/o/r/issues/9) **decide:** fix two engine rules first?", page)
-        self.assertIn("holds up [#3](https://github.com/o/r/issues/3)", page)
+        self.assertIn("| [#9](https://github.com/o/r/issues/9) | decide | fix two engine rules first? |", page)
+        self.assertIn("| [#3](https://github.com/o/r/issues/3), [#5](https://github.com/o/r/issues/5) |", page)
         self.assertIn("step 2 of 4: fixing. Next: x. Turn: yours.", page)
         self.assertIn("found: a rounding difference", page)
         self.assertNotIn("old news", page)
@@ -1266,7 +1266,7 @@ class JobsAndPage(unittest.TestCase):
         made = make_board(gh)
         self.assertEqual([entry["number"] for entry in made.ready()], [6])
         self.assertEqual(made.page_text(board.jobs.utc("2026-11-01T03:00:00Z"),
-                                        board.jobs.utc("2026-11-01T00:00:00Z"), []).count("**approve:**"), 0)
+                                        board.jobs.utc("2026-11-01T00:00:00Z"), []).count("| approve |"), 0)
         with self.assertRaisesRegex(board.Refused, "not a job"):
             made.answer(6, "#6 approve", [typed("#6 approve")])
 
