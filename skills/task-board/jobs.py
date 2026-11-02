@@ -259,9 +259,12 @@ CELL_CODES = (("\\", "\\\\"), ("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("|"
 
 
 def cell(text) -> str:
-    """Text for one table cell, shown as written: on one line, with backslash, &, <, > and | encoded, so neither
-    Markdown, nor HTML, nor the table's own "|" can act on it. "|" becomes &#124;, which no table parser splits on,
-    so a backslash before it cannot unescape it. The helper's own <br> is added after this."""
+    """Text for one table cell that keeps its row whole and shows no HTML: on one line, with backslash, &, <, > and |
+    encoded, so neither HTML nor the table's own "|" can act on it. Inline Markdown such as **bold**, a link or a code
+    span still renders, as its writer meant: a block counts only where the board's login opened the issue or last
+    edited its text (board.block_of), so a stranger, who cannot edit the user's issues, writes none (plan 0038).
+    "|" becomes &#124;, which no table parser splits on, so a backslash before it cannot unescape it. The helper's own
+    <br> is added after this."""
     flat = " ".join(str(text).split())
     for raw, safe in CELL_CODES:  # the backslash first, then &, before the codes that use it
         flat = flat.replace(raw, safe)

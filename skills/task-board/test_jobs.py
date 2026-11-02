@@ -203,7 +203,7 @@ class Page(unittest.TestCase):
         self.assertEqual(cells[2], "one &#124; two<br>a &#124; b")
         self.assertEqual(cells[5], "nothing")
 
-    def test_a_cells_text_is_shown_as_written(self):
+    def test_a_cell_encodes_what_could_break_the_table_or_render_as_html(self):
         for raw, shown in (("x\\|y", "x\\\\&#124;y"), ("a <br> b", "a &lt;br&gt; b"), ("R&D", "R&amp;D"),
                            ("<script>", "&lt;script&gt;"), ("plain", "plain")):
             with self.subTest(raw=raw):
