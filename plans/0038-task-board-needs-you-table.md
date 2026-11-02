@@ -18,7 +18,8 @@ The user asked on 2026-11-02 for the attention page's Needs you list (plan 0036,
   - **capture and run:** the summary is the options cell.
   - **answer with** lists every declared answer, such as `` `#5 A` / `#5 B` ``.
   - **A malformed job** reads `malformed: …` with "fix it with the helper".
-- **Cells:** each is flattened to one line, with every `|` escaped, so no field can break its row.
+- **Cells:** each field is flattened to one line and shown as written. Backslash, `&`, `<`, `>` and `|` are encoded, the last as `&#124;`, which no table parser splits on, so a backslash before it cannot unescape it. The helper's own `<br>` is added after the encoding.
+- **Links:** a link whose URL holds a space, `|`, a parenthesis, an angle bracket or a backslash shows as a plain `#N`.
 - **Around the table:** the warning for more than 7 jobs stays above it, and a blank line separates them, since Markdown needs one before a table. With no jobs there is no table, only "Nothing waits on you."
 - **The module's docstring** states D1.
 
@@ -26,14 +27,25 @@ The user asked on 2026-11-02 for the attention page's Needs you list (plan 0036,
 
 ## Verification
 
-- **`python3 -m unittest discover -s skills/task-board`:** 187 tests.
+- **`python3 -m unittest discover -s skills/task-board`:** 189 tests.
   - **What they cover:**
     - a decision's row, cell by cell;
     - the approve, capture and run rows;
     - a `|` and a newline inside fields;
+    - a backslash before a `|`, HTML and `&` in a field;
+    - a URL that could end its link;
     - a malformed job;
     - the table under its warning, in the order given;
     - no table with no jobs.
-  - **Shown to catch a break:** each of the 11 new rules was removed in turn, and each removal failed at least one test.
+  - **Shown to catch a break:** each of the 11 table rules, and then each of the 7 encoding and link rules, was removed in turn, and each removal failed at least one test.
 - **`/codex-review` on the branch's diff.**
 - **In use:** gkms-contest-ai's page redraws as a table after the merge, on its next helper write or Stop hook.
+
+## Codex review (2026-11-02)
+
+**First pass: CHANGES REQUESTED.** Every finding was accepted.
+- **HIGH, a backslash before a `|`:** `x\|y` became `x\\|y`, where the first backslash escapes the second, and the pipe splits the cell.
+- **HIGH, links skipped the escaping:** a URL could carry a `|`, a newline or a `)`.
+- **MEDIUM, raw HTML in a title rendered as HTML.**
+
+**The fix:** each cell's text is made literal, with `|` as `&#124;`, and an unsafe URL loses its link (§ Changes). Codex also confirmed that the table's framing is valid GFM, and that D1 contradicts nothing in the skill.

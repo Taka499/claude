@@ -243,17 +243,29 @@ def waited(created: datetime, now: datetime) -> str:
     return f"{minutes // (24 * 60)} days"
 
 
+SAFE_URL = re.compile(r"https?://[^\s|()<>\\]+")
+
+
 def link(number: int, url: str) -> str:
-    return f"[#{number}]({url})"
+    """[#N](url), or a plain #N when the URL holds a character that could end the link or a table cell early."""
+    return f"[#{number}]({url})" if SAFE_URL.fullmatch(url or "") else f"#{number}"
 
 
 TABLE_HEAD = ("| # | kind | question | options | recommended | holds up | waiting | answer with |",
               "|---|---|---|---|---|---|---|---|")
 
 
+CELL_CODES = (("\\", "\\\\"), ("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("|", "&#124;"))
+
+
 def cell(text) -> str:
-    """Text for one table cell: on one line, with each "|" escaped, so it cannot break the row."""
-    return " ".join(str(text).split()).replace("|", "\\|")
+    """Text for one table cell, shown as written: on one line, with backslash, &, <, > and | encoded, so neither
+    Markdown, nor HTML, nor the table's own "|" can act on it. "|" becomes &#124;, which no table parser splits on,
+    so a backslash before it cannot unescape it. The helper's own <br> is added after this."""
+    flat = " ".join(str(text).split())
+    for raw, safe in CELL_CODES:  # the backslash first, then &, before the codes that use it
+        flat = flat.replace(raw, safe)
+    return flat
 
 
 def job_row(job: dict, now: datetime) -> str:

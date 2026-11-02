@@ -200,8 +200,23 @@ class Page(unittest.TestCase):
         self.assertNotIn("\n", row)
         cells = self.cells(row)
         self.assertEqual(len(cells), 8)
-        self.assertEqual(cells[2], "one \\| two<br>a \\| b")
+        self.assertEqual(cells[2], "one &#124; two<br>a &#124; b")
         self.assertEqual(cells[5], "nothing")
+
+    def test_a_cells_text_is_shown_as_written(self):
+        for raw, shown in (("x\\|y", "x\\\\&#124;y"), ("a <br> b", "a &lt;br&gt; b"), ("R&D", "R&amp;D"),
+                           ("<script>", "&lt;script&gt;"), ("plain", "plain")):
+            with self.subTest(raw=raw):
+                self.assertEqual(jobs.cell(raw), shown)
+        row = jobs.job_row(dict(self.job(data=None, malformed='bad: {"a": "|x\\|"}'), holds_up=[]), T0)
+        self.assertEqual(len(self.cells(row)), 8)
+        self.assertNotIn("|x", row)
+
+    def test_a_link_with_a_character_that_could_end_it_shows_as_a_plain_number(self):
+        self.assertEqual(jobs.link(5, "https://github.com/o/r/issues/5"), "[#5](https://github.com/o/r/issues/5)")
+        for url in ("https://x/5|y", "https://x/(5)", "https://x/5 y", "https://x/<5>", "javascript:alert(1)", ""):
+            with self.subTest(url=url):
+                self.assertEqual(jobs.link(5, url), "#5")
 
     def test_a_malformed_job_is_shown_as_malformed_not_as_content(self):
         row = self.cells(jobs.job_row(self.job(data=None, malformed="the block is malformed: x"), T0))
