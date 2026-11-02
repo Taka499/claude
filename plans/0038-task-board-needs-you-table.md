@@ -49,3 +49,8 @@ The user asked on 2026-11-02 for the attention page's Needs you list (plan 0036,
 - **MEDIUM, raw HTML in a title rendered as HTML.**
 
 **The fix:** each cell's text is made literal, with `|` as `&#124;`, and an unsafe URL loses its link (§ Changes). Codex also confirmed that the table's framing is valid GFM, and that D1 contradicts nothing in the skill.
+
+**Second pass: CHANGES REQUESTED, one MEDIUM, accepted as a trade-off and not changed.**
+- **The finding:** Markdown does not decode entities inside a code span, so a field holding `` `R&D` `` shows `R&amp;D`. The same goes for `|`, `<`, `>` or a backslash inside backticks.
+- **Why it stays:** the page's fields are plain-words lines by design (plan 0036, D19), and a code span holding one of those five characters is rare. The cost is a visible entity in that case; reopening code spans would give back the structural safety the first pass asked for.
+- **Confirmed:** the pass found the first three findings resolved, and the encoding order right.
