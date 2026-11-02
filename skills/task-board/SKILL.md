@@ -110,7 +110,7 @@ On 3, read the message and do not force the step another way. A step that failed
 ## The attention page
 
 A project whose `.task-board.json` names a `page` gets one generated page that answers, without a click:
-- **Needs you:** every open job, at most 5 lines each, linked, with what it holds up, how long it has waited, and how to answer. A warning line appears when more than 7 are open.
+- **Needs you:** a table, one row per open job, oldest first. Its columns are the linked number, the kind, the question, the options with their costs, the recommendation, what the job holds up, how long it has waited, and how to answer. A warning line appears above it when more than 7 are open (`plans/0038-task-board-needs-you-table.md`).
 - **The project's own blocks,** such as its goals, from `page_blocks`.
 - **In progress:** one line per claimed issue: its goal, step n of m, now, next, and whose turn it is. The turn is yours when a job holds the work up.
 - **Since you last looked:** answers, merges, the coordinator's calls and findings since the user's last message in the coordinator's cell, at most 10 lines, then a link.

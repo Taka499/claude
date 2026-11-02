@@ -4,11 +4,13 @@ progress, note and page steps (plan 0036 in the Taka499/claude repo). Pure funct
 - **The data block.** Each job or work issue carries its lines as JSON in an HTML comment at the end of its body,
   under a readable rendering of the same lines. The helper writes it and checks it against the schema on every write
   and every read; a block in a bad shape is reported as malformed, never shown as content (D7).
-- **Lines.** Every line the page shows is one line of at most LINE_MAX characters, with no bare internal ID: an ID
-  such as E193 must be followed by a plain explanation in parentheses (D19).
+- **Fields.** Every field the page shows (a title, an option's text or cost, a why, a summary, a progress line) is
+  one line of at most LINE_MAX characters, with no bare internal ID: an ID such as E193 must be followed by a plain
+  explanation in parentheses (D19). A row of the Needs you table joins several fields, so a row can be longer.
 - **Answers.** A job closes only on a quote of the user's own typed words, naming the job by number and giving one of
   the answers it declares (D8).
-- **The page.** Needs you, the project's own blocks, In progress, and Since you last looked (D3).
+- **The page.** Needs you as a table, one row per job; the project's own blocks; In progress; and Since you last
+  looked (D3; the table: plan 0038).
 Tests: python3 -m unittest discover -s skills/task-board
 """
 from __future__ import annotations
@@ -241,27 +243,52 @@ def waited(created: datetime, now: datetime) -> str:
     return f"{minutes // (24 * 60)} days"
 
 
+SAFE_URL = re.compile(r"https?://[^\s|()<>\\]+")
+
+
 def link(number: int, url: str) -> str:
-    return f"[#{number}]({url})"
+    """[#N](url), or a plain #N when the URL holds a character that could end the link or a table cell early."""
+    return f"[#{number}]({url})" if SAFE_URL.fullmatch(url or "") else f"#{number}"
 
 
-def job_lines(job: dict, now: datetime) -> list:
-    """At most 1 + MAX_OPTIONS + 1 lines, so at most 5: what, the options or summary, how to answer."""
-    head = f"- {link(job['number'], job['url'])} **{job['data']['kind'] if job['data'] else 'job'}:** {job['title']}"
+TABLE_HEAD = ("| # | kind | question | options | recommended | holds up | waiting | answer with |",
+              "|---|---|---|---|---|---|---|---|")
+
+
+CELL_CODES = (("\\", "\\\\"), ("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("|", "&#124;"))
+
+
+def cell(text) -> str:
+    """Text for one table cell, shown as written: on one line, with backslash, &, <, > and | encoded, so neither
+    Markdown, nor HTML, nor the table's own "|" can act on it. "|" becomes &#124;, which no table parser splits on,
+    so a backslash before it cannot unescape it. The helper's own <br> is added after this."""
+    flat = " ".join(str(text).split())
+    for raw, safe in CELL_CODES:  # the backslash first, then &, before the codes that use it
+        flat = flat.replace(raw, safe)
+    return flat
+
+
+def job_row(job: dict, now: datetime) -> str:
+    """One row of the Needs you table, its cells in TABLE_HEAD's order. A decision's options share one cell, one per
+    line; an approval's summary goes under its question; a capture's or a run's summary is its options cell."""
+    number, data = job["number"], job["data"]
     held = ", ".join(link(n, url) for n, url in job["holds_up"]) or "nothing"
-    head += f" · holds up {held} · waiting {waited(job['created'], now)}"
-    if job["data"] is None:
-        return [head, f"  - Malformed, so not shown: {job['malformed']}. Fix it with the helper."]
-    data = job["data"]
-    if data["kind"] == "decide":
-        body = [f"  - **{o['key']}:** {o['text']}. Cost: {o['cost']}" for o in data["options"]]
-        how = f"  - Recommended: **{data['recommend']['key']}**, {data['recommend']['why']}. Answer `#{job['number']} " \
-              f"{data['recommend']['key']}` or another option."
+    question, recommended = cell(job["title"]), "—"
+    if data is None:
+        kind, options, answer = "job", f"malformed: {cell(job['malformed'])}", "fix it with the helper"
     else:
-        body = [f"  - {data['summary']}"]
-        choices = " or ".join(f"`#{job['number']} {answer}`" for answer in answers(data))
-        how = f"  - Answer {choices}."
-    return [head] + body + [how]
+        kind = data["kind"]
+        answer = " / ".join(f"`#{number} {choice}`" for choice in answers(data))
+        if kind == "decide":
+            options = "<br>".join(f"**{o['key']}** {cell(o['text'])}. Cost: {cell(o['cost'])}" for o in data["options"])
+            recommended = f"**{data['recommend']['key']}**: {cell(data['recommend']['why'])}"
+        elif kind == "approve":
+            question += f"<br>{cell(data['summary'])}"
+            options = "approve / decline"
+        else:
+            options = cell(data["summary"])
+    cells = [link(number, job["url"]), kind, question, options, recommended, held, waited(job["created"], now), answer]
+    return "| " + " | ".join(cells) + " |"
 
 
 def work_line(work: dict) -> str:
@@ -285,9 +312,9 @@ def render_page(now: datetime, jobs: list, work: list, events: list, since: date
     if len(jobs) > JOBS_WARNING:
         lines.append(f"_{len(jobs)} jobs are open, more than {JOBS_WARNING}: the coordinator may be passing on calls"
                      f" it could make._")
-    for job in jobs:
-        lines += job_lines(job, now)
-    if not jobs:
+    if jobs:
+        lines += [""] + list(TABLE_HEAD) + [job_row(job, now) for job in jobs]  # a table needs a blank line above it
+    else:
         lines.append("Nothing waits on you.")
     if blocks:
         lines += [""] + blocks
