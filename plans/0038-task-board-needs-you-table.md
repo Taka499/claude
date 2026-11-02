@@ -59,6 +59,11 @@ The user asked on 2026-11-02 for the attention page's Needs you list (plan 0036,
 - **The finding:** the plan and `cell()`'s docstring claimed a cell shows its text as written, with Markdown unable to act on it. Inline Markdown in a field still renders: bold, a link, strikethrough, a code span.
 - **The fix is to the description, not the code.**
   - **What the encoding is for:** keeping each row whole and keeping HTML from rendering. It does both.
-  - **Why formatting may render:** only the board's own login can write these fields, since blocks in strangers' issues are ignored, so formatting there is meant.
+  - **Why formatting may render:** a block counts only where the board's login opened the issue or last edited its text (`board.block_of`). A stranger cannot edit the user's issues, so writes none of these fields. An account with write access to the repository can, and is trusted, as plan 0036 § Build records. Formatting there is meant.
   - **Why not escape every Markdown character:** it would make the raw page hard to read and code spans worse.
 - **Changed:** § Changes and the docstring now say this, and a test name follows.
+
+**A pass on that correction: CHANGES REQUESTED, one MEDIUM, fixed.**
+- **The finding:** the new text said the board's own login is these fields' only writer. `block_of` also trusts an issue the login opened and an account with write access later edited.
+- **The fix:** the text now states the rule exactly, and names who it leaves trusted.
+- **Confirmed:** the pass found the diff changes only text and a test name.
