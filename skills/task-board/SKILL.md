@@ -5,12 +5,13 @@ description: Work a project's tasks on its GitHub board — find the next ready 
 
 # Task board
 
-A project that keeps its tasks on a GitHub board says so in its `CLAUDE.md`, and has a `.task-board.json` at its root. The board is the record of what is queued, who is working on it and what is done, so no project keeps a second list beside it. The helper `board.py`, beside this file, is the only way a session changes the board. It works by name and looks up the board's internal IDs itself, so a wrong ID cannot set the wrong field. `setup_board.py`, beside it, sets a board up. Design and decisions: the `Taka499/claude` repo's `plans/0030-issues-workflow.md`, `plans/0033-task-board-default.md` for setup, user-owned boards and `sync`, and `plans/0036-task-board-jobs-and-page.md` for jobs for the user, progress, notes and the attention page.
+A project that keeps its tasks on a GitHub board says so in its `CLAUDE.md`, and has a `.task-board.json` at its root. The board is the record of what is queued, who is working on it and what is done, so no project keeps a second list beside it. The helper `board.py`, beside this file, is the only way a session changes the board. It works by name and looks up the board's internal IDs itself, so a wrong ID cannot set the wrong field. `setup_board.py`, beside it, sets a board up. Design and decisions: the `Taka499/claude` repo's `plans/0030-issues-workflow.md`, `plans/0033-task-board-default.md` for setup, user-owned boards and `sync`, and `plans/0036-task-board-jobs-and-page.md` for jobs for the user, progress, notes and the attention page, and `plans/0039-task-board-needs-you-column.md` for the Needs you column and the `needs-you` label.
 
 ## The board
 
 - **One issue is one backlog item,** sized to one branch. If the work needs an ExecPlan, the plan cites the issue (`#N`) and keeps its own design and progress. A plan whose milestones each take a branch of their own gets one issue per milestone, each closed when its branch merges. Never split one item into milestone sub-issues: its progress would then be kept in two places.
-- **Status** says where an item stands:
+- **Status** says where an item stands, and whose move it is. Needs you and Triage are the user's; Todo and In Progress are a session's:
+  - **Needs you:** a job for the user (below), waiting for their answer. No session works on anything here.
   - **Triage:** recorded, not yet accepted for work. An item with no Status counts as Triage. That is where `sync` puts every open issue missing from the board, the user's and strangers' alike, and where a board with GitHub's auto-add puts new ones.
   - **Todo:** the user has queued it for work.
   - **In Progress:** a session has claimed it.
@@ -26,7 +27,10 @@ A project that keeps its tasks on a GitHub board says so in its `CLAUDE.md`, and
   - **capture:** data the user collects;
   - **run:** a command only the user can run.
 
-  The work it holds up is blocked by it, so that work waits. A job goes straight to Todo: it is the user's own work, so the Triage gate does not apply.
+  The work it holds up is blocked by it, so that work waits. A job goes straight to **Needs you**, and carries the label `needs-you`: it is the user's own work, so the Triage gate does not apply.
+  - **The column** shows a board's open jobs apart from the sessions' work, with no page and no coordinator.
+  - **The label** lists the open jobs of every repository at once, which a board's column cannot: `https://github.com/issues?q=is%3Aopen+label%3Aneeds-you+org%3Atia-tools`, or `gh search issues --label needs-you --state open --owner tia-tools --owner Taka499`.
+  - **What makes an issue a job is its task-board block,** not the column or the label. `sync` labels an open job that lacks the label, and moves one found in Triage or Todo back to Needs you. A job in any other Status, or one whose item is archived, stays where it is. An issue the user moves to Needs you by hand is theirs to keep there; no step picks it up.
 - **The task-board block.** A job, and a work issue with progress, carries its lines as JSON in an HTML comment at the end of its text, under a readable copy. The helper writes the block and checks it on every write and read.
   - **The lines:** each is one line of at most 120 characters, with no bare internal ID. An ID such as E193 needs a plain explanation in parentheses after it. A project may set its own ID pattern (§ Setting up a project's board).
   - **A block in a bad shape** is reported as malformed, never shown as content.
@@ -65,6 +69,8 @@ On 3, read the message and do not force the step another way. A step that failed
      - **It stops with exit 2** if GitHub changed a shape the helper relies on, or stopped supporting the pinned REST version.
      - **Either way it says what.** A `warn:` line, such as the pinned REST version being marked deprecated, goes to the user, and the session can carry on.
    - **`sync`** puts every open issue of the repository that is missing from the board on it, in Triage. That covers issues the user or a stranger opened since the last session. Report its count to the user only when it added any.
+     - **It also settles the open jobs:** one found in Triage or Todo moves to Needs you, and one without the `needs-you` label gets it. That carries over a job filed before the column existed, and one a hand moved.
+   - **A board without the Needs you option** stops every step with exit 1, naming `setup_board.py`: tell the user, who reruns it for that repository (§ Setting up a project's board). It adds the option and changes nothing else.
 1. **What is next:** `ready` (`--json` for a list to parse). Take the top item, unless the user names one.
 2. **Claim it before any work,** before the branch's first commit: `claim N --branch <branch> --worktree <path>`. This moves it to In Progress and comments the branch. If another session's claim comment is earlier, the step exits 3: leave that issue and take the next. If the user asks for work on an issue still in Triage, run `queue N [--priority <option>]` first. Only the user's ask allows that, because Triage is their gate.
    - **Work the user asks for with no issue covering it,** such as "go on with the plan" or a named milestone: `file --todo --title …` first, since the user's ask is what queues it, then claim it. An empty `ready` list does not mean the board has nothing to do with the work.
@@ -94,7 +100,7 @@ On 3, read the message and do not force the step another way. A step that failed
      --recommend "A|finding such gaps is what the full logs are for" --holds-up 298
    board.py ask --kind approve --title "merge help-pages into develop and push" --summary "checks green, the one finding fixed"
    ```
-   `--holds-up` names the work it holds up; `capture` and `run` take `--summary` like `approve`.
+   `--holds-up` names the work it holds up; `capture` and `run` take `--summary` like `approve`. The job lands in Needs you with the `needs-you` label, which the step creates in a repository that lacks it.
    - **A worker files its own question:** a question for the user is filed with `ask`, holding up its own issue, before it is sent to anyone. The coordinator does not answer it.
    - **The coordinator** files its own jobs, such as merge approvals and captures, and bundles related ones into one.
 8. **The user's answer:** the user types it in a terminal cell, as `#312 A`. The session holding those words then runs `board.py answer 312 --quote "#312 A"`.
@@ -162,7 +168,7 @@ python3 -I ~/.claude/skills/task-board/setup_board.py <owner>/<repo> --checkout 
 **What it does:**
 - **The board:** it creates one linked to the repository and titled with its name, or reuses the open one already so;
 - **Private,** for both kinds of owner;
-- **Status options:** `Triage`, `Todo`, `In Progress`, `Done`, in that order. The options already there keep their IDs, so no item loses its Status;
+- **Status options:** `Needs you`, `Triage`, `Todo`, `In Progress`, `Done`, in that order. The options already there keep their IDs, so no item loses its Status;
 - **Priority:**
   - on an organization's board, the organization's issue field;
   - on a user's board, a field of the board's own;

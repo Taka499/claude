@@ -19,7 +19,8 @@ Standard library only; Python 3.9 or later.
 
 Usage:
     python3 -I board.py check                                   (read-only: is the board and the API as expected?)
-    python3 -I board.py sync                     (put the repository's open issues missing from the board in Triage)
+    python3 -I board.py sync        (put the repository's open issues missing from the board in Triage, and every
+                                     open job for the user in Needs you, labelled needs-you: plan 0039)
     python3 -I board.py ready [--json]
     python3 -I board.py file (--triage | --todo [--priority NAME]) --title TITLE [--body BODY] [--blocked-by 3,7]
     python3 -I board.py queue N [--priority NAME]               (only when the user asks: Triage is their gate)
@@ -60,8 +61,14 @@ STATUS_FIELD, PRIORITY_FIELD = "Status", "Priority"
 ORGANIZATION, USER = "Organization", "User"
 # On by default on every new board, and sets Todo on every item added, so nothing would wait in Triage (plan 0033 D6).
 ITEM_ADDED_WORKFLOW = "Item added to project"
-TRIAGE, TODO, IN_PROGRESS, DONE = "Triage", "Todo", "In Progress", "Done"
-STATUSES = (TRIAGE, TODO, IN_PROGRESS, DONE)
+# Each Status has one side to move it: Needs you and Triage are the user's, Todo and In Progress a session's (plan
+# 0039). The order is the board's columns, left to right.
+NEEDS_YOU, TRIAGE, TODO, IN_PROGRESS, DONE = "Needs you", "Triage", "Todo", "In Progress", "Done"
+STATUSES = (NEEDS_YOU, TRIAGE, TODO, IN_PROGRESS, DONE)
+# The label every job for the user carries, so one search lists the open jobs of every repository at once, which a
+# board's column cannot: is:open label:needs-you. The column is per board; the label is set once and never changes.
+JOB_LABEL, JOB_LABEL_COLOR = "needs-you", "D93F0B"
+JOB_LABEL_TEXT = "A job for the user: decide, approve, capture or run (task-board)"
 # Markers at the start of the comments this script writes, so a later run can read the claim history back.
 CLAIM, RELEASE, DONE_MARK = "task-board claim:", "task-board release:", "task-board done:"
 ANSWER_MARK = "task-board answer:"
@@ -299,7 +306,9 @@ def parse_board_page(page_json: str, project: int):
     options = {option["name"]: option["id"] for option in listed}
     missing = [option for option in STATUSES if option not in options]
     if missing:
-        raise BoardError(f"the board's {STATUS_FIELD} field lacks the option(s) {', '.join(missing)}")
+        raise BoardError(f"the board's {STATUS_FIELD} field lacks the option(s) {', '.join(missing)}; rerun the"
+                         f" task-board skill's setup_board.py for this repository, which adds them and keeps the"
+                         f" others")
     board_priority = parse_board_priority(fields.get(PRIORITY_FIELD)) if owner_type == USER else None
     status_field = StatusField(board["id"], field["id"], options, owner_type, board_priority)
     page = board.get("items")
@@ -481,6 +490,34 @@ def block_of(issue: dict, pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | N
 def is_job(issue: dict, pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None) -> bool:
     data, _ = block_of(issue, pattern, login)
     return bool(data) and data["kind"] in jobs.JOB_KINDS
+
+
+def labels_of(issue: dict) -> list:
+    """The names of an issue's labels. Without the list, a job would read as unlabelled and be labelled again on
+    every `sync`, so its absence stops the run."""
+    labels = issue.get("labels")
+    if not isinstance(labels, list) or not all(isinstance(label, dict) and isinstance(label.get("name"), str)
+                                               for label in labels):
+        raise GhError(f"issue {issue.get('number')!r} came back without its labels")
+    return [label["name"] for label in labels]
+
+
+def unsettled_jobs(items: list, issues: list, repo: str, pattern: str = jobs.DEFAULT_ID_PATTERN,
+                   login: str | None = None) -> list:
+    """(number, the board's item or None, whether it lacks the label) of each open job for the user that is not
+    where a job belongs: in Needs you, labelled. The item is given where it must move: one in Triage (no Status
+    counts) or Todo, where jobs were filed before plan 0039, or where a hand moved it. A job in any other Status
+    is left there, and one with no item on the board, such as an archived one, is only labelled."""
+    found = []
+    for issue in sorted(issues, key=lambda entry: entry["number"]):
+        if not is_job(issue, pattern, login):
+            continue
+        item = item_for(items, issue["number"], repo)
+        move = item if item is not None and status_of(item) in (TRIAGE, TODO) else None
+        unlabelled = JOB_LABEL not in labels_of(issue)
+        if move is not None or unlabelled:
+            found.append((issue["number"], move, unlabelled))
+    return found
 
 
 def malformed(issues: list, pattern: str = jobs.DEFAULT_ID_PATTERN, login: str | None = None) -> list:
@@ -795,7 +832,7 @@ class Board:
 
     def open_issues(self) -> list:
         return json.loads(self.gh.run("issue", "list", "--repo", self.config.repo, "--state", "open", "--limit",
-                                      LIMIT, "--json", "number,title,createdAt,blockedBy,body,url,author"))
+                                      LIMIT, "--json", "number,title,createdAt,blockedBy,body,url,author,labels"))
 
     def issue(self, number: int) -> dict:
         return json.loads(self.gh.run("issue", "view", str(number), "--repo", self.config.repo, "--json",
@@ -891,6 +928,15 @@ class Board:
     def comment(self, number: int, body: str) -> None:
         self.gh.run("issue", "comment", str(number), "--repo", self.config.repo, "--body", body)
 
+    def ensure_job_label(self) -> None:
+        """Create the repository's needs-you label where it is missing. `--force` makes a second session creating
+        it at the same moment succeed too; a label already there is left as the user coloured it."""
+        listed = json.loads(self.gh.run("label", "list", "--repo", self.config.repo, "--limit", LIMIT, "--json",
+                                        "name"))
+        if not any(label.get("name") == JOB_LABEL for label in listed):
+            self.gh.run("label", "create", JOB_LABEL, "--repo", self.config.repo, "--color", JOB_LABEL_COLOR,
+                        "--description", JOB_LABEL_TEXT, "--force")
+
     # -- the steps --
     # Each step changes things in an order whose failure leaves the safer state, and a rerun of the same step
     # finishes it. A gh failure after the first change says what was already done.
@@ -914,6 +960,11 @@ class Board:
         lines.append(f"ok: {len(issues)} open issue(s) in {self.config.repo}")
         for number, error in malformed(issues, self.config.id_pattern, self.login()):
             lines.append(f"warn: #{number}: {error}; fix it with the helper")
+        for number, move, unlabelled in unsettled_jobs(items, issues, self.config.repo, self.config.id_pattern,
+                                                        self.login()):
+            what = [f"is in {status_of(move)}, not {NEEDS_YOU}"] if move else []
+            lines.append(f"warn: job #{number} {' and '.join(what + [f'lacks the label {JOB_LABEL}'] * unlabelled)};"
+                         f" `sync` settles it")
         on_board = [item["content"]["number"] for item in items
                     if item["content"]["type"] == "Issue" and repo_of(item["content"]) == self.config.repo]
         for number in on_board[:3]:
@@ -937,15 +988,33 @@ class Board:
             lines.append(f"ok: REST version {REST_VERSION} supported, not marked deprecated")
         return lines
 
-    def sync(self) -> list:
+    def sync(self):
         """Put every open issue of this repository that is missing from the board on it, with no Status, so in
         Triage. This replaces GitHub's auto-add, which no API can turn on (plan 0033): an issue opened outside a
-        session reaches the board the next time a session runs this. Returns the numbers added."""
+        session reaches the board the next time a session runs this. Then settle the open jobs for the user: each
+        one found in Triage or Todo moves to Needs you, and each without the label gets it (plan 0039). That
+        carries over the jobs filed before the column existed, and puts back one a hand moved. Returns (the
+        numbers added, [(job number, what was done to it)])."""
         self.refuse_while_item_added_is_on()
-        missing = missing_from_board(self.board()[1], self.open_issues(), self.config.repo)  # archived count as there
+        everything, issues = self.board()[1], self.open_issues()
+        missing = missing_from_board(everything, issues, self.config.repo)  # archived count as there
         for number in missing:
             self.add_to_board(number)
-        return missing
+        items = self.items() if missing else [item for item in everything if not item["archived"]]
+        unsettled = unsettled_jobs(items, issues, self.config.repo, self.config.id_pattern, self.login())
+        if any(unlabelled for _, _, unlabelled in unsettled):
+            self.ensure_job_label()
+        settled = []
+        for number, move, unlabelled in unsettled:
+            did = []
+            if unlabelled:
+                self.gh.run("issue", "edit", str(number), "--repo", self.config.repo, "--add-label", JOB_LABEL)
+                did.append(f"labelled {JOB_LABEL}")
+            if move is not None:
+                self.set_status(move["id"], NEEDS_YOU)
+                did.append(f"moved from {status_of(move)} to {NEEDS_YOU}")
+            settled.append((number, " and ".join(did)))
+        return missing, settled
 
     def ready(self) -> list:
         items, issues = self.items(), self.open_issues()
@@ -1054,9 +1123,10 @@ class Board:
 
     def ask(self, kind: str, title: str, options: list, recommend: str | None, summary: str | None,
             holds_up_numbers: list, note: str) -> int:
-        """File a job for the user, straight into Todo: it is the user's own work, so the Triage gate, which keeps
-        sessions from starting unqueued work, does not apply (D6). Each issue it holds up is marked as blocked by
-        it, so `ready` skips that work. Any session may file one; a worker files its own questions (D20)."""
+        """File a job for the user, straight into Needs you and labelled needs-you (plan 0039): it is the user's
+        own work, so the Triage gate, which keeps sessions from starting unqueued work, does not apply (D6). Each
+        issue it holds up is marked as blocked by it, so `ready` skips that work. Any session may file one; a
+        worker files its own questions (D20)."""
         pattern = self.config.id_pattern
         if kind == "decide":
             if summary:
@@ -1079,13 +1149,14 @@ class Board:
         closed = [n for n in holds_up_numbers if n not in open_numbers]
         if closed:
             raise Refused(f"--holds-up names {', '.join(f'#{n}' for n in closed)}, which is not an open issue")
+        self.ensure_job_label()  # before the issue: gh refuses to create one with a label the repository lacks
         number = self.created_issue(self.gh.run("issue", "create", "--repo", self.config.repo, "--title", title,
-                                                "--body", jobs.render_body(data, note)), title)
+                                                "--body", jobs.render_body(data, note), "--label", JOB_LABEL), title)
         try:
-            self.set_status(self.add_to_board(number), TODO)
+            self.set_status(self.add_to_board(number), NEEDS_YOU)
         except (GhError, KeyError, ValueError, TypeError) as error:
-            raise GhError(f"job #{number} was created, but placing it on the board failed ({error}); set it to"
-                          f" {TODO} on the board, and do not file it again") from None
+            raise GhError(f"job #{number} was created, but placing it on the board failed ({error}); run `sync`,"
+                          f" which moves it to {NEEDS_YOU}, and do not file it again") from None
         for held in holds_up_numbers:
             try:
                 self.gh.run("issue", "edit", str(held), "--repo", self.config.repo, "--add-blocked-by", str(number))
@@ -1337,10 +1408,12 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None, environ: dic
             for line in board.check() + (restore_warnings(state, now) if state else []):
                 print(line)
         elif args.step == "sync":
-            added = board.sync()
+            added, settled = board.sync()
             for number in added:
                 print(f"added #{number} to the board in {TRIAGE}")
-            print(f"{len(added)} issue(s) added")
+            for number, did in settled:
+                print(f"job #{number}: {did}")
+            print(f"{len(added)} issue(s) added" + (f", {len(settled)} job(s) settled" if settled else ""))
         elif args.step == "ready":
             entries = board.ready()
             if args.json:
@@ -1367,7 +1440,7 @@ def main(argv: list, gh: Gh | None = None, cwd: Path | None = None, environ: dic
         elif args.step == "ask":
             number = board.ask(args.kind, args.title, args.option, args.recommend, args.summary,
                                numbers(args.holds_up), args.note)
-            print(f"filed job #{number} in {TODO}")
+            print(f"filed job #{number} in {NEEDS_YOU}")
         elif args.step == "answer":
             chosen = board.answer(args.number, args.quote, transcript_records(environ or os.environ, Path.home()))
             print(f"answered #{args.number}: {chosen}")

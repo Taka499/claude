@@ -25,7 +25,9 @@ REPO = "o/r"
 PROJECT_ID = "PVT_kwDOEfCcUc4BpKm6"
 STATUS_FIELD_ID = "PVTSSF_lADOEfCcUc4BpKm6zhnnb4c"
 # captured: the board's Status options, from `gh project field-list 1 --owner tia-tools --format json`
-STATUS_IDS = {"Triage": "782d1866", "Todo": "f75ad846", "In Progress": "47fc9ee4", "Done": "98236657"}
+# "Needs you" (plan 0039) is not captured: its ID is a board's own, given when setup_board.py adds the option.
+STATUS_IDS = {"Needs you": "0e5c1a7b", "Triage": "782d1866", "Todo": "f75ad846", "In Progress": "47fc9ee4",
+              "Done": "98236657"}
 STATUS_FIELD = {"__typename": "ProjectV2SingleSelectField", "id": STATUS_FIELD_ID,
                 "options": [{"id": option_id, "name": name} for name, option_id in STATUS_IDS.items()]}
 # captured: `gh api /orgs/tia-tools/issue-fields`, trimmed. The options come in no useful order; "priority" ranks them.
@@ -71,7 +73,7 @@ def item(number: int, status: str | None, repo: str = REPO, kind: str = "Issue",
 
 def issue(number: int, created: str = "2026-10-01T00:00:00Z", blocked_by=None, author: str = "me") -> dict:
     return {"number": number, "title": f"issue {number}", "createdAt": created, "blockedBy": blocked_by or [],
-            "author": {"login": author}}
+            "author": {"login": author}, "labels": []}
 
 
 def comment(body: str, at: str, login: str = "me") -> dict:
@@ -145,6 +147,7 @@ class FakeGh:
         self.owner_type, self.workflows = owner_type, list(workflows)
         self.closed = []  # issues closed by a step, still readable by `gh issue view`
         self.editors = {}  # issue number -> who last edited its text (GraphQL Issue.editor)
+        self.labels = []  # the names of the repository's labels
 
     @staticmethod
     def kind(args: tuple) -> str:
@@ -174,6 +177,8 @@ class FakeGh:
             return "issue-search"
         if args[:2] == ("issue", "edit"):
             return "issue-edit"
+        if args[:2] in (("label", "list"), ("label", "create")):
+            return "-".join(args[:2])
         return {("api", "user"): "user", ("issue", "list"): "issue-list", ("issue", "view"): "comments",
                 ("issue", "comment"): "comment", ("issue", "create"): "issue-create",
                 ("issue", "close"): "issue-close"}[args[:2]]
@@ -249,6 +254,11 @@ class FakeGh:
                  "single_select_option": {"id": OPTION_IDS.get(name, 0), "name": name, "color": "red"}}])
         if kind == "issue-list":
             return json.dumps(self.issues)
+        if kind == "label-list":
+            return json.dumps([{"name": name} for name in self.labels])
+        if kind == "label-create":
+            self.labels.append(args[2])
+            return ""
         if kind == "comment":
             body = args[args.index("--body") + 1]
             self.comments.setdefault(int(args[2]), []).append({"body": body, "createdAt": "2026-10-29T12:00:00Z",
@@ -264,7 +274,11 @@ class FakeGh:
                 self.issues.append({"number": int(match.group(2)), "title": args[args.index("--title") + 1],
                                     "createdAt": "2026-11-01T00:00:00Z", "blockedBy": [],
                                     "body": args[args.index("--body") + 1], "url": match.group(0).strip(),
-                                    "author": {"login": "me"}})
+                                    "author": {"login": "me"}, "labels": [
+                                        {"name": args[index + 1]} for index, arg in enumerate(args)
+                                        if arg == "--label"]})
+                # gh looks a label up before it creates the issue, and refuses one the repository lacks
+                assert all(label["name"] in self.labels for label in self.issues[-1]["labels"]), args
             return self.create_output
         if kind == "issue-view":
             number = int(args[2])
@@ -285,6 +299,10 @@ class FakeGh:
             if "--body-file" in args:
                 target["body"] = input
                 self.editors[number] = "me"
+            if "--add-label" in args:
+                name = args[args.index("--add-label") + 1]
+                assert name in self.labels, f"the repository has no label {name!r}"
+                target.setdefault("labels", []).append({"name": name})
             return ""
         if kind == "issue-search":
             return json.dumps([{"number": entry["number"], "url": entry.get("url", ""),
@@ -433,7 +451,7 @@ class BoardPages(unittest.TestCase):
 
     def test_a_renamed_missing_or_retyped_status_field_is_named(self):
         for field, pattern in ((None, "renamed"), ({"__typename": "ProjectV2Field", "id": "x"}, "single-select"),
-                               (dict(STATUS_FIELD, options=STATUS_FIELD["options"][1:]), "Triage")):
+                               (dict(STATUS_FIELD, options=STATUS_FIELD["options"][2:]), "Needs you, Triage")):
             with self.assertRaisesRegex(board.BoardError, pattern):
                 board.parse_board_page(board_page([], None, field=field), 1)
 
@@ -746,19 +764,19 @@ class Steps(unittest.TestCase):
 
     def test_sync_puts_open_issues_missing_from_the_board_in_triage(self):
         gh = FakeGh(items=[item(1, "Todo"), item(2, None, repo="o/other")], issues=[issue(1), issue(2), issue(3)])
-        self.assertEqual(make_board(gh).sync(), [2, 3])
+        self.assertEqual(make_board(gh).sync(), ([2, 3], []))
         self.assertEqual(gh.edits(), [])
         added = [entry for entry in gh.items if entry["id"] in ("PVTI_2", "PVTI_3")]
         self.assertEqual([board.status_of(entry) for entry in added], ["Triage", "Triage"])
 
     def test_sync_on_a_complete_board_changes_nothing(self):
         gh = FakeGh(items=[item(1, "Todo"), item(2, "Done")], issues=[issue(1)])
-        self.assertEqual(make_board(gh).sync(), [])
-        self.assertNotIn("add-item", gh.kinds())
+        self.assertEqual(make_board(gh).sync(), ([], []))
+        self.assertFalse({"add-item", "set-status", "issue-edit", "label-list", "label-create"} & set(gh.kinds()))
 
     def test_sync_leaves_an_issue_whose_item_was_archived_and_ready_skips_it(self):
         gh = FakeGh(items=[item(1, "Todo", archived=True)], issues=[issue(1)])
-        self.assertEqual(make_board(gh).sync(), [])
+        self.assertEqual(make_board(gh).sync(), ([], []))
         self.assertEqual(make_board(gh).ready(), [])
 
     def test_steps_that_add_items_refuse_while_item_added_is_on_and_change_nothing(self):
@@ -771,7 +789,7 @@ class Steps(unittest.TestCase):
 
     def test_sync_survives_auto_add_placing_the_same_issue(self):
         gh = FakeGh(items=[], issues=[issue(4)], add_conflict=True)
-        self.assertEqual(make_board(gh).sync(), [4])
+        self.assertEqual(make_board(gh).sync(), ([4], []))
 
     def test_queue_accepts_a_triage_item_with_a_priority(self):
         for status in (None, "Triage"):
@@ -1065,11 +1083,14 @@ class JobsAndPage(unittest.TestCase):
         self.assertEqual(made.ask("decide", "fix two engine rules first?", options, recommend, None, [3], ""), 9)
         return gh, made
 
-    def test_ask_files_the_job_in_todo_and_holds_its_work_up(self):
+    def test_ask_files_the_job_in_needs_you_labelled_and_holds_its_work_up(self):
         gh, made = self.asked()
-        self.assertEqual(gh.edits(), ["Todo"])
+        self.assertEqual(gh.edits(), ["Needs you"])
         self.assertEqual(gh.kinds().count("issue-edit"), 1)
         job = next(entry for entry in gh.issues if entry["number"] == 9)
+        self.assertEqual((gh.labels, job["labels"]), (["needs-you"], [{"name": "needs-you"}]))
+        self.assertLess(gh.first("label-create"), gh.first("issue-create"))
+        self.assertEqual(made.sync(), ([], []), "a job filed by ask is already settled")
         data, error = board.block_of(job)
         self.assertEqual((data["kind"], error), ("decide", None))
         self.assertEqual(made.ready(), [], "neither the job nor the work it holds up is ready work")
@@ -1086,6 +1107,56 @@ class JobsAndPage(unittest.TestCase):
             with self.subTest(why=why), self.assertRaisesRegex(error, why):
                 make_board(gh).ask(*args, "")
             self.assertNotIn("issue-create", gh.kinds())
+
+    def test_ask_leaves_a_label_the_repository_already_has(self):
+        gh = FakeGh(items=[], issues=[], create_output=JOB_URL)
+        gh.labels = ["bug", "needs-you"]
+        make_board(gh).ask("approve", "merge it", [], None, "checks green", [], "")
+        self.assertNotIn("label-create", gh.kinds())
+
+    def job(self, number: int, **changes) -> dict:
+        return dict(issue(number), body=job_body({"kind": "approve", "summary": "checks green"}), **changes)
+
+    def test_sync_moves_jobs_out_of_triage_and_todo_and_labels_them(self):
+        labelled = [{"name": "needs-you"}]
+        gh = FakeGh(items=[item(1, "Todo"), item(2, None), item(3, "Needs you"), item(4, "In Progress"),
+                           item(5, "Todo"), item(6, "Todo"), item(8, "Todo", archived=True)],
+                    issues=[self.job(1), self.job(2, labels=labelled), self.job(3, labels=labelled), self.job(4),
+                            issue(5), dict(self.job(6, labels=labelled), author={"login": "stranger"}), self.job(7),
+                            self.job(8)])
+        added, settled = make_board(gh).sync()
+        self.assertEqual(added, [7])
+        self.assertEqual(settled, [(1, "labelled needs-you and moved from Todo to Needs you"),
+                                   (2, "moved from Triage to Needs you"),
+                                   (4, "labelled needs-you"),  # a Status no step gives a job is left to the user
+                                   (7, "labelled needs-you and moved from Triage to Needs you"),
+                                   (8, "labelled needs-you")])  # its item is archived: nothing to move
+        status = {entry["content"]["number"]: board.status_of(entry) for entry in gh.items}
+        self.assertEqual(status, {1: "Needs you", 2: "Needs you", 3: "Needs you", 4: "In Progress", 5: "Todo",
+                                  6: "Todo", 7: "Needs you", 8: "Todo"})
+        self.assertEqual(gh.kinds().count("label-create"), 1)
+        self.assertEqual(make_board(gh).sync(), ([], []), "a second sync finds nothing left to settle")
+
+    def test_check_names_a_job_that_sync_would_settle_and_changes_nothing(self):
+        gh = FakeGh(items=[item(1, "Todo"), item(2, "Needs you")], issues=[self.job(1), self.job(2)])
+        warnings = [line for line in make_board(gh).check() if line.startswith("warn:")]
+        self.assertEqual(warnings, [
+            "warn: job #1 is in Todo, not Needs you and lacks the label needs-you; `sync` settles it",
+            "warn: job #2 lacks the label needs-you; `sync` settles it"])
+        self.assertFalse({"set-status", "issue-edit", "label-create"} & set(gh.kinds()))
+
+    def test_a_job_that_comes_back_without_its_labels_stops_rather_than_reading_as_unlabelled(self):
+        for labels in (None, "needs-you", [{"id": 1}]):
+            job = self.job(1)
+            job["labels"] = labels
+            gh = FakeGh(items=[item(1, "Needs you")], issues=[job])
+            with self.subTest(labels=labels), self.assertRaisesRegex(board.GhError, "without its labels"):
+                make_board(gh).sync()
+
+    def test_a_board_without_the_needs_you_option_names_the_setup_script(self):
+        field = dict(STATUS_FIELD, options=[o for o in STATUS_FIELD["options"] if o["name"] != "Needs you"])
+        with self.assertRaisesRegex(board.BoardError, "lacks the option.s. Needs you; rerun .*setup_board.py"):
+            board.parse_board_page(board_page([item(1, "Todo")], None, field=field), 1)
 
     def test_answer_closes_the_job_on_the_users_typed_words_and_frees_the_work(self):
         gh, made = self.asked()
