@@ -68,4 +68,4 @@ A job never passes through In Progress: it goes from filed to closed on the user
 
 A project still on a board without the option after the merge sees every step stop with the message of D5, and step 1 for its repository fixes it.
 
-**Found during the build:** `~/.claude/skills/task-board` is a link to the main checkout's working tree, so a branch checked out there is deployed before it merges. For about 25 minutes the unmerged helper was live, and would have stopped a step on any of the five boards. The branch moved to a worktree of its own, and the main checkout went back to `master`.
+**Found during the build:** `~/.claude/skills/task-board` is a link to the main checkout's working tree, so a branch checked out there is deployed before it merges. For at most 6 minutes (the branch was checked out there from 09:58 to 10:04 JST, by the reflog) the unmerged helper was live, and would have stopped a step on any of the five boards. The branch moved to a worktree of its own, and the main checkout went back to `master`.
