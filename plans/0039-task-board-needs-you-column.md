@@ -69,3 +69,11 @@ A job never passes through In Progress: it goes from filed to closed on the user
 A project still on a board without the option after the merge sees every step stop with the message of D5, and step 1 for its repository fixes it.
 
 **Found during the build:** `~/.claude/skills/task-board` is a link to the main checkout's working tree, so a branch checked out there is deployed before it merges. For at most 6 minutes (the branch was checked out there from 09:58 to 10:04 JST, by the reflog) the unmerged helper was live, and would have stopped a step on any of the five boards. The branch moved to a worktree of its own, and the main checkout went back to `master`.
+
+## Codex review (2026-11-13)
+
+`/codex-review` on the branch's whole diff at `0552f35`, in a snapshot: **CHANGES REQUESTED, one LOW, accepted.**
+- **The finding:** `SKILL.md` said `sync` "puts both back on a job that lost one". It moves a job only out of Triage or Todo, and never one whose item is archived.
+- **The fix:** the sentence now states those limits. Only text changed, so the review was not run again.
+- **Confirmed by the pass:** repository scoping and `block_of` keep `sync` from moving a stranger's issue or a non-job; the orderings in `ask` and `sync` are safe and finished by a rerun; setup keeps each existing option's ID, colour and description; the new tests assert what their names say.
+- **The sandbox check:** the skill's script printed `SANDBOX NOT SHOWN`, because the log's first line was `Reading additional input from stdin...` and the script wants the `OpenAI Codex v…` banner there. The header under the banner read `approval: never` and `sandbox: read-only`, and the canary's two writes were refused. Nothing was written in the worktree and no ref moved; the main checkout's `.git/index` changed, with nothing else in `.git`.

@@ -30,7 +30,7 @@ A project that keeps its tasks on a GitHub board says so in its `CLAUDE.md`, and
   The work it holds up is blocked by it, so that work waits. A job goes straight to **Needs you**, and carries the label `needs-you`: it is the user's own work, so the Triage gate does not apply.
   - **The column** shows a board's open jobs apart from the sessions' work, with no page and no coordinator.
   - **The label** lists the open jobs of every repository at once, which a board's column cannot: `https://github.com/issues?q=is%3Aopen+label%3Aneeds-you+org%3Atia-tools`, or `gh search issues --label needs-you --state open --owner tia-tools --owner Taka499`.
-  - **What makes an issue a job is its task-board block,** not the column or the label: `sync` puts both back on a job that lost one. An issue the user moves to Needs you by hand is theirs to keep there; no step picks it up.
+  - **What makes an issue a job is its task-board block,** not the column or the label. `sync` labels an open job that lacks the label, and moves one found in Triage or Todo back to Needs you. A job in any other Status, or one whose item is archived, stays where it is. An issue the user moves to Needs you by hand is theirs to keep there; no step picks it up.
 - **The task-board block.** A job, and a work issue with progress, carries its lines as JSON in an HTML comment at the end of its text, under a readable copy. The helper writes the block and checks it on every write and read.
   - **The lines:** each is one line of at most 120 characters, with no bare internal ID. An ID such as E193 needs a plain explanation in parentheses after it. A project may set its own ID pattern (§ Setting up a project's board).
   - **A block in a bad shape** is reported as malformed, never shown as content.
