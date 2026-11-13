@@ -8,8 +8,8 @@ Every step reads the board first and changes only what differs, so a rerun finis
 changes nothing on a board already set up:
 1. the board: the one linked to the repository and titled with its name, or a new one, created linked to it;
 2. private;
-3. Status options Triage, Todo, In Progress, Done in that order, keeping the IDs of the options already there, so
-   no item loses its Status (any other option is kept, after them);
+3. Status options Needs you, Triage, Todo, In Progress, Done in that order, keeping the IDs of the options already
+   there, so no item loses its Status (any other option is kept, after them);
 4. Priority: on an organization's board, the organization's issue field; on a user's board, which has no issue
    fields, a single-select field of the board with Urgent, High, Medium, Low;
 5. a Board view with Status as its columns;
@@ -42,6 +42,7 @@ from board import (CONFIG_FILE, ITEM_ADDED_WORKFLOW, ORGANIZATION, PRIORITY_FIEL
 
 BOARD_LAYOUT = "BOARD_LAYOUT"
 NEW_OPTION_COLOR = "GRAY"
+NEW_OPTION_COLORS = {board.NEEDS_YOU: "RED"}  # the user's own column stands out; any other new option is grey
 # A user's board's own Priority, most urgent first: the names of the organization's issue field, so both read alike.
 USER_PRIORITIES = (("Urgent", "RED"), ("High", "ORANGE"), ("Medium", "YELLOW"), ("Low", "GRAY"))
 
@@ -197,8 +198,8 @@ def parse_setup(response_json: str) -> SetupState:
 
 
 def status_options(options: list):
-    """The option list that puts Triage, Todo, In Progress and Done first, in that order, or None if they already
-    are. Options already there keep their ID, colour and description, so items keep their Status; any other option
+    """The option list that puts Needs you, Triage, Todo, In Progress and Done first, in that order, or None if
+    they already are. Options already there keep their ID, colour and description, so items keep their Status; any other option
     is kept, after them."""
     names = [option["name"] for option in options]
     if names[:len(STATUSES)] == list(STATUSES):
@@ -209,7 +210,8 @@ def status_options(options: list):
         return {"id": option["id"], "name": option["name"], "color": option.get("color") or NEW_OPTION_COLOR,
                 "description": option.get("description") or ""}
 
-    wanted = [given(by_name[name]) if name in by_name else {"name": name, "color": NEW_OPTION_COLOR, "description": ""}
+    wanted = [given(by_name[name]) if name in by_name else
+              {"name": name, "color": NEW_OPTION_COLORS.get(name, NEW_OPTION_COLOR), "description": ""}
               for name in STATUSES]
     return wanted + [given(option) for option in options if option["name"] not in STATUSES]
 

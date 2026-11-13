@@ -187,15 +187,22 @@ def run(gh: FakeGh, repo="o/r", checkout=None, default_branch=None) -> board.Con
 
 
 class Pure(unittest.TestCase):
-    def test_status_options_put_the_four_first_keeping_ids_and_other_options(self):
+    def test_status_options_put_the_five_first_keeping_ids_and_other_options(self):
         options = [{"id": "a", "name": "Todo", "color": "GREEN", "description": "x"},
                    {"id": "b", "name": "Blocked", "color": "RED", "description": ""},
                    {"id": "c", "name": "Done", "color": "PURPLE", "description": ""},
                    {"id": "d", "name": "In Progress", "color": "YELLOW", "description": ""}]
         wanted = setup_board.status_options(options)
-        self.assertEqual([option["name"] for option in wanted], ["Triage", "Todo", "In Progress", "Done", "Blocked"])
-        self.assertEqual([option.get("id") for option in wanted], [None, "a", "d", "c", "b"])
-        self.assertEqual(wanted[1], {"id": "a", "name": "Todo", "color": "GREEN", "description": "x"})
+        self.assertEqual([option["name"] for option in wanted],
+                         ["Needs you", "Triage", "Todo", "In Progress", "Done", "Blocked"])
+        self.assertEqual([option.get("id") for option in wanted], [None, None, "a", "d", "c", "b"])
+        self.assertEqual(wanted[2], {"id": "a", "name": "Todo", "color": "GREEN", "description": "x"})
+
+    def test_a_board_set_up_before_needs_you_gains_it_first_and_keeps_every_id(self):
+        options = [{"id": "t", "name": "Triage", "color": "GRAY", "description": ""}, *NEW_STATUS["options"]]
+        wanted = setup_board.status_options(options)
+        self.assertEqual(wanted[0], {"name": "Needs you", "color": "RED", "description": ""})
+        self.assertEqual(wanted[1:], options)
 
     def test_status_options_already_in_order_need_nothing(self):
         options = setup_board.status_options(NEW_STATUS["options"])
@@ -256,8 +263,9 @@ class Run(unittest.TestCase):
         self.assertEqual(config, board.Config("o", 7, "o/r"))
         self.assertEqual(gh.mutations(), ["create", "status-options", "add-issue-field", "view", "delete-workflow"])
         options = gh.body("status-options")["variables"]["options"]
-        self.assertEqual(options[0], {"name": "Triage", "color": "GRAY", "description": ""})
-        self.assertEqual([option.get("id") for option in options[1:]], ["f75ad846", "47fc9ee4", "98236657"])
+        self.assertEqual(options[:2], [{"name": "Needs you", "color": "RED", "description": ""},
+                                       {"name": "Triage", "color": "GRAY", "description": ""}])
+        self.assertEqual([option.get("id") for option in options[2:]], ["f75ad846", "47fc9ee4", "98236657"])
         self.assertEqual(gh.boards["PVT_7"]["title"], "r")
         self.assertEqual([name for _, name, _ in gh.boards["PVT_7"]["workflows"]],
                          [name for _, name, _ in NEW_WORKFLOWS if name != "Item added to project"])
