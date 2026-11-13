@@ -62,7 +62,7 @@ A job never passes through In Progress: it goes from filed to closed on the user
 
 ## Rollout
 
-1. **The five other boards get the option first:** `setup_board.py tia-tools/<repo>` for gkms-hif-final-stats, gkms-memomemo, gakumas-supportcards, gkms-contest-ai and gkms-library. The user runs these: a session's attempt to change five live boards in one run was refused by the permission classifier.
+1. **The five other boards get the option first** (done 2026-11-13: the user ran it, and all six boards were read back with Needs you, Triage, Todo, In Progress, Done)**:** `setup_board.py tia-tools/<repo>` for gkms-hif-final-stats, gkms-memomemo, gakumas-supportcards, gkms-contest-ai and gkms-library. The user runs these: a session's attempt to change five live boards in one run was refused by the permission classifier.
 2. **The merge.**
 3. **Each project's next `sync`,** which every session runs at its start, moves its open jobs and labels them.
 
