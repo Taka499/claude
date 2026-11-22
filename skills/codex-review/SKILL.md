@@ -150,7 +150,7 @@ First establish whether Codex could write at all. Step 4 exists for the day its 
 
 ```bash
 canaries=("$snapshot/repo/.codex-canary" "$snapshot/codex-canary")
-awk 'NR == 1 && !/^OpenAI Codex v/ { exit 1 } /^--------$/ { n++; next } n == 1 { print } n == 2 { found = 1; exit } END { exit !found }' "$snapshot/review.txt" > "$snapshot/header.txt"; header=$?
+awk 'b == 0 { if (/^OpenAI Codex v/) { b = 1; next } if ($0 == "Reading additional input from stdin...") next; exit 1 } /^--------$/ { n++; next } n == 1 { print } n == 2 { found = 1; exit } END { exit !found }' "$snapshot/review.txt" > "$snapshot/header.txt"; header=$?
 (cd "$snapshot/repo" && codex sandbox -c 'sandbox_mode="read-only"' -- touch "${canaries[@]}") > "$snapshot/canary.txt" 2>&1 < /dev/null
 held=yes
 [ "$header" -eq 0 ] && grep -qx 'sandbox: read-only' "$snapshot/header.txt" && grep -qx 'approval: never' "$snapshot/header.txt" || held=no
@@ -161,6 +161,7 @@ for c in "${canaries[@]}"; do [ ! -e "$c" ] || held=no; done
 
 - **The run's own header** names the mode its commands ran under. A wrong `--sandbox` value, or an approval mode that could let a command out, shows there.
   - **Which lines count:** only those between the log's first two `--------` lines, under its `OpenAI Codex v…` banner.
+  - **What may come before the banner:** only the notice `Reading additional input from stdin...`, which `codex exec` prints first even with stdin from `/dev/null`, and which step 3's `2>&1` saves into the log. Any other line before the banner fails the check. Until 2026-11-23 the check required the banner on line 1, so every run printed `SANDBOX NOT SHOWN` (issue #68). `test_header_check.py`, beside this file, runs this exact `awk` against such logs.
   - **A missing header fails:** without that structure the header counts as absent, so lines the model writes later in the log cannot stand in for it.
 - **The canary** runs `touch` under the same CLI's read-only sandbox, with no model involved. It writes once inside the snapshot and once beside it. Both must be refused with `Operation not permitted`, and neither file may exist.
   - **What was measured** on 2026-11-01 with codex-cli 0.150.1: read-only refused both writes, while `workspace-write` and `danger-full-access` made both files.
