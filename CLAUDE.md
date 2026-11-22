@@ -14,7 +14,7 @@ This is the user-level `~/.claude/CLAUDE.md`, applied to every project on this m
 - When today's date is needed, MUST run the `date` command — NEVER rely on internal knowledge.
 - Scratch files go under `$TMPDIR`, which a SessionStart hook points at this session's own root, `/tmp/cs/<session id>/`.
   - **Create** them with Python's `tempfile` or a template, `mktemp -d "$TMPDIR/name.XXXXXX"`. A bare `mktemp -d` ignores `TMPDIR` on macOS.
-  - **Delete** them with `~/.local/libexec/claude-scratch/scratch-rm PATH...`, written with that absolute path, which runs with no prompt. It refuses anything outside the root, and `rm` still asks.
+  - **Delete** them with `~/.local/libexec/claude-scratch/scratch-rm PATH...`, written with that absolute path, which runs with no prompt. It refuses any argument outside the root, and `rm` still asks.
   - The `Taka499/claude` repo's `plans/0041-session-scratch-root.md` has the details.
 
 ## Git Operations

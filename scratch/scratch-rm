@@ -2,6 +2,8 @@
 # scratch-rm PATH... — delete each PATH, as rm -rf would, when it lies strictly inside this Claude Code
 # session's scratch root, /tmp/cs/<CLAUDE_CODE_SESSION_ID>/. Never reads TMPDIR. Every PATH is checked
 # before anything is deleted; one refusal deletes nothing. A missing PATH is skipped, as rm -f would.
+# It guards against its arguments, not against another process of the same user renaming folders while
+# it runs: such a process can delete anything itself (plan 0041 § Left open).
 # Plan 0041.
 PATH=/usr/bin:/bin; export PATH
 unset CDPATH

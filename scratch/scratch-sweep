@@ -9,12 +9,14 @@ dry=
 days=${1:-7}
 case $days in ''|*[!0-9]*) echo "scratch-sweep: DAYS must be a whole number" >&2; exit 2 ;; esac
 own_dir "$BASE" || exit 0
-for d in "$BASE"/*; do
-    sid=${d##*/}
-    is_session_id "$sid" && own_dir "$d" || continue
+# Work from inside the checked base, so that /tmp/cs swapped for a symlink mid-run cannot redirect a delete.
+real_base=$(cd -P "$BASE" && pwd -P) || exit 1
+cd -P "$BASE" && [ "$(pwd -P)" = "$real_base" ] || exit 1
+for sid in *; do
+    is_session_id "$sid" && own_dir "./$sid" || continue
     [ "$sid" = "${CLAUDE_CODE_SESSION_ID-}" ] && continue
     grep -qs "\"$sid\"" "$HOME"/.claude/sessions/*.json && continue
-    [ -z "$(find "$d" -mtime "-$days" -print 2>/dev/null | head -n 1)" ] || continue
-    size=$(du -sh "$d" 2>/dev/null | cut -f1)
-    if [ -n "$dry" ]; then echo "would delete $d ($size)"; else rm -rf -- "$d" && echo "deleted $d ($size)"; fi
+    [ -z "$(find "./$sid" -mtime "-$days" -print 2>/dev/null | head -n 1)" ] || continue
+    size=$(du -sh "./$sid" 2>/dev/null | cut -f1)
+    if [ -n "$dry" ]; then echo "would delete $real_base/$sid ($size)"; else rm -rf -- "./$sid" && echo "deleted $real_base/$sid ($size)"; fi
 done

@@ -18,7 +18,7 @@ Issue #65.
 ## Decisions (the user, 2026-11-22)
 
 - **D1. The root is `/tmp/cs/<session id>/`, and a SessionStart hook points `TMPDIR` at it.**
-  - **How:** the hook creates the root (mode 700) and appends `export TMPDIR=/tmp/cs/<id>/` to `CLAUDE_ENV_FILE`. Per the hooks docs, every later Bash command in the session runs that file first.
+  - **How:** the hook creates the root, forces mode 700 on it and on `/tmp/cs` (dropping any ACL on macOS), and appends `export TMPDIR=/tmp/cs/<id>/` to `CLAUDE_ENV_FILE`. Per the hooks docs, every later Bash command in the session runs that file first.
   - **What it gains:** anything that reads `TMPDIR` lands in the session's root, with no habit to remember (global `CLAUDE.md` § Quality Gates). That covers Python's `tempfile` (so pytest, uv and `verify.py`), Node's `os.tmpdir()`, and `mktemp "$TMPDIR/x.XXXXXX"` (so `/codex-review`'s snapshots).
   - **Not covered: macOS `mktemp` without a template.** `mktemp -d` and `mktemp -d -t x` ignore `TMPDIR` and use the per-user `/var/folders/…/T/` (measured on 2026-11-22). Their folders stay outside the root, and `scratch-rm` refuses them.
   - **The id:** `CLAUDE_CODE_SESSION_ID` is documented (env-vars page, read 2026-11-22) as matching the hooks' `session_id`. It changes on `/clear`, so a cleared session gets a new root.
@@ -28,7 +28,8 @@ Issue #65.
 - **D2. `scratch-rm` deletes only inside the current session's root.** It takes paths and removes each as `rm -rf` would.
   - **What it reads:** it never reads `TMPDIR`. It builds the root from `CLAUDE_CODE_SESSION_ID`, which must look like a UUID.
   - **What it refuses:** it resolves each target's parent with `pwd -P` and refuses, before deleting anything, any path that is not strictly inside `/private/tmp/cs/<id>/`. That includes the root itself, `.`, `..` and symlinked escapes.
-  - **Its environment:** it resets its own with a fixed `PATH`.
+  - **Its environment:** it sets a fixed `PATH` and unsets `CDPATH`. It never splits words, so `IFS` does not matter.
+  - **Private folders only:** it refuses unless `/tmp/cs` and the root are real folders owned by the user, with mode 700 and no ACL, so no other user can add or swap anything inside them.
   - **If an agent changes `TMPDIR`,** its files land outside the root, and deleting them goes back to `rm`, which asks.
 - **D3. Deployment: an installed copy.** The source is in this repository under `scratch/`. `scratch/install.sh`, run by the user, copies it to `~/.local/libexec/claude-scratch/`, outside every repository, as `git-hooks/install-global.sh` does. An `Edit(…)` deny rule covers the copy.
   - **The allow rule** names the copy's absolute path. A bare `scratch-rm` would let a look-alike earlier on `PATH` match it.
@@ -42,9 +43,11 @@ Issue #65.
 - **A forged session id.** A session that sets `CLAUDE_CODE_SESSION_ID` itself, for example by appending an `export` to its env file, makes `scratch-rm` delete inside another session's root. Every session runs as the same user, and with the sandbox off nothing separates them. The damage stays inside `/tmp/cs`.
 - **A swap between check and delete, narrowed.** `scratch-rm` changes into each checked folder, checks it again with `pwd -P`, and deletes `./NAME` from there. That change came from the security-guidance plugin's automated review of the first commit.
   - **What it closes:** a folder above the checked one swapped for a symlink after the check can no longer redirect the delete.
-  - **What remains:** renaming the checked folder itself out of the root between the second check and `rm`.
+  - **What remains:** renaming the checked folder itself out of the root between the second check and `rm`. Codex's review rated this Critical. It is accepted because only a process running as the same user can rename there, and such a process can delete anything itself: with the sandbox off, nothing separates it from the files. `scratch-rm` guards against its arguments, not against a concurrent attacker of the same user. `scratch-sweep` works from inside `/tmp/cs` for the same reason, so swapping `/tmp/cs` mid-run cannot redirect it.
   - **Not unit-tested:** both cases need a race, so no test exercises them, and the mutation `./NAME` → `$parent/NAME` survives the tests.
   - `rm -rf` does not follow symlinks inside the tree it removes.
+- **The sweep can delete a root still in use.** Its checks are a 7-day age and the running-session list in `~/.claude/sessions/`, which is undocumented. A session idle for longer than that and missing from the list loses its root. Its `mktemp "$TMPDIR/…"` calls then fail, and Python's `tempfile` falls back to another folder. The user runs the sweep, so the user chooses when.
+- **A hook that writes.** `docs/claude-code.md` says a hook should only read. This one creates two folders, changes their mode and appends one line to its own session's env file. It never deletes, and it exits 0 when in doubt, also when its `common.sh` is missing. A POSIX shell exits outright on a failed `.`, so the hook checks that the file is readable first. The line it appends starts with a newline, so an earlier unterminated line cannot swallow it.
 - **Subagents.** The docs do not say whether a subagent's Bash commands get the parent's id, or the env file. Measured below.
 - **What is already in `$TMPDIR`** stays. This plan changes where new scratch goes.
 - **`Bash(rm *)` stays,** for everything outside the root.
@@ -64,6 +67,18 @@ Issue #65.
 - **Tests:** deletion inside the root; refusal of the root itself, of `..`, of an absolute path outside, of a symlink pointing out, of a missing or malformed id, and of an option-looking argument. Each guard is shown failing when removed.
 - **In a new session after install:**
   - `echo $TMPDIR` prints the root;
-  - `mktemp -d` lands inside it;
+  - `mktemp -d "$TMPDIR/x.XXXXXX"` lands inside it, and a bare `mktemp -d` does not;
   - `scratch-rm` on such a folder runs with no prompt, while `rm` on the same folder still asks;
   - a subagent's Bash prints its `CLAUDE_CODE_SESSION_ID` and `TMPDIR`.
+
+## Review
+
+`/codex-review` on the branch (CHANGES REQUESTED) found:
+- **Critical: the rename race** in `scratch-rm`. Accepted as open, with the reasoning in § Left open, and the docs no longer claim more.
+- **High: a sweep through a swapped `/tmp/cs`.** Fixed: the sweep works from inside the checked folder.
+- **High: folders created loose, or by someone else, passed the ownership check.** Fixed: the hook forces mode 700 and drops ACLs, and both commands refuse a folder that is not private.
+- **High: the sweep can delete a root in use.** Accepted, and named in § Left open.
+- **Medium: the hook could exit non-zero when `common.sh` was missing, and could join its line onto an unterminated one.** Both fixed.
+- **Medium: docs claimed more than the scripts do.** Fixed.
+
+Each new guard was broken once, and each break failed a test. Before that review, the security-guidance plugin's automated review of the first commit flagged the swap between check and delete; that led to deleting from inside the re-checked folder.

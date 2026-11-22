@@ -58,6 +58,7 @@ class ScratchCase(unittest.TestCase):
     def make_root(self, sid: str | None = None) -> str:
         root = os.path.join(self.base, sid or self.sid)
         os.makedirs(root, mode=0o700)
+        os.chmod(self.base, 0o700)
         return root
 
 
@@ -71,7 +72,7 @@ class SessionStartTest(ScratchCase):
         self.assertEqual(os.stat(root).st_mode & 0o777, 0o700)
         self.assertEqual(os.stat(self.base).st_mode & 0o777, 0o700)
         with open(env_file) as f:
-            self.assertEqual(f.read(), f"export TMPDIR={root}/\n")
+            self.assertEqual(f.read(), f"\nexport TMPDIR={root}/\n")
 
     def test_tmpdir_takes_effect_for_mktemp(self) -> None:
         env_file = os.path.join(self.tmp, "env")
@@ -99,6 +100,7 @@ class SessionStartTest(ScratchCase):
 
     def test_symlinked_root_is_not_used(self) -> None:
         os.makedirs(self.base, mode=0o700)
+        os.chmod(self.base, 0o700)
         os.symlink(self.outside, os.path.join(self.base, self.sid))
         env_file = os.path.join(self.tmp, "env")
         r = self.run_script("session-start", extra={"CLAUDE_ENV_FILE": env_file})
@@ -106,6 +108,30 @@ class SessionStartTest(ScratchCase):
         self.assertFalse(os.path.exists(env_file))
 
     def test_without_env_file_still_exits_zero(self) -> None:
+        self.assertEqual(self.run_script("session-start").returncode, 0)
+
+    def test_makes_loose_folders_private(self) -> None:
+        root = os.path.join(self.base, self.sid)
+        os.makedirs(root)
+        os.chmod(self.base, 0o777)
+        os.chmod(root, 0o777)
+        env_file = os.path.join(self.tmp, "env")
+        self.run_script("session-start", extra={"CLAUDE_ENV_FILE": env_file})
+        self.assertEqual(os.stat(self.base).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(root).st_mode & 0o777, 0o700)
+        self.assertTrue(os.path.exists(env_file))
+
+    def test_unterminated_env_file_stays_valid(self) -> None:
+        env_file = os.path.join(self.tmp, "env")
+        with open(env_file, "w") as f:
+            f.write("export A=1")
+        self.run_script("session-start", extra={"CLAUDE_ENV_FILE": env_file})
+        out = subprocess.run(["sh", "-c", f'. {env_file} && echo "$A $TMPDIR"'], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), f"1 {os.path.join(self.base, self.sid)}/")
+
+    def test_missing_common_exits_zero(self) -> None:
+        os.remove(os.path.join(self.bin, "common.sh"))
         self.assertEqual(self.run_script("session-start").returncode, 0)
 
 
@@ -194,6 +220,15 @@ class ScratchRmTest(ScratchCase):
         os.symlink(self.outside, os.path.join(self.base, sid))
         self.assert_refused(self.run_script("scratch-rm", os.path.join(self.base, sid, "keep.txt"), sid=sid))
 
+    def test_refuses_when_root_is_not_private(self) -> None:
+        self.write(os.path.join(self.root, "f"))
+        for loose, mode in ((self.root, 0o770), (self.base, 0o755)):
+            os.chmod(loose, mode)
+            r = self.run_script("scratch-rm", os.path.join(self.root, "f"))
+            self.assertEqual(r.returncode, 2, loose)
+            os.chmod(loose, 0o700)
+        self.assertTrue(os.path.exists(os.path.join(self.root, "f")))
+
     def test_refuses_without_arguments(self) -> None:
         self.assertEqual(self.run_script("scratch-rm").returncode, 2)
 
@@ -220,7 +255,7 @@ class ScratchSweepTest(ScratchCase):
 
         dry = self.run_script("scratch-sweep", "-n")
         self.assertEqual(dry.returncode, 0, dry.stderr)
-        self.assertIn(stale, dry.stdout)
+        self.assertIn(os.path.basename(stale), dry.stdout)
         self.assertTrue(os.path.isdir(stale))
 
         r = self.run_script("scratch-sweep")

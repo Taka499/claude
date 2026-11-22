@@ -12,7 +12,18 @@ is_session_id() {
     return 0
 }
 
-# own_dir PATH: true when PATH is a real folder (not a symlink) owned by this user.
+# own_dir PATH: true when PATH is a real folder (not a symlink) owned by this user, with mode 700 and no ACL,
+# so that no other user can add, rename or replace anything in it.
 own_dir() {
-    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
+    case $(ls -ld "$1") in "drwx------ "* | "drwx------@ "* | "drwx------. "*) return 0 ;; esac
+    return 1
+}
+
+# make_private PATH: give this user's folder PATH mode 700 and, on macOS, drop any ACL.
+make_private() {
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
+    chmod 700 "$1" 2>/dev/null
+    [ "$(uname -s)" = Darwin ] && chmod -N "$1" 2>/dev/null
+    return 0
 }
