@@ -166,6 +166,9 @@ class ScratchRmTest(ScratchCase):
         r = self.run_script("scratch-rm", os.path.join(self.root, "gone"))
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_missing_folder_is_refused(self) -> None:
+        self.assert_refused(self.run_script("scratch-rm", os.path.join(self.root, "no-dir", "f")))
+
     def test_refuses_the_root_itself(self) -> None:
         for p in (self.root, self.root + "/", self.root + "/.", os.path.join(self.root, "x", "..")):
             self.assert_refused(self.run_script("scratch-rm", p))
