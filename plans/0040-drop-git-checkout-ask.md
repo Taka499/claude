@@ -20,21 +20,27 @@ Issue #64.
 
 ## Decision
 
-The user chose B on 2026-11-22: drop the rule.
+The user chose B on 2026-11-22: drop the rule. After the `/codex-review` below, the user also chose to add `Bash(git checkout -B*)` to `permissions.ask`. `git checkout -B <branch> <start>` resets an existing branch to a new start point, as `git switch -C` does, and `Bash(git switch -C*)` is in `ask` for that reason (README, the git hook bullet). Without the new rule, the broad one was all that asked for it. None of the 35 sampled prompts would have hit it.
 - **Rejected: A, keep it.** It costs the prompts above and guards nothing it was meant to guard.
 - **Rejected: C, narrow it to `Bash(git checkout -- *)` and `Bash(git checkout -f*)`.** `git checkout <path>`, with no `--`, discards changes the same way and would not ask. An ask rule beats an allow rule, so no carve-out for `--theirs` could sit beside the broad rule.
 
 ## What is lost
 
-- **In auto mode,** the classifier now judges `git checkout -- <path>` as it already judges `git restore <path>`, `git switch -f` and `--discard-changes` (plan 0025 § Left open).
+- **In auto mode,** the classifier now judges `git checkout -- <path>` as it already judges `git restore <path>`, `git switch -f` and `--discard-changes` (left open since plan 0025).
 - **In Manual mode,** a `checkout` command is not in `permissions.allow`, so it still prompts. Only auto mode loses the prompt.
-- **What stays:** the deny rules for `git checkout .` and `git -C * checkout*`.
+- **Branch switching in the deployed clone:** `git checkout <branch>` there now asks no more than `git switch <branch>` already did. In auto mode the classifier judges both.
+- **`git checkout -f <branch>` and `--force`** drop working-tree changes, as `git switch -f` does. They join it in the README's § Left open list, under the git hook bullet.
+- **What stays:** the deny rules for `git checkout .` and `git -C * checkout*`, and the new `Bash(git checkout -B*)` ask.
 
 ## Changes
 
-- `~/.claude/settings.json` (untracked per ADR 0002), edited by the user: `"Bash(git checkout *)"` removed from `permissions.ask`.
-- `README.md`: the `git checkout *` bullet now says the rule is gone and why. § Left open, under the git hook bullet, lists `git checkout <path>` beside `git restore`.
+- `~/.claude/settings.json` (untracked per ADR 0002), edited by the user: `"Bash(git checkout *)"` removed from `permissions.ask`, and `"Bash(git checkout -B*)"` added beside `"Bash(git switch -C*)"`.
+- `README.md`: the `git checkout *` bullet now says the rule is gone and why. § Left open, under the git hook bullet, lists `git checkout [--] <path>` and `-f` beside `git restore`. The list of rules that rewrite a branch gains `Bash(git checkout -B*)`.
 
 ## Verification
 
-- `jq '.permissions.ask | index("Bash(git checkout *)")' ~/.claude/settings.json` prints `null`, and `.permissions.deny` still contains both checkout entries.
+- `jq '.permissions.ask | index("Bash(git checkout *)")' ~/.claude/settings.json` prints `null`, the same query for `"Bash(git checkout -B*)"` prints a number, and `.permissions.deny` still contains both checkout entries.
+
+## Review
+
+`/codex-review` on the first commit returned CHANGES REQUESTED, with one Medium finding: § What is lost named only path forms. Dropping the rule also stops the prompt for branch forms: `git checkout <branch>`, `-f`, and `-B`, which resets a branch. Accepted. The branch forms and `-f` are now named above, and `-B` gets its own ask rule. Its Low finding confirmed that the counts agree between the plan and the README.
