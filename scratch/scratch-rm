@@ -16,22 +16,27 @@ real_base=$(cd "$BASE" && pwd -P) || refuse "cannot resolve $BASE"
 root=$real_base/$sid
 [ $# -gt 0 ] || refuse "usage: scratch-rm PATH... (paths inside $BASE/$sid/)"
 
-# resolve PATH: print its parent resolved with pwd -P, then its last component; fail when it is outside root.
+# resolve PATH: set $parent (PATH's folder, resolved with pwd -P) and $name (its last component), or set
+# $err and fail when PATH is outside root.
 resolve() {
-    case $1 in -*) echo "options are not accepted: $1 (write ./$1)"; return 1 ;; esac
-    name=$(basename -- "$1") && dir=$(dirname -- "$1") || { echo "cannot parse: $1"; return 1; }
-    case $name in .|..|/) echo "refusing $1: it names a folder by . or .. or /"; return 1 ;; esac
-    parent=$(cd -- "$dir" 2>/dev/null && pwd -P) || { echo "no such folder: $dir"; return 1; }
-    case $parent/ in
-        "$root"/*) printf '%s/%s\n' "$parent" "$name" ;;
-        *) echo "outside $BASE/$sid/: $1"; return 1 ;;
-    esac
+    case $1 in -*) err="options are not accepted: $1 (write ./$1)"; return 1 ;; esac
+    name=$(basename -- "$1") && dir=$(dirname -- "$1") || { err="cannot parse: $1"; return 1; }
+    case $name in .|..|/) err="refusing $1: it names a folder by . or .. or /"; return 1 ;; esac
+    parent=$(cd -- "$dir" 2>/dev/null && pwd -P) || { err="no such folder: $dir"; return 1; }
+    inside "$parent" || { err="outside $BASE/$sid/: $1"; return 1; }
+}
+
+# inside DIR: true when DIR is the root or a folder below it.
+inside() {
+    case $1/ in "$root"/*) return 0 ;; *) return 1 ;; esac
 }
 
 for p in "$@"; do
-    msg=$(resolve "$p") || refuse "$msg"
+    resolve "$p" || refuse "$err"
 done
+# Delete from inside the checked folder, re-checked there, so that a folder above it swapped for a symlink
+# after the check cannot redirect the delete: ./NAME is looked up in the folder the shell is standing in.
 for p in "$@"; do
-    target=$(resolve "$p") || refuse "$target"
-    rm -rf -- "$target" || exit 1
+    resolve "$p" || refuse "$err"
+    (cd -P -- "$parent" && inside "$(pwd -P)" && rm -rf -- "./$name") || exit 1
 done

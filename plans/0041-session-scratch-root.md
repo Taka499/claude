@@ -40,7 +40,11 @@ Issue #65.
 ## Left open, knowingly
 
 - **A forged session id.** A session that sets `CLAUDE_CODE_SESSION_ID` itself, for example by appending an `export` to its env file, makes `scratch-rm` delete inside another session's root. Every session runs as the same user, and with the sandbox off nothing separates them. The damage stays inside `/tmp/cs`.
-- **A swap between check and delete.** The parent is resolved before `rm` runs. A process that replaces a checked folder with a symlink in that gap could redirect the delete. `rm -rf` itself does not follow symlinks inside the tree it removes.
+- **A swap between check and delete, narrowed.** `scratch-rm` changes into each checked folder, checks it again with `pwd -P`, and deletes `./NAME` from there. That change came from the security-guidance plugin's automated review of the first commit.
+  - **What it closes:** a folder above the checked one swapped for a symlink after the check can no longer redirect the delete.
+  - **What remains:** renaming the checked folder itself out of the root between the second check and `rm`.
+  - **Not unit-tested:** both cases need a race, so no test exercises them, and the mutation `./NAME` → `$parent/NAME` survives the tests.
+  - `rm -rf` does not follow symlinks inside the tree it removes.
 - **Subagents.** The docs do not say whether a subagent's Bash commands get the parent's id, or the env file. Measured below.
 - **What is already in `$TMPDIR`** stays. This plan changes where new scratch goes.
 - **`Bash(rm *)` stays,** for everything outside the root.
