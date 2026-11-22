@@ -1,0 +1,16 @@
+#!/bin/sh
+# SessionStart hook: create this session's scratch root, /tmp/cs/<session id>/, and point TMPDIR at it for
+# every later Bash command, through CLAUDE_ENV_FILE. Never blocks a session: on any doubt it does nothing
+# and exits 0, leaving TMPDIR as it was. Plan 0041.
+PATH=/usr/bin:/bin; export PATH
+. "$(dirname "$0")/common.sh"
+sid=${CLAUDE_CODE_SESSION_ID-}
+is_session_id "$sid" || exit 0
+umask 077
+mkdir -p "$BASE" 2>/dev/null
+own_dir "$BASE" || exit 0
+mkdir "$BASE/$sid" 2>/dev/null
+own_dir "$BASE/$sid" || exit 0
+[ -n "${CLAUDE_ENV_FILE-}" ] || exit 0
+printf 'export TMPDIR=%s/\n' "$BASE/$sid" >> "$CLAUDE_ENV_FILE"
+exit 0

@@ -1,0 +1,37 @@
+#!/bin/sh
+# scratch-rm PATH... — delete each PATH, as rm -rf would, when it lies strictly inside this Claude Code
+# session's scratch root, /tmp/cs/<CLAUDE_CODE_SESSION_ID>/. Never reads TMPDIR. Every PATH is checked
+# before anything is deleted; one refusal deletes nothing. A missing PATH is skipped, as rm -f would.
+# Plan 0041.
+PATH=/usr/bin:/bin; export PATH
+unset CDPATH
+. "$(dirname "$0")/common.sh"
+
+refuse() { echo "scratch-rm: $*; nothing deleted" >&2; exit 2; }
+
+sid=${CLAUDE_CODE_SESSION_ID-}
+is_session_id "$sid" || refuse "CLAUDE_CODE_SESSION_ID is missing or not a session id"
+own_dir "$BASE" && own_dir "$BASE/$sid" || refuse "$BASE/$sid is not this user's own folder"
+real_base=$(cd "$BASE" && pwd -P) || refuse "cannot resolve $BASE"
+root=$real_base/$sid
+[ $# -gt 0 ] || refuse "usage: scratch-rm PATH... (paths inside $BASE/$sid/)"
+
+# resolve PATH: print its parent resolved with pwd -P, then its last component; fail when it is outside root.
+resolve() {
+    case $1 in -*) echo "options are not accepted: $1 (write ./$1)"; return 1 ;; esac
+    name=$(basename -- "$1") && dir=$(dirname -- "$1") || { echo "cannot parse: $1"; return 1; }
+    case $name in .|..|/) echo "refusing $1: it names a folder by . or .. or /"; return 1 ;; esac
+    parent=$(cd -- "$dir" 2>/dev/null && pwd -P) || { echo "no such folder: $dir"; return 1; }
+    case $parent/ in
+        "$root"/*) printf '%s/%s\n' "$parent" "$name" ;;
+        *) echo "outside $BASE/$sid/: $1"; return 1 ;;
+    esac
+}
+
+for p in "$@"; do
+    msg=$(resolve "$p") || refuse "$msg"
+done
+for p in "$@"; do
+    target=$(resolve "$p") || refuse "$target"
+    rm -rf -- "$target" || exit 1
+done
