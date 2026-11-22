@@ -48,7 +48,6 @@ Issue #65.
   - `rm -rf` does not follow symlinks inside the tree it removes.
 - **The sweep can delete a root still in use.** Its checks are a 7-day age and the running-session list in `~/.claude/sessions/`, which is undocumented. A session idle for longer than that and missing from the list loses its root. Its `mktemp "$TMPDIR/…"` calls then fail, and Python's `tempfile` falls back to another folder. The user runs the sweep, so the user chooses when.
 - **A hook that writes.** `docs/claude-code.md` says a hook should only read. This one creates two folders, changes their mode and appends one line to its own session's env file. It never deletes, and it exits 0 when in doubt, also when its `common.sh` is missing. A POSIX shell exits outright on a failed `.`, so the hook checks that the file is readable first. The line it appends starts with a newline, so an earlier unterminated line cannot swallow it.
-- **Subagents.** The docs do not say whether a subagent's Bash commands get the parent's id, or the env file. Measured below.
 - **What is already in `$TMPDIR`** stays. This plan changes where new scratch goes.
 - **`Bash(rm *)` stays,** for everything outside the root.
 
@@ -65,11 +64,13 @@ Issue #65.
 ## Verification
 
 - **Tests:** deletion inside the root; refusal of the root itself, of `..`, of an absolute path outside, of a symlink pointing out, of a missing or malformed id, and of an option-looking argument. Each guard is shown failing when removed.
-- **In a new session after install:**
-  - `echo $TMPDIR` prints the root;
-  - `mktemp -d "$TMPDIR/x.XXXXXX"` lands inside it, and a bare `mktemp -d` does not;
-  - `scratch-rm` on such a folder runs with no prompt, while `rm` on the same folder still asks;
-  - a subagent's Bash prints its `CLAUDE_CODE_SESSION_ID` and `TMPDIR`.
+- **Live, on 2026-11-23,** after the user installed the copy and edited the settings. Headless `claude -p` sessions ran in the default permission mode, where an ask rule becomes a denial. Read from their transcripts:
+  - **The redirect works.** The hook wrote `export TMPDIR=/tmp/cs/<id>/` to the session's env file, and `printenv TMPDIR` printed the root. `mktemp -d "$TMPDIR/live.XXXXXX"` landed in it; a bare `mktemp -d` landed in `/var/folders/…/T/`.
+  - **`rm` and `scratch-rm` split as intended.** `rm -rf <folder in the root>` was refused as needing permission. `scratch-rm` on the same folder ran with no prompt and deleted it, and `scratch-rm /tmp/cc-0040/match.py` exited 2 with "outside … nothing deleted".
+  - **Subagents share the root.** A foreground subagent's own Bash printed the parent's `CLAUDE_CODE_SESSION_ID` and the same `TMPDIR`.
+  - **The working-directory check still applies.** In the default mode, `touch` or `ls` on a path in the root needs approval, since `/tmp/cs` is outside the session's working directories. A `touch` under the old `/var/folders/…/T/` was refused in the same way, so nothing changed there. In auto mode, the classifier judges such calls.
+  - **Claude Code runs the hook for internal sessions too.** A root named `f0f0f0f0-1a7e-41e3-…` appeared with no session of the user's behind it. It is empty, and the sweep removes it like any other.
+  - **Two test mistakes along the way, recorded so they are not repeated.** `echo "$VAR"` is not auto-approved by a `Bash(echo *)` allow rule ("A variable in this command can't be checked before it runs"). macOS `printenv` prints only its first argument.
 
 ## Review
 
