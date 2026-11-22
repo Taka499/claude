@@ -28,7 +28,8 @@ The user chose B on 2026-11-22: drop the rule. After the `/codex-review` below, 
 
 - **In auto mode,** the classifier now judges `git checkout -- <path>` as it already judges `git restore <path>`, `git switch -f` and `--discard-changes` (left open since plan 0025).
 - **In Manual mode,** a `checkout` command is not in `permissions.allow`, so it still prompts. Only auto mode loses the prompt.
-- **Branch switching in the deployed clone:** `git checkout <branch>` there now asks no more than `git switch <branch>` already did. In auto mode the classifier judges both.
+- **Forms that only move HEAD or create a branch:** `git checkout <branch>`, `<commit>`, `--detach`, `-b` and `--orphan` now ask no more than their `git switch` equivalents already did. In auto mode the classifier judges them. That includes a branch switch in the deployed clone.
+- **`-B` behind another flag:** a rule matches the command text literally up to its `*`, so `Bash(git checkout -B*)` misses `git checkout -q -B …` and `--force -B …`. `Bash(git switch -C*)` has always had the same gap (`git switch -q -C …`). The classifier judges those forms.
 - **`git checkout -f <branch>` and `--force`** drop working-tree changes, as `git switch -f` does. They join it in the README's § Left open list, under the git hook bullet.
 - **What stays:** the deny rules for `git checkout .` and `git -C * checkout*`, and the new `Bash(git checkout -B*)` ask.
 
@@ -44,3 +45,5 @@ The user chose B on 2026-11-22: drop the rule. After the `/codex-review` below, 
 ## Review
 
 `/codex-review` on the first commit returned CHANGES REQUESTED, with one Medium finding: § What is lost named only path forms. Dropping the rule also stops the prompt for branch forms: `git checkout <branch>`, `-f`, and `-B`, which resets a branch. Accepted. The branch forms and `-f` are now named above, and `-B` gets its own ask rule. Its Low finding confirmed that the counts agree between the plan and the README.
+
+The second pass, on that fix, returned CHANGES REQUESTED with two Mediums, both accepted as wording. The `-B` rule misses `-B` behind another flag, a gap `git switch -C*` shares, and both are now named. The forms that only move HEAD or create a branch (`<commit>`, `--detach`, `-b`, `--orphan`) are now listed. No third pass: neither changed a rule.
