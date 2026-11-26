@@ -1,5 +1,7 @@
 # Plan: Three lessons about process pools and the spawn start method
 
+Issue #70.
+
 ## Goal
 
 On 2026-11-24 a scratch script in gkms-contest-ai filled the disk through a loop that nothing reported. The user asked on 2026-11-26 ("Do both of report and lesson pls") to record its lessons in the Python stack note:
