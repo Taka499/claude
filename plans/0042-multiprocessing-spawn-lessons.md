@@ -39,6 +39,11 @@ On 2026-11-24 a scratch script in gkms-contest-ai filled the disk through a loop
 - **The wrapper is described, not shipped.** The note gives the three moves that make it work (the `Process` hook sets an event, `maxtasksperchild` refused, waits poll), including why the hook must not raise: it runs on the pool's handler thread.
 - **The shared text names no path of the source project,** only "(gkms-contest-ai, 2026-11-24)", per global `CLAUDE.md` § Continuous Learning. The paths above are history.
 - **No ADR.** Prose, trivially reversible.
+- **`/codex-review` (codex-cli 0.150.1, verdict CHANGES REQUESTED), answered:**
+  - *Rejected:* "the wrapper falsely reports a death during a normal `Pool.close()`, because a worker can take its sentinel and be replaced while results are still cached". In CPython 3.14.10's `pool.py`, `_handle_workers` keeps maintaining the pool while the cache is non-empty and puts the stop sentinel on the task queue only after that loop exits, so no worker gets a sentinel while results are pending. Measured: 30 trials of a spawn `Pool(4)` subclass counting `Process` calls, `map_async` over 200 tasks, `close()` before `get()`: at most 4 workers created.
+  - *Rejected:* "`Pool.Process` is a regular instance method". `inspect.getattr_static(Pool, "Process")` is a `staticmethod` in 3.14.10; the note now says so and why an ordinary-method override still works (the pool calls `self.Process`).
+  - *Accepted:* the first `processes` workers are created in `Pool.__init__` on the caller's thread, only replacements on the worker-handler thread; the note says so.
+  - *Accepted:* Python 3.14 made `forkserver` the Linux default. `forkserver.py` imports the main script once in the server with `_inheriting` set; the note adds that as a parenthesis.
 
 ## Verification
 
