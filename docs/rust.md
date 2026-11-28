@@ -38,6 +38,10 @@ Extracted from `Taka499/gakumas-rehearsal-automation` on 2026-08-05. Rules here 
 
 **Blocking network work belongs on a spawned thread, with results pushed back through the same channel/mutex pattern the rest of the app uses — plus an explicit repaint request.** In an immediate-mode GUI the result otherwise sits invisible until the user happens to move the mouse; `egui::Context::request_repaint()` from the worker is what makes the notice appear on its own. (gakumas)
 
+**Caching `windows-rs` D3D11/WinRT objects in a `static Mutex` needs an `unsafe impl Send`, and the impl needs its threading argument written beside it.** `ID3D11DeviceContext` and friends are `!Send` because they wrap COM pointers. The impl is sound only when every condition holds and is stated: the device is created without `D3D11_CREATE_DEVICE_SINGLETHREADED` (so it is free-threaded), the immediate context is touched only while the mutex is held, and every thread that uses the objects is in the multithreaded apartment (`RoInitialize(RO_INIT_MULTITHREADED)` on `main`; threads that initialize no apartment join the implicit MTA). Don't claim agility for an object whose docs don't promise it — `GraphicsCaptureItem` is documented agile, the `IDirect3DDevice` from `CreateDirect3D11DeviceFromDXGIDevice` is not — and say what would invalidate the argument (a capture from an STA thread). (gakumas EXECPLAN_CUSTOM_OCR_MODEL D24; `capture/screenshot.rs`)
+
+**Time a wait with `Duration` comparisons, not `elapsed().as_secs() > N`.** `as_secs()` truncates, so `> 5` keeps waiting until 6 s have passed; with a retry around it, a "5 s timeout" held a lock for ~12 s. Use `elapsed() >= TIMEOUT` with a `Duration` constant. (gakumas EXECPLAN_CUSTOM_OCR_MODEL D24)
+
 ## Windows APIs & Win32 interop
 
 **`EnumWindows` returns FALSE when the callback stops enumeration early — that is success, not an error.** Using `?` on it turns a normal early exit into a spurious failure; discard the result and judge success by whether the callback found what it wanted. (gakumas)
@@ -63,6 +67,8 @@ Extracted from `Taka499/gakumas-rehearsal-automation` on 2026-08-05. Rules here 
 **Command-line arguments are a poor interface for an app that requires elevation.** Elevated launches don't attach to the invoking terminal, so args/UAC interact badly; move entry points into the app itself (menus, hotkeys, in-app windows, config file) instead. (gakumas)
 
 **Zips produced by .NET/PowerShell store Windows-style backslash separators.** Extraction code and any cross-platform tooling must normalize them; Unix `unzip` warns about it, and naive path joins produce single files with backslashes in their names. (gakumas)
+
+**For repeated Windows Graphics Capture, create the D3D11 device, its WinRT wrapper and the `GraphicsCaptureItem` once and reuse them; open only the frame pool and session per capture.** Creating the device cost ~130 ms and the item ~40 ms of a ~190 ms capture, and inside a long-running app the per-capture creation also degraded — captures doubled to ~450 ms and private memory grew ~5 MB per iteration over a few hundred iterations, while the same loop in a fresh test process stayed flat. Reusing them gave ~17 ms per capture, flat memory, and a per-capture session still guarantees a current frame. Rebuild the cache on any error except a frame timeout (fresh objects cannot fix a minimized window), track the frames' `ContentSize` for the pool size (`GraphicsCaptureItem::Size` keeps reporting the size at creation), and close the session, pool and event registration on every path. Even with reuse, opening tens of thousands of sessions slows session start and first-frame wait (~20 → ~80 ms over the first ~200 iterations, then flat); a single long-lived session is the next step if that matters. (gakumas EXECPLAN_CUSTOM_OCR_MODEL M8)
 
 ## GUI (egui / eframe)
 
@@ -139,6 +145,8 @@ Two shell traps here, both measured. `${PIPESTATUS[0]}` is bash-only — zsh lea
 
 **`[profile.release] lto = true, strip = true` is a cheap default for a shipped desktop binary**, at the cost of noticeably longer link times — which is exactly why the running-exe lock check above must come *first*. (gakumas)
 
+**A `build.rs` that stages a user-editable file into the target directory must copy it only when the target has none.** The project's `build.rs` copied the repository `config.json` over `target/release/config.json` on every build-script rerun (any `Cargo.toml` change triggers one), silently resetting the developer's local settings — a whole diagnostic run was lost because the developer-mode flag had been reset. Guard with `if !dst.exists()`, and verify the guard by forcing a rerun with a marker in the target copy. (gakumas EXECPLAN_CUSTOM_OCR_MODEL M8 step 2; `build.rs`)
+
 ## Configuration & data-format evolution
 
 **Never restructure a serialized config shape to satisfy an internal-ergonomics complaint; introduce a view/parameter struct instead.** Three parallel config arrays threaded through four call sites were consolidated into a parameter object built from the existing fields — the pain went away and not one user's config file broke. Changing the serde shape would have required a migration for zero behavioural gain. (gakumas)
@@ -162,6 +170,8 @@ Two shell traps here, both measured. `${PIPESTATUS[0]}` is bash-only — zsh lea
 **Interactive-password CLIs must never be launched from a backgrounded or non-interactive shell.** A backgrounded `rsign generate` sat silently on its password prompt with a 0-byte output file, and had it later received input it would have generated a *different* keypair and overwritten the real one — a trust-breaking event. Run key generation interactively, by a human. (gakumas)
 
 **Sanity-check whether a "cross-platform weight" dependency is actually a problem before hand-rolling.** `arboard` was chosen over ~60 lines of hand-written `unsafe` clipboard code precisely because it writes `CF_DIBV5` (what chat apps and editors read); its idle cross-platform code was judged harmless. (gakumas)
+
+**`tract-onnx` 0.23 loads a PyTorch dynamo-exported ONNX only with `.with_ignore_value_info(true).with_ignore_output_shapes(true)`.** The dynamo exporter annotates every intermediate and output tensor with its symbolic export dimensions (`h`, `w`), and tract refuses to unify them with a concrete input fact (`Impossible to unify Sym(h) with Val(28)`); ignoring the value info lets the fixed input shape drive inference, and outputs then match ONNX Runtime within 1e-3. The 0.23 API also differs from older examples: `into_runnable()` returns `Arc<TypedRunnableModel>`, and tensors are read with `to_plain_array_view`. Pure-Rust CPU inference this way needs no native DLL and runs a small CRNN in ~10–18 ms per crop. Pin the preprocessing as a byte-exact contract with the training code (explicit integer luma formula, no resampling) and test it against fixtures exported from Python — library-default grayscale conversions differ (PIL uses Rec. 601 weights, the `image` crate Rec. 709). (gakumas EXECPLAN_CUSTOM_OCR_MODEL M2; ADR 0016)
 
 ## Distribution, updates & release engineering
 
@@ -230,3 +240,7 @@ Two shell traps here, both measured. `${PIPESTATUS[0]}` is bash-only — zsh lea
 **Satisfying a checksum/invariant is not proof of correctness — never auto-clear a human-review flag on it.** A row was flagged precisely because multiple solutions satisfied the check; auto-clearing "consistent" rows silently reintroduces the exact error class the flagging exists to catch. Resolution should be an explicit human act, recorded as such. (gakumas)
 
 **Write down reversals.** An architecture was replaced by its opposite and no plan ever recorded it, so the superseded documents kept reading as current guidance for months. If a decision inverts, the correction belongs in a durable, dated, provenance-carrying note — not as edits to the historical document. (gakumas)
+
+**When a long-running app slows down but every offline probe of the suspect code is flat, measure inside the app.** The capture path stayed at ~190 ms over 4,500 captures in a test process and over 2,000 with a 1.8 GB heap held, yet doubled inside the app. What found it was in-app instrumentation in a developer-mode monitor: named threads (`std::thread::Builder::new().name(..)`) with per-thread CPU from a Toolhelp thread snapshot plus `GetThreadTimes`/`GetThreadDescription`, and per-phase timing of the operation accumulated per call and published under one lock. Fixing the expensive per-call work removed the symptom even though the in-app growth mechanism was never fully explained — record that honestly rather than inventing one. (gakumas EXECPLAN_CUSTOM_OCR_MODEL M8)
+
+**Windows' per-process "GPU Dedicated Usage" counter is not evidence of a GPU memory leak when an app creates and destroys D3D11 devices.** It read ~161 GB on an 8 GB card and grew ~3.6 MB per capture, while adapter-wide GPU memory and the process's private bytes stayed flat; explicitly closing every object did not change it. Check adapter-wide usage and private bytes before believing it. (gakumas EXECPLAN_CUSTOM_OCR_MODEL, Surprises — M6 series)
